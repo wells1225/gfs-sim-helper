@@ -80,6 +80,7 @@ export type PlannedStep =
   | { kind: 'remove-cache'; path: string }
 
 export interface ActionPlan {
+  entryId: string // chosen by the planner; runAction uses it for the journal entry and holding/<entryId>/ paths
   action: ActionKind
   summary: string
   origin: JournalOrigin
