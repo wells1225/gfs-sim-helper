@@ -11,13 +11,14 @@ function pad2(value: number): string {
   return String(value).padStart(2, '0')
 }
 
+/** Her own clock, not UTC: the name on her Desktop should match the time she made it. */
 function formatReportTimestamp(date: Date): string {
-  const y = date.getUTCFullYear()
-  const mo = pad2(date.getUTCMonth() + 1)
-  const d = pad2(date.getUTCDate())
-  const h = pad2(date.getUTCHours())
-  const mi = pad2(date.getUTCMinutes())
-  const s = pad2(date.getUTCSeconds())
+  const y = date.getFullYear()
+  const mo = pad2(date.getMonth() + 1)
+  const d = pad2(date.getDate())
+  const h = pad2(date.getHours())
+  const mi = pad2(date.getMinutes())
+  const s = pad2(date.getSeconds())
   return `${y}${mo}${d}-${h}${mi}${s}`
 }
 
