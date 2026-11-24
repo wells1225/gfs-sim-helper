@@ -23,6 +23,8 @@ herself, so every screen is for a non-technical player.
 ## Pull requests
 
 - Branch from `main`, one change per PR, title `type(scope): subject`.
+- No `Co-Authored-By` lines in commits and no "Generated with" lines in PR bodies. Tyler is the only author. A
+  `commit-msg` hook in this clone strips co-author lines.
 - Who does what in this project: Neon builds. Opus reviews each PR, then Fable does the last check. Whoever finds an
   issue fixes it, with a failing test first. Sol does one quick, light review of a finished stage. Astra is not used
   here.
