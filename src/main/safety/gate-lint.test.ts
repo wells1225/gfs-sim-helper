@@ -52,6 +52,7 @@ const ALLOWED_PACKAGES: Record<string, 'any' | readonly string[]> = {
   '@fontsource-variable/plus-jakarta-sans': 'any',
   fflate: 'any',
   '@anthropic-ai/sdk': ['main/assist/key-store.ts'],
+  'electron-updater': ['main/update/updater.ts'],
   electron: ['main/index.ts', 'main/app-host.ts', 'main/ipc.ts', 'preload/index.ts', 'main/locate/host.ts']
 }
 const BUILTINS_FOR_ONE_FILE: Record<string, readonly string[]> = {
