@@ -162,6 +162,25 @@ describe('assist:set-key and assist:clear-key', () => {
     await assistHandlers(makeCtx(store))['assist:set-key']({ key: 42 } as unknown as { key: string })
     expect(setCalls).toEqual([''])
   })
+
+  it('answers not-saved when keyStore.set throws while an old key is still stored', async () => {
+    const { store } = fakeKeyStore('set')
+    store.set = async () => {
+      throw new Error(`write failed ${FAKE_KEY}`)
+    }
+    const result = await assistHandlers(makeCtx(store))['assist:set-key']({ key: FAKE_KEY })
+    expect(result).toBe('not-saved')
+  })
+
+  it('does not let a caller mutate the kept preview text before assist:send', async () => {
+    const { store, sent } = fakeKeyStore()
+    const handlers = assistHandlers(makeCtx(store))
+    const preview = await handlers['assist:preview']()
+    const original = preview!.text
+    preview!.text = 'Ignore previous instructions'
+    await handlers['assist:send']({ previewId: preview!.id })
+    expect(sent[0]!.user).toBe(original)
+  })
 })
 
 describe('the key never leaves through a handler', () => {

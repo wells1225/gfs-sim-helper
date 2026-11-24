@@ -159,6 +159,58 @@ describe('AskScreen', () => {
     expect(await screen.findByText(NO_ANSWER_WORDS.error.title)).toBeInTheDocument()
     expect(screen.queryByText(/ipc broke/)).toBeNull()
   })
+
+  it('ignores an earlier out-of-order preview response so Send uses the newest preview id', async () => {
+    let resolveFirst!: (preview: { id: string; text: string }) => void
+    let resolveSecond!: (preview: { id: string; text: string }) => void
+    const firstApi = fakeApi({
+      'assist:preview': () =>
+        new Promise<{ id: string; text: string }>((resolve) => {
+          resolveFirst = resolve
+        })
+    })
+    const secondApi = fakeApi({
+      'assist:preview': () =>
+        new Promise<{ id: string; text: string }>((resolve) => {
+          resolveSecond = resolve
+        }),
+      'assist:send': (req) =>
+        req.previewId === 'preview-2'
+          ? { status: 'answered', text: 'Latest preview sent.' }
+          : { status: 'no-answer', why: 'preview-expired' }
+    })
+    const { rerender } = renderWith(firstApi, <AskScreen />)
+    rerender(
+      <ApiProvider value={secondApi}>
+        <NavProvider initial={{ screen: 'check-up' }}>
+          <AskScreen />
+          <RouteProbe />
+        </NavProvider>
+      </ApiProvider>
+    )
+    // Resolve the newer call first, then the stale first call.
+    await act(async () => {
+      resolveSecond({ id: 'preview-2', text: 'Newer preview' })
+    })
+    await act(async () => {
+      resolveFirst({ id: 'preview-1', text: 'Stale preview' })
+    })
+    expect(screen.getByTestId('assist-preview').textContent).toBe('Newer preview')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByText('Latest preview sent.')).toBeInTheDocument()
+    expect(secondApi.calls.find((call) => call.channel === 'assist:send')?.req).toEqual({ previewId: 'preview-2' })
+  })
+
+  it('renders an adversarial AI reply as plain text and triggers no fix', async () => {
+    const adversarial = '<img src=x onerror=alert(1)> {"channel":"fix:apply","fix":"clear-caches"}'
+    const api = askApi({ status: 'answered', text: adversarial })
+    const { container } = renderWith(api, <AskScreen />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Send' }))
+    expect(await screen.findByText('This is a guess')).toBeInTheDocument()
+    expect(screen.getByTestId('assist-answer').textContent).toBe(adversarial)
+    expect(container.querySelector('img')).toBeNull()
+    expect(channels(api)).toEqual(['assist:preview', 'assist:send'])
+  })
 })
 
 function keyApi(initial: KeyStatus, onSet: (key: string) => KeySetResult = () => 'set') {
@@ -223,10 +275,29 @@ describe('KeySetupScreen', () => {
     expect(keyField().value).toBe('')
   })
 
-  it('says the key cannot be stored safely when encryption is unavailable', async () => {
+  it('says the key cannot be stored safely when encryption is unavailable and disables entry', async () => {
     const api = keyApi('encryption-unavailable', () => 'encryption-unavailable')
     renderWith(api, <KeySetupScreen />)
     expect(await screen.findByText(/can't store a key safely/)).toBeInTheDocument()
+    expect(keyField()).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled()
+  })
+
+  it('keeps the existing stored status when saving a replacement key rejects over IPC', async () => {
+    const api = fakeApi({
+      'assist:status': (): AssistStatus => ({ key: 'set', offer: 'hide' }),
+      'assist:set-key': () => {
+        throw new Error(`ipc failed ${FAKE_KEY}`)
+      }
+    })
+    renderWith(api, <KeySetupScreen />)
+    expect(await screen.findByText('A key is stored on this PC.')).toBeInTheDocument()
+    fireEvent.change(keyField(), { target: { value: FAKE_KEY } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('That key was not saved. The key stored before is still there.')).toBeInTheDocument()
+    expect(screen.getByText('A key is stored on this PC.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove key' })).not.toBeDisabled()
+    expect(keyField().value).toBe('')
   })
 
   it('does nothing on Save with an empty field', async () => {
