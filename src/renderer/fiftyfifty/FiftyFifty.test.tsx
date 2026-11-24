@@ -329,8 +329,8 @@ describe('FiftyFiftyScreen', () => {
     expect(await screen.findByRole('heading', { name: 'We found the most likely cause' })).toBeInTheDocument()
     expect(screen.getByText(/Hair/, { selector: 'strong' })).toBeInTheDocument()
     expect(screen.getByText(/most likely/i, { selector: 'p' })).toBeInTheDocument()
-    expect(screen.getByText(/already put your other mods back/i)).toBeInTheDocument()
-    expect(screen.queryByText(/still set aside from the last round/i)).not.toBeInTheDocument()
+    expect(await screen.findByText(/already put your other mods back and left Hair set aside/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open History' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Keep Hair set aside' }))
     expect(await screen.findByText(/Hair is set aside\. Everything else is back in your Mods folder/)).toBeInTheDocument()
     expect(finishes).toEqual(['keep-set-aside'])
@@ -615,6 +615,74 @@ describe('a stop never says every mod is back while one is not', () => {
     expect(await screen.findByRole('heading', { name: 'Mods are unlikely to be the cause' })).toBeInTheDocument()
     expect(screen.queryByText(/All your mods are back in place/)).not.toBeInTheDocument()
     expect(screen.getByText(/not back in your Mods folder yet: Hair\./)).toBeInTheDocument()
+  })
+})
+
+describe('the found card only says what History shows', () => {
+  const found = sampleFiftyFifty({ phase: 'found', culprit: 'dir:hair', parked: ['dir:hair'], suspects: ['dir:hair'] })
+  const uncertain = { ...found, history: [{ round: 0, parked: ['dir:hair'], answer: 'worked' as const }, { round: 1, parked: ['cf:901234'], answer: 'crashed' as const }] }
+  const CLAIM = /already put your other mods back/i
+
+  it('names another mod of this test that is not back, and opens History', async () => {
+    const { user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': found,
+      'journal:list': [moved('dir:hair', 'Hair', 'done'), moved('cf:901234', 'Wicked Wardrobe', 'needs-attention')]
+    })
+    expect(await screen.findByText(/not back in your Mods folder yet: Wicked Wardrobe\./)).toBeInTheDocument()
+    expect(screen.queryByText(CLAIM)).not.toBeInTheDocument()
+    expect(screen.getByText(/Hair is set aside, so you can play/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Open History' }))
+    expect(screen.getByTestId('route')).toHaveTextContent('history')
+  })
+
+  it('the uncertain card makes no promise either', async () => {
+    setup(<FiftyFiftyScreen />, {
+      'fifty:get': uncertain,
+      'journal:list': [moved('dir:hair', 'Hair', 'done'), moved('cf:901234', 'Wicked Wardrobe', 'done')]
+    })
+    expect(await screen.findByRole('heading', { name: 'The result is uncertain' })).toBeInTheDocument()
+    expect(await screen.findByText(/not back in your Mods folder yet: Wicked Wardrobe\./)).toBeInTheDocument()
+    expect(screen.queryByText(CLAIM)).not.toBeInTheDocument()
+  })
+
+  it('makes no promise when History cannot be read, or before it has answered', async () => {
+    let answer!: (journal: JournalEntry[]) => void
+    setup(<FiftyFiftyScreen />, { 'fifty:get': found, 'journal:list': () => new Promise<JournalEntry[]>((r) => (answer = r)) })
+    expect(await screen.findByRole('heading', { name: 'We found the most likely cause' })).toBeInTheDocument()
+    expect(screen.queryByText(CLAIM)).not.toBeInTheDocument()
+    expect(screen.queryByText(/set aside, so you can play/)).not.toBeInTheDocument()
+    answer([moved('dir:hair', 'Hair', 'done')])
+    expect(await screen.findByText(CLAIM)).toBeInTheDocument()
+    cleanup()
+
+    setup(<FiftyFiftyScreen />, { 'fifty:get': found, 'journal:list': () => Promise.reject(new Error('unreadable')) })
+    expect(await screen.findByText(/couldn't check that every mod is back in place/)).toBeInTheDocument()
+    expect(screen.queryByText(CLAIM)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Hair is set aside/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open History' })).toBeInTheDocument()
+  })
+
+  it('a keep that was refused after the cause went back does not say it is set aside', async () => {
+    let journal = [moved('dir:hair', 'Hair', 'done')]
+    const { user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': found,
+      'fifty:finish': () => {
+        journal = [moved('dir:hair', 'Hair', 'undone')]
+        return GAME_OPEN
+      },
+      'journal:list': () => journal
+    })
+    await user.click(await screen.findByRole('button', { name: 'Keep Hair set aside' }))
+    expect(await screen.findByText(/The Sims 4 is still open/)).toBeInTheDocument()
+    expect(await screen.findByText(/Hair is in your Mods folder right now\./)).toBeInTheDocument()
+    expect(screen.queryByText(/left Hair set aside|Hair is set aside/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled()
+  })
+
+  it('a cause whose move is half done is not called set aside or back', async () => {
+    setup(<FiftyFiftyScreen />, { 'fifty:get': found, 'journal:list': [moved('dir:hair', 'Hair', 'needs-attention')] })
+    expect(await screen.findByRole('heading', { name: 'We found the most likely cause' })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText(/Hair is set aside|Hair is in your Mods folder|left Hair set aside/)).not.toBeInTheDocument())
   })
 })
 

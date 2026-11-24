@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import type { FiftyFifty, ModGroup } from '../../../src/shared/model.ts'
-import { sampleFiftyFifty } from '../../../src/shared/testing/sample.ts'
+import { sampleFiftyFifty, sampleJournalEntry } from '../../../src/shared/testing/sample.ts'
 import { launchApp, shoot, stubIpc, type LaunchedApp } from '../support/app.ts'
 
 const SLUG = 'pr-11-fifty-fifty'
@@ -104,9 +104,18 @@ test('round-answer', async () => {
 test('found', async () => {
   await stubIpc(running.app, { 'fifty:get': FOUND })
   await expect(running.page.getByText('50/50 test: we found the most likely cause')).toBeVisible()
-  const page = await enterAt(FOUND)
+  // The card only says the other mods are back when History shows it: the cause is the one entry still set aside.
+  const stillAside = sampleJournalEntry({
+    action: 'disable-group',
+    groupId: 'dir:g1',
+    groupLabel: 'MC Command Center',
+    folderPath: FOUND.folderPath,
+    origin: { by: 'fifty-fifty', sessionId: FOUND.id, round: 6 }
+  })
+  const page = await enterAt(FOUND, { 'journal:list': [stillAside] })
   await expect(page.getByRole('heading', { name: 'We found the most likely cause' })).toBeVisible()
   await expect(page.getByText('MC Command Center', { exact: true })).toBeVisible()
+  await expect(page.getByText(/We already put your other mods back and left MC Command Center set aside/)).toBeVisible()
   await shoot(page, SLUG, 'found')
 })
 
