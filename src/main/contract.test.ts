@@ -28,7 +28,7 @@ import type { Host } from './locate/host.ts'
 import type { ActionPlan, AssistReply, KeyStore, PlanFixAt, PlannedStep, Updater } from './ports.ts'
 import type { GameRunState as LocateGameRunState } from './locate/process.ts'
 import { scanHandlers } from './scan/handlers.ts'
-import { createContext } from './services.ts'
+import { createContext, type CreateContextInput } from './services.ts'
 import { updateHandlers } from './update/handlers.ts'
 import { createUpdater } from './update/updater.ts'
 import { launchEnv, shoot } from '../../test/e2e/support/app.ts'
@@ -275,7 +275,7 @@ describe('AI key contract requests from PR 12', () => {
 })
 
 describe('auto-update contract (PR 13)', () => {
-  function makeContext(updater?: Updater) {
+  function makeContext(updater?: CreateContextInput['updater']) {
     return createContext({
       host: makeFakeHost(),
       paths: appPaths({ localAppData: '/fake/LocalAppData', appData: '/fake/Roaming', desktopDir: '/fake/Desktop', env: {} }),
@@ -328,6 +328,22 @@ describe('auto-update contract (PR 13)', () => {
     const ctx = makeContext(updater)
     expect(await ctx.updater.check()).toBe(idle)
     expect(ctx.updater.install()).toBe(refused)
+  })
+
+  it('hands a factory updater the same busy() as the context, so install refuses mid-change', async () => {
+    let seenBusy: (() => boolean) | null = null
+    const off: UpdateState = { state: 'off', why: 'switched-off' }
+    const ctx = makeContext((seams) => {
+      seenBusy = seams.busy
+      return { state: () => off, check: async () => off, download: async () => off, install: () => ({ status: 'refused', why: 'not-ready' }) }
+    })
+    if (seenBusy === null) throw new Error('the factory was not called')
+    const busy: () => boolean = seenBusy
+    expect(busy()).toBe(false)
+    const call = ctx.safety.backupStatus('/fake/Documents/Electronic Arts/The Sims 4')
+    expect(busy()).toBe(true)
+    await call.catch(() => {})
+    expect(busy()).toBe(false)
   })
 
   it('the stub updater from update/updater.ts is always off', async () => {

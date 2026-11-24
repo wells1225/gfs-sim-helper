@@ -44,7 +44,9 @@ export interface CreateContextInput {
   reveal(file: string): void
   clock?: Clock
   newId?: () => string
-  updater?: Updater // index.ts passes createUpdater(...); without one, updates are off
+  // index.ts passes (seams) => createUpdater(input, seams), called once with this context's busy(); a ready Updater
+  // also works. Without one, updates are off.
+  updater?: Updater | ((seams: { busy: () => boolean }) => Updater)
 }
 
 const UPDATES_OFF: UpdateState = { state: 'off', why: 'switched-off' }
@@ -78,6 +80,7 @@ export function createContext(input: CreateContextInput): AppContext {
 
   // busy() is true while any safety or fixes call runs, so a restart for an update never cuts a change in half.
   let inFlight = 0
+  const busy = (): boolean => inFlight > 0
   const counted =
     <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
     async (...args: A): Promise<R> => {
@@ -172,8 +175,8 @@ export function createContext(input: CreateContextInput): AppContext {
     safety,
     fixes,
     keyStore,
-    updater: input.updater ?? NO_UPDATER,
-    busy: () => inFlight > 0,
+    updater: typeof input.updater === 'function' ? input.updater({ busy }) : (input.updater ?? NO_UPDATER),
+    busy,
     session: { scan: null },
     emit,
     reveal

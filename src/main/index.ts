@@ -130,7 +130,7 @@ if (!gotSingleInstanceLock) {
     const host = createAppHost()
     // Real Documents always, plus the test override when one is set: an environment variable can only add a folder.
     const keepOutOf = [...new Set([app.getPath('documents'), host.documentsDir, ...paths.oneDriveRoots])]
-    const updater = createUpdater({
+    const updaterInput = {
       isPackaged: app.isPackaged,
       version: app.getVersion(),
       installDir: dirname(process.execPath),
@@ -138,12 +138,13 @@ if (!gotSingleInstanceLock) {
       env: process.env,
       keepOutOf,
       platform: process.platform
-    })
+    }
 
     const ctx = createContext({
       host,
       paths,
-      updater,
+      // createContext calls this once with its own busy(), so install refuses while a fix, backup or 50/50 step runs.
+      updater: (seams) => createUpdater(updaterInput, seams),
       safeStorage: {
         isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
         encryptString: (text) => safeStorage.encryptString(text),
