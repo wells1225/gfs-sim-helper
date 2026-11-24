@@ -231,7 +231,7 @@ describe('storing the key', () => {
     ['a control character', 'FAKE\u0000KEY'],
     ['something that is not text', { key: KEY } as unknown as string],
     ['nothing at all', undefined as unknown as string]
-  ])('refuses %s and leaves the status as it was', async (_name, bad) => {
+  ])('refuses %s: not-set with no key stored, not-saved with one', async (_name, bad) => {
     const { deps, gate, safeStorage, transport } = rig()
 
     expect(await setKey(deps, bad)).toBe('not-set')
@@ -239,7 +239,8 @@ describe('storing the key', () => {
 
     await setKey(deps, KEY)
     gate.requests.length = 0
-    expect(await setKey(deps, bad)).toBe('set')
+    expect(await setKey(deps, bad)).toBe('not-saved')
+    expect(await keyStatus(deps)).toBe('set')
     expect(gate.requests).toEqual([])
     expect(safeStorage.encrypted).toEqual([KEY])
 
@@ -300,7 +301,7 @@ describe('storing the key', () => {
     ['fails', { status: 'failed', opsDone: 0, detail: `disk full while writing ${KEY}` } as GateResult],
     ['throws', 'throw' as const]
   ])('reports what is really on disk when the gate %s', async (_name, answer) => {
-    const { deps, gate } = rig()
+    const { deps, gate, transport } = rig()
     gate.answer = answer
 
     expect(await setKey(deps, KEY)).toBe('not-set')
@@ -309,8 +310,38 @@ describe('storing the key', () => {
     gate.answer = null
     await setKey(deps, KEY)
     gate.answer = answer
-    expect(await setKey(deps, OTHER_KEY)).toBe('set')
+    const result = await setKey(deps, OTHER_KEY)
+    expect(result).toBe('not-saved')
+    expectNoKey(result, OTHER_KEY)
+    expect(await keyStatus(deps)).toBe('set')
     expect(await clearKey(deps)).toBe('set')
+
+    await sendWithKey(deps, MESSAGE)
+    expect(transport.mock.calls[0]![0]).toBe(KEY) // the old key is the one still in use
+  })
+
+  it('answers set, not not-saved, when the key the gate would not write is the one already stored', async () => {
+    const { deps, gate } = rig()
+    await setKey(deps, KEY)
+    gate.answer = { status: 'refused', refusal: { reason: 'outside-allowed-area', path: 'x' } } as GateResult
+
+    expect(await setKey(deps, KEY)).toBe('set')
+  })
+
+  it('answers not-saved when the gate says done but the old key is still what the file holds', async () => {
+    const { deps, gate } = rig()
+    await setKey(deps, KEY)
+    gate.answer = { status: 'done' }
+
+    expect(await setKey(deps, OTHER_KEY)).toBe('not-saved')
+  })
+
+  it('answers not-set, not not-saved, when a new key is refused and the old one no longer decrypts', async () => {
+    const { deps, safeStorage } = rig()
+    await setKey(deps, KEY)
+    safeStorage.decryptFails = true
+
+    expect(await setKey(deps, 'FAKE KEY')).toBe('not-set')
   })
 
   it.each([
@@ -423,7 +454,7 @@ describe('sending with the key', () => {
     expect(transport).not.toHaveBeenCalled()
   })
 
-  it.each(['no-key', 'declined', 'offline', 'limit-reached', 'error'] as const)(
+  it.each(['no-key', 'key-rejected', 'declined', 'offline', 'limit-reached', 'error'] as const)(
     'passes on the reason %s from the transport',
     async (why) => {
       const { deps } = rig({ status: 'failed', why })
@@ -668,7 +699,8 @@ describe('the built-in transport (the real SDK on a fake fetch)', () => {
   })
 
   it.each([
-    [401, 'authentication_error', 'no-key'],
+    [401, 'authentication_error', 'key-rejected'],
+    [401, 'invalid_request_error', 'key-rejected'],
     [429, 'rate_limit_error', 'limit-reached'],
     [402, 'billing_error', 'limit-reached'],
     [400, 'billing_error', 'limit-reached'],
