@@ -64,6 +64,10 @@ const DATE_TOKEN = /^\d{1,4}\/\d{1,2}\/\d{1,4}$/
 const UNC_OR_ENV_START =
   /^(?:\\\\|\/\/|file:|%[A-Za-z_][A-Za-z0-9_()]*%|~[\\/]|\$(?:HOME|USERPROFILE|APPDATA|LOCALAPPDATA|env:[A-Za-z_]\w*))/i
 const MODS_PART = /(?:^|[\\/])mods[\\/]/i
+// A file extension that ends a path in a sentence: what follows it is ordinary text again.
+const PATH_FILE_END = /\.[A-Za-z0-9]{1,12}(?=$|[\s'")\]},;|<>*?]|:(?:\s|$))/g
+// A mod file name is already relative to Mods, so a slash after any character is only the next folder.
+const MOD_FILE_REFUSED: readonly RegExp[] = [...ABS_OR_ENV_PATH_STARTS.slice(0, -1), /\/\//]
 
 function firstMatch(text: string, patterns: readonly RegExp[]): number {
   let first = -1
@@ -125,7 +129,7 @@ function firstFreeTextPath(text: string): number {
 function redactPathTokens(text: string, redact: (text: string) => string): string {
   const base = redact(text)
   if (!base.includes('/') && !base.includes('\\')) return base
-  return base.replace(/[^\s'"()\[\]{},;:=]+/g, (token) =>
+  return base.replace(/[^\s'"()\[\]{},;:=|<>*?]+/g, (token) =>
     token.includes('/') || token.includes('\\') ? redact(token) : token
   )
 }
@@ -144,6 +148,21 @@ function insideMods(path: string): string | null {
 }
 
 /**
+ * Where a Mods path in a sentence ends: after its file extension, or at the first white space when it has none.
+ * A path with no Mods folder runs to the end, and the caller drops all of it.
+ */
+function modsPathEnd(path: string): number {
+  const mods = MODS_PART.exec(path)
+  if (!mods) return path.length
+  const from = mods.index + mods[0].length
+  PATH_FILE_END.lastIndex = from
+  const fileEnd = PATH_FILE_END.exec(path)
+  if (fileEnd) return fileEnd.index + fileEnd[0].length
+  const space = path.slice(from).search(/\s/)
+  return space === -1 ? path.length : from + space
+}
+
+/**
  * Redacts and strips paths from free text, collapsing newlines onto one line so a split path or
  * username after a line break cannot slip through and a mod name cannot forge preview sections.
  */
@@ -151,19 +170,30 @@ function cleanFreeText(text: string, redact: (text: string) => string): string {
   const rawLines = text.split(/\r\n|\r|\n/)
   const out: string[] = []
   for (const rawLine of rawLines) {
-    const redacted = redactPathTokens(rawLine, redact)
-    const start = firstFreeTextPath(redacted)
-    if (start === -1) {
-      out.push(redacted)
-      continue
+    let rest = redactPathTokens(rawLine, redact)
+    let line = ''
+    let cut = false
+    for (;;) {
+      const start = firstFreeTextPath(rest)
+      if (start === -1) {
+        line += rest
+        break
+      }
+      const path = rest.slice(start)
+      const end = modsPathEnd(path)
+      const mods = insideMods(path.slice(0, end))
+      if (mods === null) {
+        line += `${rest.slice(0, start)}<path>`
+        cut = true
+        break
+      }
+      // Text after the Mods path is scanned again: a second path there must not ride along.
+      line += `${rest.slice(0, start)}${mods}`
+      rest = path.slice(end)
     }
-    const mods = insideMods(redacted.slice(start))
-    if (mods === null) {
-      // A non-Mods path may wrap across later lines, so drop the rest of the field from here.
-      out.push(`${redacted.slice(0, start)}<path>`)
-      break
-    }
-    out.push(`${redacted.slice(0, start)}${mods}`)
+    out.push(line)
+    // A non-Mods path may wrap across later lines, so drop the rest of the field from here.
+    if (cut) break
   }
   return redact(out.join(' ').replace(/ {2,}/g, ' ').trim())
 }
@@ -171,7 +201,7 @@ function cleanFreeText(text: string, redact: (text: string) => string): string {
 /** A frame keeps its place in Mods, or else only its folder and file name: never the rest of the path. */
 function framePath(rawPath: string, redact: (text: string) => string): string {
   if (/[\r\n]/.test(rawPath)) return '<path>'
-  const stripped = redact(rawPath).trim().replace(/^(['"])(.*)\1$/, '$2')
+  const stripped = redactPathTokens(rawPath, redact).trim().replace(/^(['"])(.*)\1$/, '$2')
   if (stripped === '' || BARE_SAVES_OR_TRAY.test(stripped) || SAVES_OR_TRAY_PATH.test(stripped)) return '<path>'
   if (HAS_PARENT_REF.test(stripped) || UNC_OR_ENV_START.test(stripped)) return '<path>'
   if (firstFreeTextPath(stripped) === -1 && !stripped.includes('\\')) return stripped
@@ -185,14 +215,14 @@ function framePath(rawPath: string, redact: (text: string) => string): string {
 
 function modFilePath(file: string, redact: (text: string) => string): string {
   if (/[\r\n]/.test(file)) return '<path>'
-  const normalized = redact(file).replace(/\\/g, '/')
+  const normalized = redactPathTokens(file.replace(/\\/g, '/'), redact)
   if (
     normalized === '' ||
     normalized.startsWith('/') ||
     HAS_PARENT_REF.test(normalized) ||
     UNC_OR_ENV_START.test(normalized) ||
     SAVES_OR_TRAY_PATH.test(normalized) ||
-    firstMatch(normalized, ABS_OR_ENV_PATH_STARTS) !== -1
+    firstMatch(normalized, MOD_FILE_REFUSED) !== -1
   ) {
     return '<path>'
   }
