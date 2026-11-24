@@ -54,6 +54,31 @@ describe('listScriptEntries', () => {
     }
   })
 
+  it('reports a central directory that claims more entries than the file can hold as broken', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sims-scripts-lying-'))
+    try {
+      // A bare end-of-central-directory record: 65,535 entries claimed, none present.
+      const eocd = Buffer.alloc(22)
+      eocd.writeUInt32LE(0x06054b50, 0)
+      eocd.writeUInt16LE(0xffff, 8)
+      eocd.writeUInt16LE(0xffff, 10)
+      const lyingCount = join(dir, 'lying-count.ts4script')
+      await writeFile(lyingCount, eocd)
+      expect((await listScriptEntries(lyingCount)).status).toBe('broken')
+
+      // A small count whose directory starts past the end of the file: every name reads as empty.
+      const pastEnd = Buffer.concat([Buffer.alloc(200), eocd])
+      pastEnd.writeUInt16LE(2, 200 + 8)
+      pastEnd.writeUInt16LE(2, 200 + 10)
+      pastEnd.writeUInt32LE(10_000, 200 + 16)
+      const lyingOffset = join(dir, 'lying-offset.ts4script')
+      await writeFile(lyingOffset, pastEnd)
+      expect((await listScriptEntries(lyingOffset)).status).toBe('broken')
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('returns unreadable when the script file cannot be opened', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'sims-scripts-missing-'))
     try {

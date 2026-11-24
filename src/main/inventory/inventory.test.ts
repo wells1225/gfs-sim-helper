@@ -350,6 +350,28 @@ describe('buildInventory safety and edge cases', () => {
     }
   })
 
+  it('lists files in a linked folder under their real path, not under a link walked first', async () => {
+    const workDir = await realpath(await mkdtemp(join(tmpdir(), 'sims-inv-shadow-')))
+    try {
+      const modsDir = join(workDir, 'Mods')
+      const early = join(modsDir, 'aaa')
+      const late = join(modsDir, 'zzz')
+      await mkdir(early, { recursive: true })
+      await mkdir(late, { recursive: true })
+      await writeFile(join(late, 'real.package'), writeDbpf({ keys: [{ type: 1, group: 0, instance: 1n }] }))
+
+      // aaa/ is walked before zzz/, so a link inside it reaches zzz/ first.
+      const dirLinkType = process.platform === 'win32' ? 'junction' : 'dir'
+      await symlink(late, join(early, 'link_to_zzz'), dirLinkType)
+
+      const inv = await buildInventory({ modsDir, curseForgeInstanceFile: null })
+      assertGroupingInvariants(inv)
+      expect(inv.files.map((f) => [f.relPath, f.depth, f.groupId])).toEqual([['zzz/real.package', 1, 'dir:zzz']])
+    } finally {
+      await rm(workDir, { recursive: true, force: true })
+    }
+  })
+
   it('returns modsDirState missing and empty lists when Mods does not exist', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'sims-inv-missing-'))
     try {
