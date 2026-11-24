@@ -56,11 +56,11 @@ describe('UpdateBanner', () => {
     expect(callsTo(api, 'update:check')).toEqual([{ channel: 'update:check', req: { by: 'start' } }])
   })
 
-  it('checks again every 24 hours, as a start check', async () => {
+  it('asks again every hour as a start check, which the main process lets through once a day', async () => {
     vi.useFakeTimers()
     const { api } = show({ 'update:check': IDLE })
     await settle()
-    await act(() => vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000))
+    await act(() => vi.advanceTimersByTimeAsync(60 * 60 * 1000))
     expect(callsTo(api, 'update:check').map((call) => call.req)).toEqual([{ by: 'start' }, { by: 'start' }])
   })
 
@@ -257,5 +257,36 @@ describe('UpdateRow', () => {
     await user.click(screen.getByRole('button', { name: 'Check for updates' }))
     expect(await screen.findByText('A new version is ready. You’ll find it at the top of this page.')).toBeInTheDocument()
     expect(screen.getByText('A new version of Sims Helper is ready.')).toBeInTheDocument()
+  })
+})
+
+describe('UpdateBanner with the real handlers', () => {
+  it('checks again within a day of the last check, even when the first check was stamped late', async () => {
+    vi.useFakeTimers()
+    const { updateHandlers } = await import('../../main/update/handlers.ts')
+    let checks = 0
+    const updater = {
+      state: (): UpdateState => IDLE,
+      check: async (): Promise<UpdateState> => {
+        checks += 1
+        return IDLE
+      },
+      download: async (): Promise<UpdateState> => IDLE,
+      install: (): UpdateInstall => ({ status: 'refused', why: 'not-ready' })
+    }
+    const handlers = updateHandlers({ updater, busy: () => false, clock: { now: () => new Date() } } as never)
+    // The main process answers a few milliseconds after the window asks, as it does in the app.
+    const late = async <T,>(call: () => Promise<T>) => {
+      await vi.advanceTimersByTimeAsync(5)
+      return await call()
+    }
+    show({
+      'update:check': (req) => late(() => handlers['update:check'](req)),
+      'update:get': () => handlers['update:get']()
+    })
+    await act(() => vi.advanceTimersByTimeAsync(10))
+    expect(checks).toBe(1)
+    await act(() => vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1000 + 60 * 60 * 1000))
+    expect(checks).toBe(2)
   })
 })

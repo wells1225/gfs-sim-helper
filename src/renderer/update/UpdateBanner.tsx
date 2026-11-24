@@ -3,11 +3,11 @@ import { toast } from 'sonner'
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert.tsx'
 import { Button } from '../components/ui/button.tsx'
 import { Progress } from '../components/ui/progress.tsx'
-import { CHECK_AGAIN_EVERY_MS, useUpdateStore } from './update-store.ts'
+import { ASK_AGAIN_EVERY_MS, useUpdateStore } from './update-store.ts'
 import { WORDS } from './words.ts'
 
 /**
- * Under the header, only when there is something to do. Checks when the app opens and every 24 hours; nothing
+ * Under the header, only when there is something to do. Checks when the app opens and again a day later; nothing
  * downloads until she clicks Update now, and nothing installs until she clicks Restart now.
  */
 export function UpdateBanner() {
@@ -16,7 +16,7 @@ export function UpdateBanner() {
 
   useEffect(() => {
     void store.checkOnStart()
-    const timer = setInterval(() => void store.checkOnStart(), CHECK_AGAIN_EVERY_MS)
+    const timer = setInterval(() => void store.checkOnStart(), ASK_AGAIN_EVERY_MS)
     return () => clearInterval(timer)
   }, [store])
 

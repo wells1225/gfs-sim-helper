@@ -4,7 +4,8 @@ import type { UpdateState } from '../../shared/model.ts'
 import { useApi } from '../api.tsx'
 
 export const POLL_EVERY_MS = 1000
-export const CHECK_AGAIN_EVERY_MS = 24 * 60 * 60 * 1000
+// The banner asks this often; the main process checks GitHub at most once in 24 hours (update/handlers.ts).
+export const ASK_AGAIN_EVERY_MS = 60 * 60 * 1000
 
 /** What the banner and the About row both show. One per window, so a check from About reaches the banner. */
 export interface UpdateView {
