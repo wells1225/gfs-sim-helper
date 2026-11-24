@@ -489,6 +489,100 @@ describe('check', () => {
   })
 })
 
+describe('a check that never gets an answer', () => {
+  const CHECKING: UpdateState = { state: 'checking', current: '0.2.0' }
+  const GAVE_UP: UpdateState = { state: 'failed', current: '0.2.0', step: 'check', why: 'error' }
+  const TWO_MINUTES = 2 * 60 * 1000
+
+  /** An updater whose clock the test moves by hand, with a check the engine has not answered. */
+  function hung() {
+    const clock = { at: NOW.getTime() }
+    const made = make({}, { now: () => new Date(clock.at) })
+    const gate = pending<CheckResult>()
+    made.fake.check.mockReturnValue(gate.promise)
+    const first = made.updater.check()
+    return { ...made, clock, gate, first }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('is still checking just before two minutes', () => {
+    const { updater, clock } = hung()
+    clock.at += TWO_MINUTES - 1
+    expect(updater.state()).toEqual(CHECKING)
+  })
+
+  it('is a failed check after two minutes, calm and with no error text', () => {
+    const { updater, clock } = hung()
+    clock.at += TWO_MINUTES
+    expect(updater.state()).toEqual(GAVE_UP)
+  })
+
+  it('a late answer does not flip the state back, and the first check ends with the failed state', async () => {
+    const { updater, clock, gate, first } = hung()
+    clock.at += TWO_MINUTES
+    expect(updater.state()).toEqual(GAVE_UP)
+    gate.resolve(found('0.3.0'))
+    expect(await first).toEqual(GAVE_UP)
+    expect(updater.state()).toEqual(GAVE_UP)
+    expect(await updater.download()).toEqual(GAVE_UP)
+  })
+
+  it('a late error does not change the state either, and is not left unhandled', async () => {
+    const { updater, clock, gate, first } = hung()
+    clock.at += TWO_MINUTES
+    expect(updater.state()).toEqual(GAVE_UP)
+    gate.reject(new Error('net::ERR_INTERNET_DISCONNECTED'))
+    expect(await first).toEqual(GAVE_UP)
+    expect(updater.state()).toEqual(GAVE_UP)
+  })
+
+  it('she can try again after two minutes, and the new check has two minutes of its own', async () => {
+    const { updater, fake, clock, gate, first } = hung()
+    clock.at += TWO_MINUTES
+    const second = pending<CheckResult>()
+    fake.check.mockReturnValue(second.promise)
+    const again = updater.check()
+    expect(fake.check).toHaveBeenCalledTimes(2)
+    expect(updater.state()).toEqual(CHECKING)
+    clock.at += TWO_MINUTES - 1
+    expect(updater.state()).toEqual(CHECKING)
+
+    gate.resolve(found('0.9.0')) // the first check's late answer says nothing about the second
+    expect(await first).toEqual(CHECKING)
+
+    second.resolve(found('0.3.0'))
+    expect(await again).toEqual(AVAILABLE)
+  })
+
+  it('the waiting call itself ends after two minutes, so the screen is not left waiting', async () => {
+    vi.useFakeTimers()
+    const { updater, gate, first } = hung()
+    let ended: UpdateState | null = null
+    void first.then((state) => (ended = state))
+    await vi.advanceTimersByTimeAsync(TWO_MINUTES - 1)
+    expect(ended).toBeNull()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(ended).toEqual(GAVE_UP)
+    expect(updater.state()).toEqual(GAVE_UP)
+    gate.resolve(found('0.3.0'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(updater.state()).toEqual(GAVE_UP)
+  })
+
+  it('an answer in time leaves no timer behind', async () => {
+    vi.useFakeTimers()
+    const { updater, fake } = make()
+    fake.check.mockResolvedValue(found('0.3.0'))
+    expect(await updater.check()).toEqual(AVAILABLE)
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(TWO_MINUTES)
+    expect(updater.state()).toEqual(AVAILABLE)
+  })
+})
+
 describe('download', () => {
   it('does nothing unless an update is available', async () => {
     const { updater, fake } = make()
