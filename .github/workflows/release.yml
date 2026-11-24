@@ -73,9 +73,17 @@ jobs:
         run: |
           set -euo pipefail
           # The release GitHub marks as latest: never a draft or a pre-release, the one installed copies see.
-          tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)
+          # Only "release not found" means there is none yet; any other error fails, so the proof is never skipped by mistake.
+          if tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>err.txt); then
+            [ -n "$tag" ] || { echo "gh gave no tag for the latest release"; exit 1; }
+            echo "Newest published release: $tag"
+          elif grep -q 'release not found' err.txt; then
+            tag=''
+            echo "No published release yet: the update proof is skipped for this first one."
+          else
+            cat err.txt; exit 1
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          if [ -z "$tag" ]; then echo "No published release yet: the update proof is skipped for this first one."; fi
 
       - name: Download and install the newest published release
         if: steps.last.outputs.tag != ''

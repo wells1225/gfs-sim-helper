@@ -10,13 +10,17 @@ const READY: UpdateState = { state: 'ready', current: '0.2.0', next: '0.3.0' }
 const FAILED: UpdateState = { state: 'failed', current: '0.2.0', step: 'download', why: 'bad-file' }
 const IDLE: UpdateState = { state: 'idle', current: '0.2.0', checkedAt: '2026-11-24T10:00:00.000Z', justUpdated: false }
 
-// The welcome screen sits under the banner: it reads only settings, so the shots stay the same as other PRs land.
+// Every shot is taken on About, which reads nothing, so the page under the banner stays the same as other PRs land.
 const WELCOME = { welcome: 'not-seen', folderPath: null } as const
 
 test('captures light and dark screenshots of each update state', async () => {
   const running = await launchApp()
   try {
     const { app, page } = running
+    const openAbout = async () => {
+      await page.getByRole('navigation', { name: 'Primary' }).getByRole('button', { name: 'About' }).click()
+      await page.mouse.move(480, 600) // no hover left on the nav in the shot
+    }
 
     const banners: [string, UpdateState, string][] = [
       ['banner-available', AVAILABLE, 'A new version of Sims Helper is ready.'],
@@ -26,12 +30,13 @@ test('captures light and dark screenshots of each update state', async () => {
     ]
     for (const [name, state, text] of banners) {
       await stubIpc(app, { 'settings:get': WELCOME, 'update:check': state, 'update:get': state })
+      await openAbout()
       await expect(page.getByText(text)).toBeVisible()
       await shoot(page, SLUG, name)
     }
 
     await stubIpc(app, { 'settings:get': WELCOME, 'update:check': IDLE, 'update:get': IDLE })
-    await page.getByRole('navigation', { name: 'Primary' }).getByRole('button', { name: 'About' }).click()
+    await openAbout()
     await expect(page.getByText('Version 0.2.0')).toBeVisible()
     await page.getByRole('button', { name: 'Check for updates' }).click()
     await expect(page.getByText('You have the newest version.')).toBeVisible()

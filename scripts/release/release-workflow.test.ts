@@ -69,3 +69,10 @@ describe('release.yml', () => {
     for (const uses of publish.match(/uses: \S+/g) ?? []) expect(uses).toMatch(/@[0-9a-f]{40}$/)
   })
 })
+
+describe('release.yml, the proof', () => {
+  it('skips the update proof only when GitHub says there is no release, never on another error', () => {
+    expect(build).toContain("grep -q 'release not found' err.txt")
+    expect(build).not.toMatch(/gh release view[^\n]*\|\| true/)
+  })
+})
