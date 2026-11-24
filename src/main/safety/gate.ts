@@ -731,8 +731,10 @@ async function carryOut(
       // Both exist now. Take the copy back only while the source is surely still there, and only from
       // where the gate put it. A copy that stays is named in the answer.
       const still = await lstatOrNull(op.from).catch(() => null)
-      if (!still?.isFile() || still.size !== source.size) throw err
-      const kept = await takeCopyBack(op.to, source, targetStillHolds)
+      const kept =
+        still?.isFile() && still.size === source.size
+          ? await takeCopyBack(op.to, source, targetStillHolds)
+          : 'the source is no longer surely there'
       if (kept === null) throw err
       throw new OpFailure(`${explain(err)}, and the copy at the target was left in place: ${kept}`)
     }
