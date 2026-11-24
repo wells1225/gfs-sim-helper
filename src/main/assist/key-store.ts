@@ -21,7 +21,7 @@ const ANSWER_TOKENS_AT_MOST = 4096
 // Without this room a short answer budget can be used up before any text is written.
 const THINKING_TOKENS = 2048
 
-const FAIL_REASONS: readonly FailReason[] = ['no-key', 'declined', 'offline', 'limit-reached', 'error']
+const FAIL_REASONS: readonly FailReason[] = ['no-key', 'key-rejected', 'declined', 'offline', 'limit-reached', 'error']
 
 function failed(why: FailReason): AssistReply {
   return { status: 'failed', why }
@@ -137,7 +137,9 @@ export async function sendWithKey(deps: KeyStoreDeps, message: AssistMessage): P
 /** Reads only the error's class and type, never its message: the message can hold the key or her paths. */
 function reasonFor(error: unknown): FailReason {
   if (error instanceof Anthropic.APIConnectionError) return 'offline' // timeouts too
-  if (error instanceof Anthropic.AuthenticationError) return 'no-key' // the stored key no longer works
+  // HTTP 401: the stored key no longer works. 'no-key' is only for a key that is not stored.
+  if (error instanceof Anthropic.AuthenticationError) return 'key-rejected'
+  if (error instanceof Anthropic.APIError && error.status === 401) return 'key-rejected'
   if (error instanceof Anthropic.RateLimitError) return 'limit-reached'
   if (error instanceof Anthropic.APIError && (error.status === 402 || error.type === 'billing_error')) {
     return 'limit-reached' // the account is out of credit
