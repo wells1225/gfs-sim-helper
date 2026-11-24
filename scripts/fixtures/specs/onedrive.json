@@ -1,0 +1,57 @@
+{
+  "name": "onedrive",
+  "description": "Active Sims 4 user folder synced inside OneDrive/Documents plus an older stale local Documents folder.",
+  "seed": 6006,
+  "baseTime": "2026-11-22T15:00:00.000Z",
+  "gameInstall": {
+    "relPath": "Program Files/EA Games/The Sims 4",
+    "version": "1.129.39.1030",
+    "packs": ["EP01", "EP02", "GP02", "SP18"]
+  },
+  "userFolders": [
+    {
+      "relPath": "Users/Lila/OneDrive/Documents/Electronic Arts/The Sims 4",
+      "gameVersion": "1.129.39.1030",
+      "gameVersionMtime": "2026-11-22T15:00:00.000Z",
+      "folderMtime": "2026-11-22T15:00:00.000Z",
+      "options": {
+        "modsdisabled": 0,
+        "scriptmodsenabled": 1,
+        "showmodliststartup": 1
+      },
+      "resourceCfgDepth": 5,
+      "thumbCacheMtime": "2026-11-22T15:00:00.000Z",
+      "packages": [
+        {
+          "relPath": "CAS/new_jacket.package",
+          "mtime": "2026-11-22T14:30:00.000Z",
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0006000000000001" }
+          ]
+        }
+      ]
+    },
+    {
+      "relPath": "Users/Lila/Documents/Electronic Arts/The Sims 4",
+      "gameVersion": "1.125.12.1030",
+      "gameVersionMtime": "2026-09-10T10:00:00.000Z",
+      "folderMtime": "2026-09-10T10:00:00.000Z",
+      "options": {
+        "modsdisabled": 0,
+        "scriptmodsenabled": 1,
+        "showmodliststartup": 1
+      },
+      "resourceCfgDepth": 5,
+      "thumbCacheMtime": "2026-09-10T10:00:00.000Z",
+      "packages": [
+        {
+          "relPath": "CAS/old_shoes.package",
+          "mtime": "2026-09-09T08:00:00.000Z",
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0006000000000002" }
+          ]
+        }
+      ]
+    }
+  ]
+}

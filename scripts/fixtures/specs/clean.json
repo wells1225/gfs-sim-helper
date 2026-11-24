@@ -1,0 +1,60 @@
+{
+  "name": "clean",
+  "description": "Healthy Sims 4 Windows setup with valid mods, fresh caches, and no crash logs.",
+  "seed": 1001,
+  "baseTime": "2026-11-20T18:00:00.000Z",
+  "gameInstall": {
+    "relPath": "Program Files/EA Games/The Sims 4",
+    "version": "1.129.39.1030",
+    "packs": ["EP01", "EP02", "GP02", "SP18", "FP01"],
+    "deltaOnlyPacks": ["EP15"]
+  },
+  "userFolders": [
+    {
+      "relPath": "Users/Lila/Documents/Electronic Arts/The Sims 4",
+      "gameVersion": "1.129.39.1030",
+      "gameVersionMtime": "2026-11-10T18:00:00.000Z",
+      "options": {
+        "modsdisabled": 0,
+        "scriptmodsenabled": 1,
+        "showmodliststartup": 1
+      },
+      "resourceCfgDepth": 5,
+      "thumbCacheMtime": "2026-11-20T18:00:00.000Z",
+      "packages": [
+        {
+          "relPath": "cozy_rug.package",
+          "mtime": "2026-11-15T12:00:00.000Z",
+          "keys": [
+            { "type": "0x319E4F1D", "group": "0x00000000", "instance": "0x0001000000001001" },
+            { "type": "0x220557DA", "group": "0x00000000", "instance": "0x0001000000001002" }
+          ]
+        },
+        {
+          "relPath": "CAS/Hair/lila_waves.package",
+          "mtime": "2026-11-15T12:05:00.000Z",
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x8000000100002001" }
+          ]
+        },
+        {
+          "relPath": "BuildBuy/Kitchen/pastel_kettle.package",
+          "mtime": "2026-11-15T12:10:00.000Z",
+          "keys": [
+            { "type": "0x03B33DDF", "group": "0x00000003", "instance": "0x0000000000030001" }
+          ]
+        }
+      ],
+      "scripts": [
+        {
+          "relPath": "MCCC/mc_cmd_center.ts4script",
+          "mtime": "2026-11-15T12:15:00.000Z",
+          "entries": [
+            "mc_cmd_center/__init__.pyc",
+            "mc_cmd_center/mc_utils.pyc"
+          ]
+        }
+      ]
+    }
+  ]
+}

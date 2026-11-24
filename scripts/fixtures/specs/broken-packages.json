@@ -1,0 +1,96 @@
+{
+  "name": "broken-packages",
+  "description": "Valid DBPF 2.1 packages alongside bad-magic, truncated-index, truncated-header, Sims 3 (2.0) packages, and unextracted .zip archives.",
+  "seed": 5005,
+  "baseTime": "2026-11-20T18:00:00.000Z",
+  "gameInstall": {
+    "relPath": "Program Files/EA Games/The Sims 4",
+    "version": "1.129.39.1030",
+    "packs": ["EP01", "GP02", "SP18"]
+  },
+  "userFolders": [
+    {
+      "relPath": "Users/Lila/Documents/Electronic Arts/The Sims 4",
+      "gameVersion": "1.129.39.1030",
+      "gameVersionMtime": "2026-11-10T18:00:00.000Z",
+      "options": {
+        "modsdisabled": 0,
+        "scriptmodsenabled": 1,
+        "showmodliststartup": 1
+      },
+      "resourceCfgDepth": 5,
+      "thumbCacheMtime": "2026-11-20T18:00:00.000Z",
+      "packages": [
+        {
+          "relPath": "good_plain.package",
+          "mtime": "2026-11-15T12:00:00.000Z",
+          "variant": "valid",
+          "keys": [
+            { "type": "0x03B33DDF", "group": "0x00000000", "instance": "0x0005000000000001" },
+            { "type": "0x545AC67A", "group": "0x00000003", "instance": "0xFEDCBA9876543210" }
+          ]
+        },
+        {
+          "relPath": "good_constant_flags.package",
+          "mtime": "2026-11-15T12:05:00.000Z",
+          "variant": "valid",
+          "constantFlags": 3,
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0005000000000010" },
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0005000100000011" }
+          ]
+        },
+        {
+          "relPath": "corrupt_bad_magic.package",
+          "mtime": "2026-11-15T12:10:00.000Z",
+          "variant": "bad-magic",
+          "keys": [
+            { "type": "0x03B33DDF", "group": "0x00000000", "instance": "0x0005000000000020" }
+          ]
+        },
+        {
+          "relPath": "corrupt_truncated_index.package",
+          "mtime": "2026-11-15T12:15:00.000Z",
+          "variant": "truncated-index",
+          "keys": [
+            { "type": "0x03B33DDF", "group": "0x00000000", "instance": "0x0005000000000030" },
+            { "type": "0x545AC67A", "group": "0x00000000", "instance": "0x0005000000000031" }
+          ]
+        },
+        {
+          "relPath": "wrong_game_sims3.package",
+          "mtime": "2026-11-15T12:20:00.000Z",
+          "variant": "sims3",
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0005000000000040" }
+          ]
+        },
+        {
+          "relPath": "corrupt_short_header.package",
+          "mtime": "2026-11-15T12:25:00.000Z",
+          "variant": "truncated-header",
+          "keys": [
+            { "type": "0x03B33DDF", "group": "0x00000000", "instance": "0x0005000000000050" }
+          ]
+        }
+      ],
+      "archives": [
+        {
+          "relPath": "Unextracted_CC_Bundle.zip",
+          "mtime": "2026-11-15T12:30:00.000Z",
+          "entries": [
+            { "name": "README.txt", "content": "Unzip this folder into Mods." },
+            { "name": "chair_set.package", "content": "placeholder-zipped-package" }
+          ]
+        },
+        {
+          "relPath": "Downloads/ZippedScriptMod.zip",
+          "mtime": "2026-11-15T12:35:00.000Z",
+          "entries": [
+            { "name": "cool_script.ts4script", "content": "placeholder-zipped-script" }
+          ]
+        }
+      ]
+    }
+  ]
+}

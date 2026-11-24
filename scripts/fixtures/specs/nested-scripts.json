@@ -1,0 +1,74 @@
+{
+  "name": "nested-scripts",
+  "description": "French user folder with U+00A0 no-break spaces, custom 3-level Resource.cfg, nested .ts4script mods, and deep .package files.",
+  "seed": 3003,
+  "baseTime": "2026-11-20T18:00:00.000Z",
+  "gameInstall": {
+    "relPath": "Program Files/EA Games/The Sims 4",
+    "version": "1.129.39.1030",
+    "packs": ["EP01", "GP02", "SP18"]
+  },
+  "userFolders": [
+    {
+      "relPath": "Users/Lila/Documents/Electronic Arts/Les\u00A0Sims\u00A04",
+      "gameVersion": "1.129.39.1030",
+      "gameVersionMtime": "2026-11-10T18:00:00.000Z",
+      "options": {
+        "modsdisabled": 0,
+        "scriptmodsenabled": 1,
+        "showmodliststartup": 1
+      },
+      "resourceCfgDepth": 3,
+      "thumbCacheMtime": "2026-11-20T18:00:00.000Z",
+      "packages": [
+        {
+          "relPath": "CAS/good_dress.package",
+          "mtime": "2026-11-15T12:00:00.000Z",
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0003000000000001" }
+          ]
+        },
+        {
+          "relPath": "CAS/Outfits/Formal/Winter/too_deep_for_cfg.package",
+          "mtime": "2026-11-15T12:05:00.000Z",
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0003000000000002" }
+          ]
+        },
+        {
+          "relPath": "CAS/Outfits/Formal/Winter/Coats/Wool/too_deep_for_default.package",
+          "mtime": "2026-11-15T12:10:00.000Z",
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0003000000000003" }
+          ]
+        }
+      ],
+      "scripts": [
+        {
+          "relPath": "ValidMod/valid_helper.ts4script",
+          "mtime": "2026-11-15T12:15:00.000Z",
+          "entries": [
+            "valid_helper/__init__.pyc",
+            "valid_helper/core.pyc"
+          ]
+        },
+        {
+          "relPath": "ScriptMods/CoolMod/cool_mod.ts4script",
+          "mtime": "2026-11-15T12:20:00.000Z",
+          "entries": [
+            "cool_mod/__init__.pyc",
+            "cool_mod/tweaks.pyc"
+          ]
+        },
+        {
+          "relPath": "Gameplay/Tweaks/DeepMod/deep_mod.ts4script",
+          "mtime": "2026-11-15T12:25:00.000Z",
+          "entries": [
+            "deep_mod/__init__.pyc",
+            "deep_mod/runner.pyc"
+          ]
+        }
+      ]
+    }
+  ]
+}
