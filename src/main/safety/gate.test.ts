@@ -32,6 +32,7 @@ const disk = vi.hoisted(() => ({
   realpathFails: null as null | { under: string; code: string; hits: number },
   beforeRealpath: null as null | ((target: string) => Promise<void>),
   statFails: null as null | { file: string; code: string; hits: number },
+  statAs: null as null | { file: string; as: string },
   readdirFails: null as null | { under: string; code: string; hits: number },
   foldersRead: [] as string[],
   unlinkFails: null as null | { file: string; hits: number },
@@ -94,6 +95,8 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       return await real.readdir(folder, options as undefined)
     }) as unknown as typeof real.readdir,
     stat: (async (target: string, options?: object) => {
+      // One path answers as another: a drive root that holds Options.ini, which no test machine has.
+      if (disk.statAs && String(target) === disk.statAs.file) return await real.stat(disk.statAs.as, options)
       if (disk.statFails && String(target) === disk.statFails.file) {
         disk.statFails.hits += 1
         throw errno(disk.statFails.code, 'stat')
@@ -234,6 +237,7 @@ afterEach(async () => {
   disk.realpathFails = null
   disk.beforeRealpath = null
   disk.statFails = null
+  disk.statAs = null
   disk.readdirFails = null
   disk.foldersRead = []
   disk.unlinkFails = null
@@ -695,6 +699,15 @@ describe('the Sims folder', () => {
         })
       }
     }
+  })
+
+  // Decided 2026-11-24: a drive root is never the Sims folder, even when it holds Options.ini. No root on a
+  // test machine holds one, so stat is told it does. ops is empty, so nothing could land on a real root.
+  it('refuses a drive or filesystem root that holds Options.ini', async () => {
+    const w = await makeWorld()
+    const root = parse(w.root).root
+    disk.statAs = { file: join(root, 'Options.ini'), as: w.inFolder('Options.ini') }
+    await expectRefusal(w, () => w.run([], { folderPath: root }), { reason: 'not-a-sims-folder', path: root })
   })
 
   it.runIf(ON_WINDOWS)('refuses C:\\Windows', async () => {
