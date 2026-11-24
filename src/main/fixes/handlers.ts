@@ -7,19 +7,24 @@ import { extractGroupLabel } from './index.ts'
 
 export type FixChannel = 'backup:status' | 'fix:apply' | 'journal:list' | 'journal:undo' | 'groups:disabled'
 
+/**
+ * Fails closed: only a missing file, or a file that plainly says the test is over, lets a fix through.
+ * A file that is there but cannot be read or understood counts as a test in progress.
+ */
 async function isFiftyFiftyRunning(stateDir: string): Promise<boolean> {
+  let raw: string
   try {
-    const raw = await readFile(join(stateDir, 'fiftyfifty.json'), 'utf8')
+    raw = await readFile(join(stateDir, 'fiftyfifty.json'), 'utf8')
+  } catch (err) {
+    return (err as NodeJS.ErrnoException | null)?.code !== 'ENOENT'
+  }
+  try {
     const parsed: unknown = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && 'phase' in parsed) {
-      const phase = (parsed as { phase?: unknown }).phase
-      if (typeof phase === 'string') {
-        return phase !== 'found' && phase !== 'stopped'
-      }
-    }
-    return false
+    if (!parsed || typeof parsed !== 'object') return true
+    const phase = (parsed as { phase?: unknown }).phase
+    return phase !== 'found' && phase !== 'stopped'
   } catch {
-    return false
+    return true
   }
 }
 

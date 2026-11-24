@@ -318,3 +318,41 @@ describe('review: a fix that throws comes back as a calm refusal', () => {
     expect(JSON.stringify(res)).not.toContain('lila')
   })
 })
+
+describe('last check: an unreadable fiftyfifty.json blocks fixes', () => {
+  it('treats a file it cannot read or understand as a 50/50 test in progress, for fix:apply and journal:undo', async () => {
+    const { ctx } = await makeContext()
+    ctx.session.scan = sampleScan()
+    const handlers = fixHandlers(ctx)
+    const stateFile = join(ctx.paths.stateDir, 'fiftyfifty.json')
+    const refused = { status: 'refused', refusal: { why: 'fifty-fifty-running' } }
+
+    for (const text of ['{ "phase": "awaiting', '', '{}', 'null', '[]', '{"phase":5}', '{"phase":null}']) {
+      await writeFile(stateFile, text, 'utf8')
+      expect(
+        await handlers['fix:apply']({ via: 'finding', findingId: 'mods-off', fix: 'turn-mods-on' }),
+        `fix:apply with ${JSON.stringify(text)}`
+      ).toEqual(refused)
+      expect(
+        await handlers['fix:apply']({ via: 'group', fix: 'disable-group', groupId: 'dir:hair' }),
+        `disable-group with ${JSON.stringify(text)}`
+      ).toEqual(refused)
+      expect(await handlers['journal:undo']({ entryId: 'e-1' }), `journal:undo with ${JSON.stringify(text)}`).toEqual(
+        refused
+      )
+    }
+
+    // Something that is there but is not a readable file (works the same on Windows and macOS).
+    await rm(stateFile)
+    await mkdir(stateFile)
+    expect(await handlers['fix:apply']({ via: 'finding', findingId: 'mods-off', fix: 'turn-mods-on' })).toEqual(refused)
+  })
+
+  it('still lets fixes through when there is no fiftyfifty.json at all', async () => {
+    const { ctx } = await makeContext()
+    ctx.session.scan = sampleScan()
+    const handlers = fixHandlers(ctx)
+    const res = await handlers['fix:apply']({ via: 'finding', findingId: 'mods-off', fix: 'turn-mods-on' })
+    expect(res.status).toBe('done')
+  })
+})
