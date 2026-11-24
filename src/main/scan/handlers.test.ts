@@ -151,6 +151,25 @@ describe('scanHandlers', () => {
     expect(emitted.length).toBeGreaterThan(0)
   })
 
+  it('refuses a folderPath that is not a string without writing or scanning', async () => {
+    const { ctx, gateRequests } = await makeFixtureEnv()
+    const handlers = scanHandlers(ctx)
+    const scanSpy = vi.spyOn(ctx.scan, 'buildInventory')
+
+    for (const req of [null, undefined, {}, { folderPath: 42 }, { folderPath: ['C:\\x'] }]) {
+      const result = await handlers['scan:run'](req as unknown as { folderPath: string; symptom: 'closes' })
+      expect(result.status).toBe('failed')
+      if (result.status === 'failed') expect(result.why).toBe('folder-not-found')
+    }
+    expect(scanSpy).not.toHaveBeenCalled()
+    expect(ctx.session.scan).toBeNull()
+
+    for (const patch of [{ folderPath: 42 }, { folderPath: { path: 'x' } }, 'seen', 7]) {
+      await expect(handlers['settings:update'](patch as unknown as { folderPath: string })).rejects.toThrow()
+    }
+    expect(gateRequests).toHaveLength(0)
+  })
+
   it('locates folders, checks game state, builds a report after a scan, and reveals it', async () => {
     const { simsDir, desktopDir, ctx, revealed } = await makeFixtureEnv()
     const gameSpy = vi.spyOn(ctx, 'gameState')

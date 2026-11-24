@@ -67,26 +67,31 @@ export function scanHandlers(ctx: AppContext): Handlers<ScanChannel> {
     },
 
     async 'settings:update'(patch) {
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        throw new Error('Settings update must be an object')
+      }
+      const { welcome, folderPath } = patch as Record<string, unknown>
+      if (welcome !== undefined && welcome !== 'seen' && welcome !== 'not-seen') {
+        throw new Error('Unknown welcome value')
+      }
+      if (folderPath !== undefined && folderPath !== null && typeof folderPath !== 'string') {
+        throw new Error('folderPath must be text or null')
+      }
+
       const current = await readSettings(settingsPath)
       const next: Settings = { ...current }
-
-      if (patch && typeof patch === 'object') {
-        if (patch.welcome === 'seen' || patch.welcome === 'not-seen') {
-          next.welcome = patch.welcome
+      if (welcome !== undefined) {
+        next.welcome = welcome
+      }
+      if (folderPath === null) {
+        next.folderPath = null
+      } else if (typeof folderPath === 'string') {
+        const located = await runLocate(ctx)
+        const matched = located.folders.find((f) => sameFolderPath(f.path, folderPath))
+        if (!matched) {
+          throw new Error('Selected folder was not found among your Sims 4 folders')
         }
-
-        if (patch.folderPath !== undefined) {
-          if (patch.folderPath === null) {
-            next.folderPath = null
-          } else if (typeof patch.folderPath === 'string') {
-            const located = await runLocate(ctx)
-            const matched = located.folders.find((f) => sameFolderPath(f.path, patch.folderPath as string))
-            if (!matched) {
-              throw new Error('Selected folder was not found among your Sims 4 folders')
-            }
-            next.folderPath = matched.path
-          }
-        }
+        next.folderPath = matched.path
       }
 
       const gateResult = await ctx.gate.run({
@@ -118,8 +123,10 @@ export function scanHandlers(ctx: AppContext): Handlers<ScanChannel> {
     },
 
     async 'scan:run'(req) {
+      const folderPath: unknown = req?.folderPath
       const located = await runLocate(ctx)
-      const folder = located.folders.find((f) => sameFolderPath(f.path, req.folderPath))
+      const folder =
+        typeof folderPath === 'string' ? located.folders.find((f) => sameFolderPath(f.path, folderPath)) : undefined
       if (!folder) {
         return {
           status: 'failed',
