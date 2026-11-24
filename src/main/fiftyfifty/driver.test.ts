@@ -1,0 +1,532 @@
+// @vitest-environment node
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import type {
+  DisabledGroup,
+  FiftyFifty,
+  FixOutcome,
+  FixRefusal,
+  JournalOrigin,
+  ModGroup,
+  Scan
+} from '../../shared/model.ts'
+import { sampleJournalEntry, sampleScan } from '../../shared/testing/sample.ts'
+import type { Host } from '../locate/host.ts'
+import type { AppPaths, Fixes, Gate, GateResult, GroupsOutcome, WriteRequest } from '../ports.ts'
+import { beginRound, finish, giveAnswer, loadState, start, stop, type FiftyDeps } from './index.ts'
+import { makeGroups } from './testing.ts'
+
+const FOLDER = 'C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4'
+const GAME_RUNNING: FixRefusal = { why: 'gate', refusal: { reason: 'game-running' } }
+
+/** The fake's "disk": which groups sit in the holding folder. */
+class FakeFixes implements Fixes {
+  aside = new Map<string, DisabledGroup>()
+  calls: { method: string; ids: string[]; origin?: JournalOrigin }[] = []
+  /** Queued answers for the next setAside / putBack / clearCaches calls. */
+  refuseNext: FixRefusal | null = null
+  partWayAfter: number | null = null
+  cacheOutcome: FixOutcome | null = null
+  private n = 0
+
+  async apply(): Promise<FixOutcome> {
+    throw new Error('the 50/50 test never calls apply')
+  }
+
+  private takeRefusal(): GroupsOutcome | null {
+    const refusal = this.refuseNext
+    if (!refusal) return null
+    this.refuseNext = null
+    return { status: 'refused', refusal }
+  }
+
+  async setAside(folderPath: string, groups: ModGroup[], origin: JournalOrigin): Promise<GroupsOutcome> {
+    expect(folderPath).toBe(FOLDER)
+    this.calls.push({ method: 'setAside', ids: groups.map((g) => g.id), origin })
+    const refused = this.takeRefusal()
+    if (refused) return refused
+    const entries = []
+    for (const [i, g] of groups.entries()) {
+      if (this.partWayAfter === i) {
+        this.partWayAfter = null
+        return { status: 'stopped-part-way', entries, detail: 'disk hiccup' }
+      }
+      if (this.aside.has(g.id)) throw new Error(`setAside twice: ${g.id}`)
+      const entryId = `e${++this.n}`
+      this.aside.set(g.id, { groupId: g.id, label: g.label, entryId, at: '2026-11-24T12:00:00.000Z' })
+      entries.push(sampleJournalEntry({ id: entryId, groupId: g.id, origin }))
+    }
+    return { status: 'done', entries }
+  }
+
+  async putBack(folderPath: string, groupIds: string[]): Promise<GroupsOutcome> {
+    expect(folderPath).toBe(FOLDER)
+    this.calls.push({ method: 'putBack', ids: [...groupIds] })
+    const refused = this.takeRefusal()
+    if (refused) return refused
+    const entries = []
+    for (const [i, id] of groupIds.entries()) {
+      if (this.partWayAfter === i) {
+        this.partWayAfter = null
+        return { status: 'stopped-part-way', entries, detail: 'disk hiccup' }
+      }
+      if (!this.aside.delete(id)) throw new Error(`putBack of a group not aside: ${id}`)
+      entries.push(sampleJournalEntry({ groupId: id }))
+    }
+    return { status: 'done', entries }
+  }
+
+  async clearCaches(folderPath: string): Promise<FixOutcome> {
+    expect(folderPath).toBe(FOLDER)
+    this.calls.push({ method: 'clearCaches', ids: [] })
+    const outcome = this.cacheOutcome
+    this.cacheOutcome = null
+    return outcome ?? { status: 'done', entry: sampleJournalEntry({ action: 'clear-caches' }) }
+  }
+
+  async disabledGroups(folderPath: string): Promise<DisabledGroup[]> {
+    expect(folderPath).toBe(FOLDER)
+    return [...this.aside.values()]
+  }
+
+  asideIds(): string[] {
+    return [...this.aside.keys()].sort()
+  }
+
+  moves(): number {
+    return this.calls.filter((c) => c.method !== 'clearCaches').length
+  }
+}
+
+/** A gate that really writes app data in a temp folder. mkdir refuses an existing folder and remove a missing file. */
+class FakeGate implements Gate {
+  requests: WriteRequest[] = []
+  next: GateResult | null = null
+
+  async run(request: WriteRequest): Promise<GateResult> {
+    this.requests.push(request)
+    const forced = this.next
+    this.next = null
+    if (forced) return forced
+    for (const op of request.ops) {
+      if (op.op === 'mkdir') await mkdir(op.path)
+      else if (op.op === 'write') await writeFile(op.path, op.data)
+      else if (op.op === 'remove') {
+        await stat(op.path)
+        await rm(op.path)
+      } else throw new Error(`unexpected op ${op.op}`)
+    }
+    return { status: 'done' }
+  }
+
+  stateWrites(): number {
+    return this.requests.filter((r) => r.ops.some((o) => o.op === 'write')).length
+  }
+}
+
+let tmp: string
+let paths: AppPaths
+let fixes: FakeFixes
+let gate: FakeGate
+let processes: string[] | Error
+
+function makeDeps(): FiftyDeps {
+  const host: Host = {
+    documentsDir: tmp,
+    env: {},
+    readRegistry: async () => undefined,
+    listProcesses: async () => {
+      if (processes instanceof Error) throw processes
+      return processes
+    },
+    fileVersion: async () => undefined
+  }
+  let ids = 0
+  return {
+    fixes,
+    gate,
+    paths,
+    host,
+    clock: { now: () => new Date('2026-11-24T12:10:00.000Z') },
+    newId: () => `20261124-121000-${String(++ids).padStart(4, '0')}`
+  }
+}
+
+function scanWith(groups: ModGroup[]): Scan {
+  const base = sampleScan()
+  return { ...base, folder: { ...base.folder, path: FOLDER }, inventory: { ...base.inventory, groups } }
+}
+
+function stateOf(result: { status: string; state?: FiftyFifty | null }): FiftyFifty {
+  expect(result.status).toBe('ok')
+  if (!result.state) throw new Error('no state')
+  return result.state
+}
+
+async function stateFileExists(): Promise<boolean> {
+  try {
+    await stat(join(paths.stateDir, 'fiftyfifty.json'))
+    return true
+  } catch {
+    return false
+  }
+}
+
+beforeEach(async () => {
+  tmp = await mkdtemp(join(tmpdir(), 'fifty-'))
+  const dataDir = join(tmp, 'SimsHelper')
+  paths = {
+    dataDir,
+    backupsDir: join(dataDir, 'backups'),
+    holdingDir: join(dataDir, 'holding'),
+    journalDir: join(dataDir, 'journal'),
+    stateDir: join(dataDir, 'state'),
+    keyFile: join(dataDir, 'assist', 'key.bin'),
+    desktopDir: join(tmp, 'Desktop'),
+    oneDriveRoots: [],
+    curseForgeInstanceFile: null
+  }
+  fixes = new FakeFixes()
+  gate = new FakeGate()
+  processes = ['explorer.exe', 'Overwolf.exe']
+})
+
+afterEach(async () => {
+  await rm(tmp, { recursive: true, force: true })
+})
+
+/** Plays a whole session: it crashes whenever the bad group is still in Mods. */
+async function playToFound(deps: FiftyDeps, badId: string): Promise<FiftyFifty> {
+  let state = stateOf(await beginRound(deps))
+  for (let guard = 0; state.phase !== 'found'; guard++) {
+    if (guard > 20) throw new Error('did not end')
+    expect(state.phase).toBe('awaiting-answer')
+    expect(fixes.asideIds()).toEqual([...state.parked].sort())
+    state = stateOf(await giveAnswer(deps, fixes.aside.has(badId) ? 'worked' : 'crashed'))
+  }
+  return state
+}
+
+describe('start', () => {
+  it('refuses without a scan or without a group', async () => {
+    const deps = makeDeps()
+    expect(await start(deps, null as unknown as Scan)).toEqual({
+      status: 'refused',
+      refusal: { why: 'out-of-date', detail: 'no-scan' }
+    })
+    expect(await start(deps, scanWith([]))).toEqual({
+      status: 'refused',
+      refusal: { why: 'out-of-date', detail: 'nothing-to-do' }
+    })
+    expect(gate.requests).toEqual([])
+    expect(await loadState(deps)).toBeNull()
+  })
+
+  it('saves the scanned groups through the gate and waits for CurseForge to close', async () => {
+    const deps = makeDeps()
+    const groups = makeGroups(8)
+    const state = stateOf(await start(deps, scanWith(groups)))
+    expect(state.phase).toBe('close-curseforge')
+    expect(state.folderPath).toBe(FOLDER)
+    expect(state.groups).toEqual(groups)
+    expect(state.startedAt).toBe('2026-11-24T12:10:00.000Z')
+    expect(fixes.calls).toEqual([])
+
+    const [req] = gate.requests
+    expect(req).toMatchObject({ reason: 'state', folderPath: null })
+    const write = req!.ops.find((o) => o.op === 'write')
+    expect(write).toMatchObject({ path: join(paths.stateDir, 'fiftyfifty.json'), mode: 'replace' })
+    expect(JSON.parse(await readFile(join(paths.stateDir, 'fiftyfifty.json'), 'utf8'))).toEqual(state)
+    expect(await loadState(deps)).toEqual(state)
+  })
+
+  it('returns the session already running instead of starting another', async () => {
+    const deps = makeDeps()
+    const first = stateOf(await start(deps, scanWith(makeGroups(8))))
+    const again = stateOf(await start(deps, scanWith(makeGroups(3))))
+    expect(again).toEqual(first)
+  })
+})
+
+describe('a full session', () => {
+  it('names the bad group of 64 in 6 rounds and put-back leaves nothing aside', async () => {
+    const deps = makeDeps()
+    const groups = makeGroups(64, 9)
+    await start(deps, scanWith(groups))
+    const found = await playToFound(deps, 'dir:g41')
+    expect(found.culprit).toBe('dir:g41')
+    expect(found.history).toHaveLength(6)
+    expect(fixes.calls.filter((c) => c.method === 'clearCaches')).toHaveLength(6)
+    for (const call of fixes.calls.filter((c) => c.method === 'setAside')) {
+      expect(call.origin).toMatchObject({ by: 'fifty-fifty', sessionId: found.id })
+    }
+
+    const done = stateOf(await finish(deps, 'put-back'))
+    expect(done.phase).toBe('stopped')
+    expect(fixes.asideIds()).toEqual([])
+    expect(await stateFileExists()).toBe(false)
+    expect(await loadState(deps)).toBeNull()
+  })
+
+  it('keep-set-aside leaves exactly the culprit aside', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(13, 4)))
+    await playToFound(deps, 'dir:g5')
+    const done = stateOf(await finish(deps, 'keep-set-aside'))
+    expect(fixes.asideIds()).toEqual(['dir:g5'])
+    expect(done.parked).toEqual(['dir:g5'])
+    expect(await loadState(deps)).toBeNull()
+  })
+
+  it('found after "It still crashed": the culprit is in Mods and a cleared group is aside', async () => {
+    for (const keep of ['put-back', 'keep-set-aside'] as const) {
+      fixes = new FakeFixes()
+      const deps = makeDeps()
+      await stop(deps)
+      await start(deps, scanWith(makeGroups(2)))
+      await beginRound(deps)
+      expect(fixes.asideIds()).toEqual(['dir:g0'])
+      const found = stateOf(await giveAnswer(deps, 'crashed'))
+      expect(found).toMatchObject({ phase: 'found', culprit: 'dir:g1' })
+      expect(fixes.asideIds()).toEqual(['dir:g0']) // nothing is arranged at found
+      await finish(deps, keep)
+      expect(fixes.asideIds()).toEqual(keep === 'put-back' ? [] : ['dir:g1'])
+    }
+  })
+
+  it('with one group, keep-set-aside sets it aside and put-back moves nothing', async () => {
+    const deps = makeDeps()
+    const state = stateOf(await start(deps, scanWith(makeGroups(1))))
+    expect(state).toMatchObject({ phase: 'found', culprit: 'dir:g0' })
+    await finish(deps, 'keep-set-aside')
+    expect(fixes.asideIds()).toEqual(['dir:g0'])
+  })
+
+  it('not-sure runs the same round again without moving anything', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    const r1 = stateOf(await beginRound(deps))
+    const movesBefore = fixes.moves()
+    const again = stateOf(await giveAnswer(deps, 'not-sure'))
+    expect(again.round).toBe(1)
+    expect(again.phase).toBe('awaiting-answer')
+    expect(again.parked).toEqual(r1.parked)
+    expect(fixes.moves()).toBe(movesBefore)
+    expect(fixes.calls.at(-1)?.method).toBe('clearCaches')
+  })
+
+  it('saves the state after every step', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(4)))
+    expect(gate.stateWrites()).toBe(1)
+    await beginRound(deps) // ready-to-test, then awaiting-answer
+    expect(gate.stateWrites()).toBe(3)
+    await giveAnswer(deps, 'worked') // the answer, then ready-to-test is kept, then awaiting-answer
+    expect(gate.stateWrites()).toBeGreaterThanOrEqual(5)
+    for (const r of gate.requests) expect(r).toMatchObject({ reason: 'state', folderPath: null })
+  })
+
+  it('leaves groups she set aside before the test alone', async () => {
+    fixes.aside.set('dir:old', { groupId: 'dir:old', label: 'Old', entryId: 'e0', at: '2026-11-01T00:00:00.000Z' })
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(4)))
+    await beginRound(deps)
+    await stop(deps)
+    expect(fixes.asideIds()).toEqual(['dir:old'])
+  })
+})
+
+describe('restart and repeat', () => {
+  it('a restart resumes at the same round, and beginRound twice moves nothing the second time', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(16)))
+    await beginRound(deps)
+    const r2 = stateOf(await giveAnswer(deps, 'crashed'))
+    expect(r2.round).toBe(2)
+
+    gate = new FakeGate()
+    const restarted = makeDeps()
+    expect(await loadState(restarted)).toEqual(r2)
+
+    const moves = fixes.moves()
+    const again = stateOf(await beginRound(restarted))
+    expect(again).toEqual(r2)
+    expect(fixes.moves()).toBe(moves)
+  })
+
+  it('a corrupt state file loads as no session', async () => {
+    await mkdir(paths.stateDir, { recursive: true })
+    await writeFile(join(paths.stateDir, 'fiftyfifty.json'), '{"phase": "awaiting')
+    expect(await loadState(makeDeps())).toBeNull()
+    await writeFile(join(paths.stateDir, 'fiftyfifty.json'), '{"phase": "dancing"}')
+    expect(await loadState(makeDeps())).toBeNull()
+  })
+})
+
+describe('CurseForge', () => {
+  it('a running CurseForge keeps the phase and moves nothing, in any letter case', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    for (const name of ['CurseForge.exe', 'curseforge.exe', 'CURSEFORGE Helper.exe']) {
+      processes = ['explorer.exe', name]
+      const state = stateOf(await beginRound(deps))
+      expect(state.phase).toBe('close-curseforge')
+      expect(fixes.calls).toEqual([])
+    }
+    processes = ['explorer.exe']
+    expect(stateOf(await beginRound(deps)).phase).toBe('awaiting-answer')
+  })
+
+  it('sends a later round back to close-curseforge when it is open again', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    await beginRound(deps)
+    const moves = fixes.moves()
+    processes = ['CurseForge.exe']
+    const state = stateOf(await giveAnswer(deps, 'worked'))
+    expect(state).toMatchObject({ phase: 'close-curseforge', round: 2 })
+    expect(fixes.moves()).toBe(moves)
+    expect(await loadState(deps)).toEqual(state)
+  })
+
+  it('a process list that cannot be read does not block', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    processes = new Error('tasklist returned no processes')
+    expect(stateOf(await beginRound(deps)).phase).toBe('awaiting-answer')
+  })
+})
+
+describe('refusals', () => {
+  it('a refusal from fixes comes back as refused and the round does not advance', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    fixes.refuseNext = GAME_RUNNING
+    expect(await beginRound(deps)).toEqual({ status: 'refused', refusal: GAME_RUNNING })
+    const saved = await loadState(deps)
+    expect(saved).toMatchObject({ round: 1, phase: 'ready-to-test' })
+    expect(fixes.asideIds()).toEqual([])
+    expect(stateOf(await beginRound(deps)).phase).toBe('awaiting-answer')
+  })
+
+  it('the answer is saved first, so a refused next round keeps it', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    await beginRound(deps)
+    fixes.refuseNext = GAME_RUNNING
+    expect(await giveAnswer(deps, 'worked')).toEqual({ status: 'refused', refusal: GAME_RUNNING })
+    expect(await loadState(deps)).toMatchObject({ round: 2, phase: 'ready-to-test', history: [{ answer: 'worked' }] })
+    expect(stateOf(await beginRound(deps))).toMatchObject({ round: 2, phase: 'awaiting-answer' })
+  })
+
+  it('a refused cache clear does not advance; "nothing to clear" is fine', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    fixes.cacheOutcome = { status: 'refused', refusal: GAME_RUNNING }
+    expect(await beginRound(deps)).toEqual({ status: 'refused', refusal: GAME_RUNNING })
+    expect(await loadState(deps)).toMatchObject({ phase: 'ready-to-test' })
+    fixes.cacheOutcome = { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+    expect(stateOf(await beginRound(deps)).phase).toBe('awaiting-answer')
+  })
+
+  it('a half-done move comes back as stopped-part-way and beginRound finishes it', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    fixes.partWayAfter = 2
+    const result = await beginRound(deps)
+    expect(result).toMatchObject({ status: 'stopped-part-way', state: { phase: 'ready-to-test' } })
+    expect(fixes.asideIds()).toHaveLength(2)
+    const state = stateOf(await beginRound(deps))
+    expect(fixes.asideIds()).toEqual([...state.parked].sort())
+  })
+
+  it('giveAnswer changes nothing unless the phase is awaiting-answer', async () => {
+    const deps = makeDeps()
+    const s0 = stateOf(await start(deps, scanWith(makeGroups(8))))
+    const writes = gate.stateWrites()
+    expect(await giveAnswer(deps, 'crashed')).toEqual({ status: 'ok', state: s0 })
+    expect(gate.stateWrites()).toBe(writes)
+    expect(fixes.calls).toEqual([])
+  })
+
+  it('a state save the gate refuses moves nothing', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    gate.next = { status: 'refused', refusal: { reason: 'outside-allowed-area', path: paths.stateDir } }
+    const result = await beginRound(deps)
+    expect(result).toEqual({
+      status: 'refused',
+      refusal: { why: 'gate', refusal: { reason: 'outside-allowed-area', path: paths.stateDir } }
+    })
+    expect(fixes.calls).toEqual([])
+  })
+
+  it('without a session, beginRound, giveAnswer and finish refuse and stop is fine', async () => {
+    const deps = makeDeps()
+    const none = { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+    expect(await beginRound(deps)).toEqual(none)
+    expect(await giveAnswer(deps, 'crashed')).toEqual(none)
+    expect(await finish(deps, 'put-back')).toEqual(none)
+    expect(await stop(deps)).toEqual({ status: 'ok', state: null })
+  })
+})
+
+describe('stop puts every file back', () => {
+  async function reachPhase(deps: FiftyDeps, phase: string): Promise<void> {
+    await start(deps, scanWith(makeGroups(8, 3)))
+    if (phase === 'close-curseforge') return
+    if (phase === 'ready-to-test') {
+      await beginRound(deps)
+      fixes.refuseNext = GAME_RUNNING
+      await giveAnswer(deps, 'worked')
+      return
+    }
+    if (phase === 'part-way') {
+      await beginRound(deps)
+      fixes.partWayAfter = 1
+      await giveAnswer(deps, 'crashed')
+      return
+    }
+    await beginRound(deps)
+    if (phase === 'awaiting-answer') return
+    await playToFound(deps, 'dir:g6')
+  }
+
+  for (const phase of ['close-curseforge', 'ready-to-test', 'part-way', 'awaiting-answer', 'found']) {
+    it(`at ${phase}`, async () => {
+      const deps = makeDeps()
+      await reachPhase(deps, phase)
+      const result = await stop(deps)
+      expect(stateOf(result).phase).toBe('stopped')
+      expect(fixes.asideIds()).toEqual([])
+      expect(await stateFileExists()).toBe(false)
+      expect(await loadState(deps)).toBeNull()
+    })
+  }
+
+  it('a refused put-back keeps the session so stop can be tried again', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    const before = stateOf(await beginRound(deps))
+    fixes.refuseNext = GAME_RUNNING
+    expect(await stop(deps)).toEqual({ status: 'refused', refusal: GAME_RUNNING })
+    expect(await loadState(deps)).toEqual(before)
+    expect(fixes.asideIds()).toHaveLength(4)
+    await stop(deps)
+    expect(fixes.asideIds()).toEqual([])
+  })
+
+  it('a half-done put-back keeps the session; stop again finishes it', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    await beginRound(deps)
+    fixes.partWayAfter = 1
+    expect(await stop(deps)).toMatchObject({ status: 'stopped-part-way' })
+    expect(await loadState(deps)).not.toBeNull()
+    await stop(deps)
+    expect(fixes.asideIds()).toEqual([])
+    expect(await loadState(deps)).toBeNull()
+  })
+})
