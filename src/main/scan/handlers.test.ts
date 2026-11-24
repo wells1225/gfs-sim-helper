@@ -106,6 +106,8 @@ async function makeFixtureEnv(): Promise<{
     safety: {} as AppContext['safety'],
     fixes: {} as AppContext['fixes'],
     keyStore: {} as AppContext['keyStore'],
+    updater: {} as AppContext['updater'],
+    busy: () => false,
     session: { scan: null },
     emit: (p) => emitted.push(p),
     reveal: (file) => revealed.push(file)
