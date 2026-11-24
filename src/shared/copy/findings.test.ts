@@ -94,6 +94,10 @@ describe('finding words', () => {
       expect(ALL_WORDS[key]!.title).toContain('no mods')
       expect(ALL_WORDS[key]!.detail).toContain('no mods')
       expect(ALL_WORDS[key]!.detail).toContain('Repair in the EA app')
+      // The scan only knows the folder is empty now: the crash may be older, or the game may use another folder.
+      expect(ALL_WORDS[key]!.title + ALL_WORDS[key]!.detail).not.toMatch(/didn't cause|even with no mods/)
+      expect(ALL_WORDS[key]!.detail).toContain('right now')
+      expect(ALL_WORDS[key]!.detail).toContain('unlikely')
       expect(`${ALL_WORDS[key]!.title} ${ALL_WORDS[key]!.detail}`).not.toContain('50/50')
     }
   })
