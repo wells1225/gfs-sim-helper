@@ -23,5 +23,6 @@ herself, so every screen is for a non-technical player.
 ## Pull requests
 
 - Branch from `main`, one change per PR, title `type(scope): subject`.
-- Code that Neon or Grok built gets an Opus review before merge. Astra does the deep review check before a PR is
-  called ready to merge.
+- Who does what in this project: Neon builds. Opus reviews each PR, then Fable does the last check. Whoever finds an
+  issue fixes it, with a failing test first. Sol does one quick, light review of a finished stage. Astra is not used
+  here.

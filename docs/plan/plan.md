@@ -66,7 +66,8 @@ the one above it.
 The **review-gated set** is PRs 1, 7, 10 and 11. Each one changes what she sees or clicks. Tyler looks at the
 screens before each one merges.
 
-Every PR gets an Opus review, then an Astra deep review check before merge. Neon builds by Tyler's choice, so the
+Neon builds every PR except PR 8. Opus reviews each PR, then Fable does the last check. Whoever finds an issue fixes
+it. Sol does one light review per finished stage. Neon builds by Tyler's choice, so the
 `feature` line in the pstack model sheet (Opus) is overridden.
 
 ## Today, before any code
