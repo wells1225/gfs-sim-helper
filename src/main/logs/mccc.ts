@@ -47,14 +47,19 @@ export function parseMccc(html: string, file: string, fileModifiedAt: IsoTime): 
   let gameVersion: string | null = null
   let createdLocal: string | null = null
 
-  for (const line of lines) {
+  const { frames, modHints, firstFrameLineIndex, lastFrameLineIndex } = extractPythonFrames(lines)
+  // The file's time is looked for above the traceback only: a time inside the error text is not when it was written.
+  const headerEnd = firstFrameLineIndex === -1 ? lines.length : firstFrameLineIndex
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!
     if (gameVersion === null) {
       const versionLine = GAME_VERSION_LINE_PATTERN.exec(line)
       if (versionLine) {
         gameVersion = extractVersion(versionLine[1]!)
       }
     }
-    if (createdLocal === null) {
+    if (createdLocal === null && i < headerEnd) {
       const tsMatch = TIMESTAMP_PATTERN.exec(line)
       if (tsMatch) {
         createdLocal = tsMatch[1]!
@@ -63,7 +68,6 @@ export function parseMccc(html: string, file: string, fileModifiedAt: IsoTime): 
     if (gameVersion !== null && createdLocal !== null) break
   }
 
-  const { frames, modHints, lastFrameLineIndex } = extractPythonFrames(lines)
   const message = extractMcccMessage(lines, lastFrameLineIndex)
 
   if (frames.length === 0 && gameVersion === null && message === null && createdLocal === null) {

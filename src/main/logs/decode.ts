@@ -2,6 +2,7 @@ import type { LogFrame } from '../../shared/model.ts'
 
 export const MAX_FRAMES = 60
 export const MAX_MESSAGE_LENGTH = 300
+export const MAX_MOD_HINTS = 20
 
 const NAMED_ENTITIES: Record<string, string> = {
   lt: '<',
@@ -152,11 +153,12 @@ function isGameFramePath(normalizedPath: string): boolean {
 export function extractPythonFrames(lines: readonly string[]): {
   frames: LogFrame[]
   modHints: string[]
+  firstFrameLineIndex: number
   lastFrameLineIndex: number
 } {
   const allFrames: LogFrame[] = []
-  const seenHints = new Set<string>()
-  const modHints: string[] = []
+  const frameHints: (string | null)[] = []
+  let firstFrameLineIndex = -1
   let lastFrameLineIndex = -1
 
   for (let i = 0; i < lines.length; i += 1) {
@@ -166,24 +168,28 @@ export function extractPythonFrames(lines: readonly string[]): {
     const lineNum = Number.parseInt(match[2]!, 10)
     const normalized = framePath.replaceAll('\\', '/').toLowerCase()
     const origin: 'game' | 'mod' = isGameFramePath(normalized) ? 'game' : 'mod'
-    // Hints come from every frame, before the cap: mod injectors often sit at the outer end of a long traceback.
-    if (origin === 'mod') {
-      const hint = normalized.replace(PY_EXTENSION_PATTERN, '')
-      if (hint.length > 0 && !seenHints.has(hint)) {
-        seenHints.add(hint)
-        modHints.push(hint)
-      }
-    }
+    const hint = origin === 'mod' ? normalized.replace(PY_EXTENSION_PATTERN, '') : ''
+    frameHints.push(hint.length > 0 ? hint : null)
     allFrames.push({
       path: framePath,
       line: Number.isFinite(lineNum) ? lineNum : null,
       origin
     })
+    if (firstFrameLineIndex === -1) firstFrameLineIndex = i
     lastFrameLineIndex = i
   }
 
+  // Hints come from every frame, not only the 60 kept: mod injectors often sit at the outer end of a long traceback.
+  // The list is capped, so it starts at the frame closest to the error and walks outward.
+  const seenHints = new Set<string>()
+  for (let i = frameHints.length - 1; i >= 0 && seenHints.size < MAX_MOD_HINTS; i -= 1) {
+    const hint = frameHints[i]
+    if (hint !== null && hint !== undefined) seenHints.add(hint)
+  }
+  const modHints = [...seenHints]
+
   const frames = allFrames.length > MAX_FRAMES ? allFrames.slice(-MAX_FRAMES) : allFrames
-  return { frames, modHints, lastFrameLineIndex }
+  return { frames, modHints, firstFrameLineIndex, lastFrameLineIndex }
 }
 
 // ActionScript lists the innermost call first. Keep the 60 innermost and return them innermost last.
