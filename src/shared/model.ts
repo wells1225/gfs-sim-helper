@@ -261,6 +261,7 @@ export type BackupRefusal =
   | 'not-enough-space'
   | 'sims-folder-missing'
   | 'backup-already-running'
+  | 'backup-folder-in-sims-folder'
 
 export type BackupResult =
   | { status: 'verified'; record: BackupRecord }

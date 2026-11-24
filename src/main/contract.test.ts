@@ -7,13 +7,14 @@ import type { Page } from '@playwright/test'
 import { afterAll, describe, expect, it } from 'vitest'
 import { readFile, rm } from 'node:fs/promises'
 import { INVOKE_CHANNELS } from '../shared/ipc.ts'
-import type { GateRefusal, GameRunState as ModelGameRunState } from '../shared/model.ts'
+import type { BackupRefusal, GateRefusal, GameRunState as ModelGameRunState } from '../shared/model.ts'
 import { appPaths } from './app-paths.ts'
 import { assistHandlers } from './assist/handlers.ts'
 import { fiftyHandlers } from './fiftyfifty/handlers.ts'
 import { fixHandlers } from './fixes/handlers.ts'
 import { collectHandlers } from './ipc.ts'
 import type { Host } from './locate/host.ts'
+import type { ActionPlan } from './ports.ts'
 import type { GameRunState as LocateGameRunState } from './locate/process.ts'
 import { scanHandlers } from './scan/handlers.ts'
 import { createContext } from './services.ts'
@@ -146,5 +147,25 @@ describe('GateRefusal', () => {
   it('has a check-failed reason so an error inside a gate check fails closed', () => {
     const refusal: GateRefusal = { reason: 'check-failed', path: 'C:\\Sims\\Mods\\a.package' }
     expect(refusal.reason).toBe('check-failed')
+  })
+})
+
+describe('backup and action plan contract', () => {
+  it('refuses a backup folder inside the Sims folder', () => {
+    const reason: BackupRefusal = 'backup-folder-in-sims-folder'
+    expect(reason).toBe('backup-folder-in-sims-folder')
+  })
+
+  it('lets the planner choose the journal entry id that runAction uses', () => {
+    const plan: ActionPlan = {
+      entryId: 'entry-1',
+      action: 'disable-group',
+      summary: 'Set aside one mod',
+      origin: { by: 'fix' },
+      folderPath: 'C:\\Sims',
+      groupId: 'g1',
+      steps: []
+    }
+    expect(plan.entryId).toBe('entry-1')
   })
 })
