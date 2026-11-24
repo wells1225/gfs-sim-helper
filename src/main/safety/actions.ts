@@ -86,10 +86,17 @@ type StepOnDisk = { where: 'done' } | { where: 'not-done' } | { where: 'unclear'
 
 async function inspect(step: JournalStep): Promise<StepOnDisk> {
   if (step.kind === 'move') {
-    const [atTo, atFrom] = await Promise.all([fileHash(step.to), exists(step.from)])
-    if (atTo === step.sha256 && !atFrom) return { where: 'done' }
-    if (!(await exists(step.to)) && (await fileHash(step.from)) === step.sha256) return { where: 'not-done' }
-    return { where: 'unclear', file: atFrom ? step.from : step.to }
+    const [atTo, toTaken, atFrom, fromTaken] = await Promise.all([
+      fileHash(step.to),
+      exists(step.to),
+      fileHash(step.from),
+      exists(step.from)
+    ])
+    if (atTo === step.sha256 && !fromTaken) return { where: 'done' }
+    // The original is in place. A second, identical file at `to` is what a move to another drive leaves when it is
+    // cut off after the copy and before the source is removed: nothing to put back, and the copy is left alone.
+    if (atFrom === step.sha256 && (!toTaken || atTo === step.sha256)) return { where: 'not-done' }
+    return { where: 'unclear', file: fromTaken && atFrom !== step.sha256 ? step.from : step.to }
   }
   if (step.kind === 'edit') {
     const now = await fileHash(step.path)
@@ -313,11 +320,16 @@ export async function recoverNow(deps: SafetyDeps, entries: JournalEntry[]): Pro
   for (const entry of entries) {
     if (entry.status !== 'in-progress') continue
     if (entry.undo === 'cannot-undo') {
-      const settled = await settleCacheClear(deps, entry)
+      const settled = await settleCacheClear(deps, entry).catch(() => null)
       if (settled) touched.push(settled)
       continue
     }
-    const outcome = await revert(deps, entry)
+    let outcome: FixOutcome
+    try {
+      outcome = await revert(deps, entry)
+    } catch {
+      continue // its journal file could not be written: left in progress, and the other entries still get their turn
+    }
     if (outcome.status === 'refused') continue // left in progress: the next start tries again
     touched.push(outcome.entry)
   }

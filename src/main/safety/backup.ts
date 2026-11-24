@@ -61,11 +61,38 @@ function gateDetail(result: GateResult): string {
   return 'done'
 }
 
+const STORED_AT_ONCE = 32
+
+/**
+ * Whether every line of the list still has its stored copy, with its size. A list can point into an older backup
+ * (`storedIn`), so deleting an old backup folder by hand takes the bytes away from the newest one too.
+ */
+async function storedCopiesInPlace(backupsDir: string, lines: ManifestFile[]): Promise<boolean> {
+  for (let start = 0; start < lines.length; start += STORED_AT_ONCE) {
+    const found = await Promise.all(
+      lines.slice(start, start + STORED_AT_ONCE).map(async (line) => {
+        try {
+          const kept = await lstat(storedFile(backupsDir, line))
+          return kept.isFile() && kept.size === line.bytes
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException | undefined)?.code
+          if (code === 'ENOENT' || code === 'ENOTDIR') return false
+          throw err
+        }
+      })
+    )
+    if (found.includes(false)) return false
+  }
+  return true
+}
+
 export async function backupStatus(deps: SafetyDeps, folderPath: string): Promise<BackupStatus> {
   try {
     const manifest = await newestVerified(deps.paths.backupsDir, folderPath)
     if (!manifest) return { state: 'none' }
     const { id: backupId, at } = manifest.record
+    // A backup that lost any of its bytes covers nothing. `stale` makes the next backup copy them again.
+    if (!(await storedCopiesInPlace(deps.paths.backupsDir, manifest.files))) return { state: 'stale', backupId, at }
     const lines = new Map(manifest.files.map((line) => [manifestKey(line.path), line]))
     const journalMoves = new Map<string, { bytes: number; sha256: Sha256 }[]>()
     const journalEdits = new Map<string, Sha256[]>()
