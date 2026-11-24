@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import type { Progress } from '../shared/model.ts'
+import type { FixRequest, JournalOrigin, ModGroup, Progress, Scan, UpdateState } from '../shared/model.ts'
 import { clearKey, keyStatus, sendWithKey, setKey } from './assist/key-store.ts'
 import { applyFix, clearCaches, disabledGroups, putBack, setAside } from './fixes/index.ts'
 import { buildInventory } from './inventory/index.ts'
@@ -7,6 +7,7 @@ import type { Host } from './locate/host.ts'
 import { checkGameRunning } from './locate/process.ts'
 import { readLogs } from './logs/index.ts'
 import type {
+  ActionPlan,
   AppContext,
   AppPaths,
   Clock,
@@ -16,10 +17,12 @@ import type {
   GateDeps,
   KeyStore,
   KeyStoreDeps,
+  OnProgress,
   SafeStorageLike,
   Safety,
   SafetyDeps,
-  ScanDeps
+  ScanDeps,
+  Updater
 } from './ports.ts'
 import { makeRedactor } from './redact.ts'
 import { readFolderFacts, runRules } from './rules/index.ts'
@@ -41,6 +44,16 @@ export interface CreateContextInput {
   reveal(file: string): void
   clock?: Clock
   newId?: () => string
+  updater?: Updater // index.ts passes createUpdater(...); without one, updates are off
+}
+
+const UPDATES_OFF: UpdateState = { state: 'off', why: 'switched-off' }
+
+const NO_UPDATER: Updater = {
+  state: () => UPDATES_OFF,
+  check: async () => UPDATES_OFF,
+  download: async () => UPDATES_OFF,
+  install: () => ({ status: 'refused', why: 'not-ready' })
 }
 
 function pad2(n: number): string {
@@ -62,6 +75,19 @@ export function createContext(input: CreateContextInput): AppContext {
   const clock: Clock = input.clock ?? { now: () => new Date() }
   const newId = input.newId ?? (() => formatTimeId(clock.now()))
   const { host, paths, safeStorage, emit, reveal } = input
+
+  // busy() is true while any safety or fixes call runs, so a restart for an update never cuts a change in half.
+  let inFlight = 0
+  const counted =
+    <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
+    async (...args: A): Promise<R> => {
+      inFlight += 1
+      try {
+        return await fn(...args)
+      } finally {
+        inFlight -= 1
+      }
+    }
 
   const redact = makeRedactor(host.env)
   const gameState = () => checkGameRunning(host)
@@ -85,12 +111,12 @@ export function createContext(input: CreateContextInput): AppContext {
   }
 
   const safety: Safety = {
-    backupStatus: (folderPath) => backupStatus(safetyDeps, folderPath),
-    createBackup: (folderPath, onProgress) => createBackup(safetyDeps, folderPath, onProgress),
-    runAction: (plan, onProgress) => runAction(safetyDeps, plan, onProgress),
-    undo: (entryId, onProgress) => undo(safetyDeps, entryId, onProgress),
-    listJournal: () => listJournal(safetyDeps),
-    recover: () => recover(safetyDeps)
+    backupStatus: counted((folderPath: string) => backupStatus(safetyDeps, folderPath)),
+    createBackup: counted((folderPath: string, onProgress?: OnProgress) => createBackup(safetyDeps, folderPath, onProgress)),
+    runAction: counted((plan: ActionPlan, onProgress?: OnProgress) => runAction(safetyDeps, plan, onProgress)),
+    undo: counted((entryId: string, onProgress?: OnProgress) => undo(safetyDeps, entryId, onProgress)),
+    listJournal: counted(() => listJournal(safetyDeps)),
+    recover: counted(() => recover(safetyDeps))
   }
 
   const fixDeps: FixDeps = {
@@ -100,12 +126,15 @@ export function createContext(input: CreateContextInput): AppContext {
   }
 
   const fixes: Fixes = {
-    apply: (scan, request, onProgress) => applyFix(fixDeps, scan, request, onProgress),
-    setAside: (folderPath, groups, origin, onProgress) =>
-      setAside(fixDeps, folderPath, groups, origin, onProgress),
-    putBack: (folderPath, groupIds, onProgress) => putBack(fixDeps, folderPath, groupIds, onProgress),
-    clearCaches: (folderPath) => clearCaches(fixDeps, folderPath),
-    disabledGroups: (folderPath) => disabledGroups(fixDeps, folderPath)
+    apply: counted((scan: Scan, request: FixRequest, onProgress?: OnProgress) => applyFix(fixDeps, scan, request, onProgress)),
+    setAside: counted((folderPath: string, groups: ModGroup[], origin: JournalOrigin, onProgress?: OnProgress) =>
+      setAside(fixDeps, folderPath, groups, origin, onProgress)
+    ),
+    putBack: counted((folderPath: string, groupIds: string[], onProgress?: OnProgress) =>
+      putBack(fixDeps, folderPath, groupIds, onProgress)
+    ),
+    clearCaches: counted((folderPath: string) => clearCaches(fixDeps, folderPath)),
+    disabledGroups: counted((folderPath: string) => disabledGroups(fixDeps, folderPath))
   }
 
   const keyStoreDeps: KeyStoreDeps = {
@@ -143,6 +172,8 @@ export function createContext(input: CreateContextInput): AppContext {
     safety,
     fixes,
     keyStore,
+    updater: input.updater ?? NO_UPDATER,
+    busy: () => inFlight > 0,
     session: { scan: null },
     emit,
     reveal
