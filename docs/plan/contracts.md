@@ -227,7 +227,7 @@ export type AssistAnswer =
   | { status: 'no-answer'; why: 'no-key' | 'key-rejected' | 'declined' | 'offline' | 'limit-reached' | 'preview-expired' | 'error' } // key-rejected: HTTP 401
 // ── Updates (PR 13)
 export type UpdateState =
-  | { state: 'off'; why: 'not-installed-app' | 'switched-off' | 'unsafe-install-folder' }
+  | { state: 'off'; current: string; why: 'not-installed-app' | 'switched-off' | 'unsafe-install-folder' } // current: the About row shows the version even when off
   | { state: 'idle'; current: string; checkedAt: IsoTime | null; justUpdated: boolean } | { state: 'checking'; current: string }
   | { state: 'available'; current: string; next: string } | { state: 'downloading'; current: string; next: string; percent: number }
   | { state: 'ready'; current: string; next: string } // downloaded, checksum passed, waits for her click
@@ -413,7 +413,7 @@ ask(keyStore: KeyStore, preview: AssistPreview): Promise<AssistAnswer>
 ASSIST_MODEL = 'claude-haiku-5-5'
 // PR 13  src/main/update/updater.ts (Fable), src/main/update/handlers.ts
 createUpdater(input: UpdaterInput, seams?: UpdaterSeams): Updater // seams: { engine?, busy?, now? }; index.ts passes busy = ctx.busy
-// the stub takes (input, seams?: { busy?: () => boolean }) and is always { state: 'off', why: 'switched-off' }
+// the stub takes (input, seams?: { busy?: () => boolean }) and is always { state: 'off', why: 'switched-off', current: input.version }
 // services.ts: updaterKeepOutOf(documentsDirs, paths) = Documents dirs + paths.oneDriveRoots + paths.dataDir, deduped
 ```
 
