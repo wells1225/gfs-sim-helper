@@ -1,12 +1,13 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeTheme, safeStorage, screen, shell } from 'electron'
 import type { IpcMainInvokeEvent } from 'electron'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { APP_TITLE } from '../shared/app.ts'
 import { createAppHost, desktopDir } from './app-host.ts'
 import { appPaths } from './app-paths.ts'
 import { registerIpc } from './ipc.ts'
 import { createContext } from './services.ts'
+import { createUpdater } from './update/updater.ts'
 
 const LIGHT_BG = '#FAF9F6'
 const DARK_BG = '#171B1A'
@@ -126,9 +127,23 @@ if (!gotSingleInstanceLock) {
       env: process.env
     })
 
+    const host = createAppHost()
+    // Real Documents always, plus the test override when one is set: an environment variable can only add a folder.
+    const keepOutOf = [...new Set([app.getPath('documents'), host.documentsDir, ...paths.oneDriveRoots])]
+    const updater = createUpdater({
+      isPackaged: app.isPackaged,
+      version: app.getVersion(),
+      installDir: dirname(process.execPath),
+      argv: process.argv,
+      env: process.env,
+      keepOutOf,
+      platform: process.platform
+    })
+
     const ctx = createContext({
-      host: createAppHost(),
+      host,
       paths,
+      updater,
       safeStorage: {
         isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
         encryptString: (text) => safeStorage.encryptString(text),

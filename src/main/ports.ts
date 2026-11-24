@@ -16,7 +16,9 @@ import type {
   Progress,
   RelPath,
   Scan,
-  Sha256
+  Sha256,
+  UpdateInstall,
+  UpdateState
 } from '../shared/model.ts'
 import type { Host } from './locate/host.ts' // PR 3's Host is used as it is, never widened
 
@@ -193,6 +195,25 @@ export interface ScanDeps {
   paths: AppPaths
 }
 
+export interface UpdaterInput {
+  // PR 13, src/main/update/updater.ts (Fable): createUpdater(input) gives the Updater
+  isPackaged: boolean // app.isPackaged; updates are off when false
+  version: string // app.getVersion()
+  installDir: string // the folder of the running .exe
+  argv: readonly string[] // '--updated' means the installer just restarted the app after an update
+  env: Readonly<Record<string, string | undefined>> // SIMS_HELPER_UPDATES=off switches updates off; nothing here can point the feed elsewhere
+  keepOutOf: readonly string[] // Documents and the OneDrive roots: updates are off when installDir is inside or contains one
+  platform: NodeJS.Platform // updates are off except on 'win32'
+}
+
+export interface Updater {
+  // PR 13. The feed is only the installed app's app-update.yml
+  state(): UpdateState
+  check(): Promise<UpdateState> // during checking, downloading or ready: the state unchanged
+  download(): Promise<UpdateState> // only from 'available'
+  install(): UpdateInstall // only from 'ready': quitAndInstall(true, true), once
+}
+
 /** Built once in services.ts and handed to every handlers file. */
 export interface AppContext {
   host: Host
@@ -206,6 +227,8 @@ export interface AppContext {
   safety: Safety
   fixes: Fixes
   keyStore: KeyStore
+  updater: Updater
+  busy(): boolean // true while a safety or fixes call runs; update:install refuses 'busy' then
   session: { scan: Scan | null } // the last finished scan
   emit(progress: Progress): void // sends the 'progress' event to the window
   reveal(file: string): void // shows a file in Explorer

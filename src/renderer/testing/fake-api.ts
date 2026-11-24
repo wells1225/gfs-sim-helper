@@ -1,5 +1,5 @@
 import type { IpcInvoke, SimsHelperApi } from '../../shared/ipc.ts'
-import type { Progress } from '../../shared/model.ts'
+import type { Progress, UpdateState } from '../../shared/model.ts'
 
 export type FakeAnswer<K extends keyof IpcInvoke> =
   | IpcInvoke[K]['res']
@@ -19,7 +19,16 @@ export interface FakeApi extends SimsHelperApi {
   emitProgress(progress: Progress): void
 }
 
-export function fakeApi(answers: FakeApiAnswers = {}): FakeApi {
+const UPDATES_OFF: UpdateState = { state: 'off', why: 'switched-off' }
+
+/** Every test gets these unless it passes its own: the update banner and About row then render nothing. */
+const DEFAULT_ANSWERS: FakeApiAnswers = {
+  'update:get': UPDATES_OFF,
+  'update:check': UPDATES_OFF
+}
+
+export function fakeApi(given: FakeApiAnswers = {}): FakeApi {
+  const answers: FakeApiAnswers = { ...DEFAULT_ANSWERS, ...given }
   const calls: FakeApiCall[] = []
   const listeners = new Set<(progress: Progress) => void>()
 

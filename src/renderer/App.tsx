@@ -20,6 +20,8 @@ import { Start } from './screens/Start.tsx'
 import { Welcome } from './screens/Welcome.tsx'
 import { WhatHappened } from './screens/WhatHappened.tsx'
 import { SessionProvider } from './session.tsx'
+import { UpdateBanner } from './update/UpdateBanner.tsx'
+import { UpdateRow } from './update/UpdateRow.tsx'
 
 function renderScreen(route: Route) {
   switch (route.screen) {
@@ -36,7 +38,12 @@ function renderScreen(route: Route) {
     case 'send-to-tyler':
       return <SendToTyler />
     case 'about':
-      return <About />
+      return (
+        <>
+          <About />
+          <UpdateRow />
+        </>
+      )
     case 'mods':
       return <ModsScreen />
     case 'history':
@@ -106,6 +113,7 @@ function Shell() {
       </header>
 
       <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 px-5 py-6">
+        <UpdateBanner />
         <RecoveryNotice />
         <ResumeBanner />
         <div className="flex-1">{renderScreen(route)}</div>

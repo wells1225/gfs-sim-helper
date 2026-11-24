@@ -365,3 +365,15 @@ export interface AssistPreview {
 export type AssistAnswer =
   | { status: 'answered'; text: string }
   | { status: 'no-answer'; why: 'no-key' | 'key-rejected' | 'declined' | 'offline' | 'limit-reached' | 'preview-expired' | 'error' } // key-rejected: HTTP 401
+
+// ── Updates (PR 13)
+export type UpdateState =
+  | { state: 'off'; why: 'not-installed-app' | 'switched-off' | 'unsafe-install-folder' }
+  | { state: 'idle'; current: string; checkedAt: IsoTime | null; justUpdated: boolean }
+  | { state: 'checking'; current: string }
+  | { state: 'available'; current: string; next: string }
+  | { state: 'downloading'; current: string; next: string; percent: number }
+  | { state: 'ready'; current: string; next: string } // downloaded, checksum passed, waits for her click
+  | { state: 'failed'; current: string; step: 'check' | 'download'; why: 'offline' | 'bad-file' | 'error' }
+
+export type UpdateInstall = { status: 'restarting' } | { status: 'refused'; why: 'busy' | 'not-ready' }
