@@ -105,7 +105,8 @@ type ErrorLogKind = Exclude<LogKind, 'crash'>
 export const logNamesMod: Rule = (scan) => {
   const index = buildEntryIndex(scan.inventory.files)
   if (index.size === 0) return []
-  const named = new Map<string, { kinds: ErrorLogKind[]; owners: Map<RelPath, EntryOwner>; evidence: string[] }>()
+  type Named = { kinds: ErrorLogKind[]; owners: Map<RelPath, EntryOwner>; evidence: string[] }
+  const named = new Map<string, Named>()
   for (const log of scan.logs) {
     if (log.kind === 'crash') continue // a crash log has no traceback, so it never names a mod
     const kind = log.kind
@@ -113,7 +114,7 @@ export const logNamesMod: Rule = (scan) => {
       const owners = matchHint(hint, index)
       if (owners.length === 0) continue
       const groupId = owners[0]!.groupId
-      const entry = named.get(groupId) ?? { kinds: [], owners: new Map(), evidence: [] }
+      const entry: Named = named.get(groupId) ?? { kinds: [], owners: new Map(), evidence: [] }
       named.set(groupId, entry)
       entry.kinds.push(kind)
       for (const owner of owners) {
