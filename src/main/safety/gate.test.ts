@@ -15,7 +15,7 @@ import {
   writeFile
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join, posix, sep, win32 } from 'node:path'
+import { basename, dirname, join, parse, posix, sep, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { generateFixture, loadSpec } from '../../../scripts/fixtures/make-fixture.ts'
@@ -959,6 +959,18 @@ describe('where the app data folder may be', () => {
         path: dataDir
       })
     }
+  })
+
+  it('a drive or filesystem root as dataDir refuses every request', async () => {
+    const w = await makeWorld()
+    const rootDir = parse(w.root).root
+    w.paths.dataDir = rootDir
+    w.dataDir = rootDir
+    const target = w.inFolder(...SAVE)
+    await expectRefusal(w, () => w.run([{ op: 'remove', path: target }], { folderPath: null }), {
+      reason: 'outside-allowed-area',
+      path: rootDir
+    })
   })
 })
 
