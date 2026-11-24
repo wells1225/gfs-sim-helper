@@ -6,7 +6,7 @@ export default defineConfig({
   test: {
     environment: 'happy-dom',
     maxWorkers: 2,
-    include: ['src/**/*.test.{ts,tsx}'],
+    include: ['src/**/*.test.{ts,tsx}', 'scripts/**/*.test.ts'],
     setupFiles: ['src/renderer/test-setup.ts']
   }
 })

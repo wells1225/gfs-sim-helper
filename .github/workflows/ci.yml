@@ -25,6 +25,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Generate test fixtures
+        run: npm run fixtures
+
       - name: Unit tests
         run: npm test
 
