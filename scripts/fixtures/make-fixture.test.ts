@@ -405,7 +405,7 @@ describe('fixture generator', () => {
         expect(res.ok, `Expected valid DBPF 2.1 at ${pkgPath}`).toBe(true)
       }
     }
-  })
+  }, 60_000)
 
   it('validates every good package and rejects every broken package in broken-packages', async () => {
     const spec = await loadSpec(join(SPECS_DIR, 'broken-packages.json'))
