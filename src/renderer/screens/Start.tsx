@@ -3,24 +3,11 @@ import type { SimsHelperApi } from '../../shared/ipc.ts'
 import { useApi } from '../api.tsx'
 import { useNav } from '../nav.tsx'
 
-function useOptionalApi(): SimsHelperApi | null {
-  try {
-    return useApi()
-  } catch {
-    return null
-  }
-}
-
 export function Start() {
-  const api = useOptionalApi()
+  const api = useApi()
   const { go } = useNav()
 
   useEffect(() => {
-    if (!api) {
-      go({ screen: 'about' })
-      return
-    }
-
     let cancelled = false
 
     async function decideFirstScreen(client: SimsHelperApi) {
