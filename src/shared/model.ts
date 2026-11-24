@@ -342,6 +342,14 @@ export interface FiftyFifty {
   history: { round: number; parked: string[]; answer: FiftyAnswer }[]
 }
 
+/** fiftyfifty.json is there but cannot be read as a session. Her way out is `fifty:stop`, which puts every group back. */
+export interface FiftyDamaged {
+  status: 'damaged'
+}
+
+/** What `fifty:get` answers: the session, null when there is none, or FiftyDamaged. FiftyFifty has no `status`. */
+export type FiftyGet = FiftyFifty | null | FiftyDamaged
+
 export type FiftyResult =
   | { status: 'ok'; state: FiftyFifty | null }
   | { status: 'refused'; refusal: FixRefusal }

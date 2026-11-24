@@ -11,6 +11,7 @@ import type {
   AssistAnswer,
   BackupRefusal,
   DisabledGroup,
+  FiftyDamaged,
   FixRefusal,
   GameRunState as ModelGameRunState,
   GateRefusal,
@@ -253,6 +254,12 @@ describe('50/50 contract requests from PR 11', () => {
       { groupId: 'cf:1', label: 'Zed', entryId: 'e2', at: '2026-11-24T12:01:00.000Z', origin: 'fifty-fifty' }
     ]
     expect(groups.map((g) => g.origin)).toEqual(['fix', 'fifty-fifty'])
+  })
+
+  it('answers fifty:get with a typed damaged result, beside the session or null', () => {
+    const answers: IpcInvoke['fifty:get']['res'][] = [sampleFiftyFifty(), null, { status: 'damaged' }]
+    const damaged = answers.filter((a): a is FiftyDamaged => a !== null && 'status' in a)
+    expect(damaged).toEqual([{ status: 'damaged' }])
   })
 })
 

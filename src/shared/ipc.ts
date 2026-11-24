@@ -5,7 +5,7 @@ import type {
   BackupStatus,
   DisabledGroup,
   FiftyAnswer,
-  FiftyFifty,
+  FiftyGet,
   FiftyResult,
   FixCall,
   FixOutcome,
@@ -39,7 +39,7 @@ export interface IpcInvoke {
   'journal:undo': { req: { entryId: string }; res: FixOutcome }
   'groups:disabled': { req: void; res: DisabledGroup[] }
   // PR 11 owns this block
-  'fifty:get': { req: void; res: FiftyFifty | null }
+  'fifty:get': { req: void; res: FiftyGet } // { status: 'damaged' } when fiftyfifty.json cannot be read
   'fifty:start': { req: void; res: FiftyResult }
   'fifty:begin-round': { req: void; res: FiftyResult }
   'fifty:answer': { req: { answer: FiftyAnswer; round: number }; res: FiftyResult } // round: the round on her screen, so a late click cannot answer the next one
