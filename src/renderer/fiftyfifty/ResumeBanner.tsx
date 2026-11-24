@@ -5,7 +5,7 @@ import { Button } from '../components/ui/button.tsx'
 import { useNav } from '../nav.tsx'
 import { StopDialog } from './StopDialog.tsx'
 import { useOptionalApi } from './use-optional-api.ts'
-import { refusalWords, roundOf, STOP_CONFIRM, PART_WAY } from './words.ts'
+import { isUncertainResult, PART_WAY, refusalWords, roundOf, STOP_CONFIRM } from './words.ts'
 
 export function ResumeBanner() {
   const api = useOptionalApi()
@@ -48,7 +48,11 @@ export function ResumeBanner() {
   }
 
   const title =
-    state.phase === 'found' ? '50/50 test: we found the most likely cause' : `50/50 test in progress · ${roundOf(state)}`
+    state.phase === 'found'
+      ? isUncertainResult(state)
+        ? '50/50 test: result is uncertain'
+        : '50/50 test: we found the most likely cause'
+      : `50/50 test in progress · ${roundOf(state)}`
 
   return (
     <section

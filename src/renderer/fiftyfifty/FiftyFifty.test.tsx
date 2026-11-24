@@ -198,7 +198,28 @@ describe('FiftyFiftyScreen', () => {
     parked: ['dir:hair'],
     inMods: [],
     culprit: 'dir:hair',
-    cleared: ['cf:901234', 'dir:buildbuy', 'file:shoes.package']
+    cleared: ['cf:901234', 'dir:buildbuy', 'file:shoes.package'],
+    history: [
+      { round: 0, parked: ['cf:901234', 'dir:hair', 'dir:buildbuy', 'file:shoes.package'], answer: 'worked' },
+      { round: 1, parked: ['cf:901234', 'dir:buildbuy'], answer: 'crashed' },
+      { round: 2, parked: ['dir:hair'], answer: 'worked' }
+    ]
+  })
+
+  const uncertainFound = round({
+    phase: 'found',
+    round: 2,
+    suspects: ['dir:hair'],
+    parked: ['dir:hair'],
+    inMods: [],
+    culprit: 'dir:hair',
+    cleared: ['cf:901234', 'dir:buildbuy', 'file:shoes.package'],
+    history: [
+      { round: 0, parked: ['cf:901234', 'dir:hair', 'dir:buildbuy', 'file:shoes.package'], answer: 'worked' },
+      { round: 1, parked: ['cf:901234', 'dir:buildbuy'], answer: 'crashed' },
+      { round: 2, parked: ['file:shoes.package'], answer: 'not-sure' },
+      { round: 2, parked: ['file:shoes.package'], answer: 'crashed' }
+    ]
   })
 
   it('names the group as most likely, explains other mods are already back, and keeps it set aside', async () => {
@@ -273,13 +294,36 @@ describe('FiftyFiftyScreen', () => {
     expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled()
   })
 
-  it('with one group, the found screen does not talk about rounds', async () => {
+  it('says the result is uncertain when every split round after the control round crashed', async () => {
+    const finishes: string[] = []
+    const { user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': uncertainFound,
+      'fifty:finish': (req) => {
+        finishes.push(req.keep)
+        return ok({ ...uncertainFound, phase: 'stopped' })
+      }
+    })
+    expect(await screen.findByRole('heading', { name: 'The result is uncertain' })).toBeInTheDocument()
+    expect(screen.queryByText(/most likely/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/Hair/, { selector: 'strong' })).toBeInTheDocument()
+    expect(screen.getByText(/every split round/i)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Keep Hair set aside' }))
+    expect(finishes).toEqual(['keep-set-aside'])
+  })
+
+  it('with one group, passing control round 0 is not uncertain', async () => {
     setup(<FiftyFiftyScreen />, {
-      'fifty:get': round({ phase: 'found', culprit: 'dir:hair', parked: ['dir:hair'], inMods: [], history: [] })
+      'fifty:get': controlRound({
+        phase: 'found',
+        culprit: 'dir:hair',
+        suspects: ['dir:hair'],
+        parked: ['dir:hair'],
+        inMods: [],
+        history: [{ round: 0, parked: ['dir:hair'], answer: 'worked' }]
+      })
     })
     expect(await screen.findByRole('heading', { name: 'We found the most likely cause' })).toBeInTheDocument()
-    expect(screen.queryByText(/It took/)).not.toBeInTheDocument()
-    expect(screen.queryByText(/still set aside from the last round/)).not.toBeInTheDocument()
+    expect(screen.getByText(/It took 1 round/)).toBeInTheDocument()
   })
 })
 
@@ -333,9 +377,26 @@ describe('ResumeBanner', () => {
     expect(screen.queryByText(/50\/50/)).not.toBeInTheDocument()
   })
 
-  it('a found session says the cause was found', async () => {
+  it('a found session says the cause was found, or says uncertain when every split round crashed', async () => {
     setup(<ResumeBanner />, { 'fifty:get': round({ phase: 'found', culprit: 'dir:hair' }) }, { route: { screen: 'about' } })
     expect(await screen.findByText('50/50 test: we found the most likely cause')).toBeInTheDocument()
+    cleanup()
+
+    setup(
+      <ResumeBanner />,
+      {
+        'fifty:get': round({
+          phase: 'found',
+          culprit: 'dir:hair',
+          history: [
+            { round: 0, parked: ['cf:901234', 'dir:hair'], answer: 'worked' },
+            { round: 1, parked: ['cf:901234'], answer: 'crashed' }
+          ]
+        })
+      },
+      { route: { screen: 'about' } }
+    )
+    expect(await screen.findByText('50/50 test: result is uncertain')).toBeInTheDocument()
   })
 })
 

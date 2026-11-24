@@ -12,6 +12,7 @@ import {
   groupLabel,
   groupsWord,
   isControlRound,
+  isUncertainResult,
   roundHeader,
   roundsWord
 } from './words.ts'
@@ -240,17 +241,33 @@ export function FoundStep({
   locked: boolean
 }) {
   const rounds = state.history.filter((h) => h.answer !== 'not-sure').length
+  const uncertain = isUncertainResult(state)
   return (
     <Card>
-      <Heading>We found the most likely cause</Heading>
-      <p className="text-lg leading-relaxed">
-        <strong>{label}</strong> is most likely what's making your game crash.
-      </p>
-      <Text>
-        {rounds > 0 && <>It took {roundsWord(rounds)}. </>}
-        We already put your other mods back and left {label} set aside, so you can play while you look for an update
-        from its creator.
-      </Text>
+      <Heading>{uncertain ? 'The result is uncertain' : 'We found the most likely cause'}</Heading>
+      {uncertain ? (
+        <>
+          <p className="text-lg leading-relaxed">
+            The game crashed in every split round, so we can't be sure whether <strong>{label}</strong> is the only cause.
+          </p>
+          <Text>
+            It's the last group left, and we've already put your other mods back with {label} set aside so you can try
+            playing once with just it out. If the game still crashes, more than one mod may be involved, or two mods may
+            be clashing.
+          </Text>
+        </>
+      ) : (
+        <>
+          <p className="text-lg leading-relaxed">
+            <strong>{label}</strong> is most likely what's making your game crash.
+          </p>
+          <Text>
+            {rounds > 0 && <>It took {roundsWord(rounds)}. </>}
+            We already put your other mods back and left {label} set aside, so you can play while you look for an update
+            from its creator.
+          </Text>
+        </>
+      )}
       <div className="flex flex-wrap gap-3">
         <Button
           size="lg"

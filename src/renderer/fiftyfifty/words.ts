@@ -24,6 +24,12 @@ export function isNotModsResult(state: Pick<FiftyFifty, 'phase' | 'history'>): b
   return state.phase === 'stopped' && state.history.some((h) => h.round === 0 && h.answer === 'crashed')
 }
 
+export function isUncertainResult(state: Pick<FiftyFifty, 'phase' | 'history'>): boolean {
+  if (state.phase !== 'found') return false
+  const splitAnswers = state.history.filter((h) => h.round > 0 && h.answer !== 'not-sure')
+  return splitAnswers.length > 0 && splitAnswers.every((h) => h.answer === 'crashed')
+}
+
 export function roundOf(state: Pick<FiftyFifty, 'round' | 'roundsAtMost'>): string {
   const current = displayRound(state.round)
   return `Round ${current} of about ${Math.max(state.roundsAtMost, current)}`
