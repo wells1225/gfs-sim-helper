@@ -62,7 +62,6 @@ async function journalSteps(
       editData.set(steps.length, data)
       steps.push({ kind: 'edit', path: planned.path, savedCopy, beforeSha256: before, afterSha256: sha256Of(data), state: 'pending' })
     } else {
-      if (!(await exists(planned.path))) return null
       steps.push({ kind: 'remove-cache', path: planned.path, state: 'pending' })
     }
   }
@@ -126,16 +125,16 @@ export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgres
       for (const dir of await missingDirs(dirname(step.savedCopy), planned)) ops.push({ op: 'mkdir', path: dir })
       ops.push({ op: 'copy', from: step.path, to: step.savedCopy })
       ops.push({ op: 'write', path: step.path, data: built.editData.get(i)!, mode: 'replace' })
-    } else {
+    } else if (await exists(step.path)) {
       ops.push({ op: 'remove', path: step.path })
-    }
+    } // a cache that is already gone needs no op: the step counts as applied
     lastOp.push(ops.length - 1)
   }
 
   onProgress?.({ task: 'fix', stage: 'moving', done: 0, total: entry.steps.length })
   let result: GateResult
   try {
-    result = await deps.gate.run({ reason: 'fix', folderPath: plan.folderPath, ops })
+    result = ops.length === 0 ? { status: 'done' } : await deps.gate.run({ reason: 'fix', folderPath: plan.folderPath, ops })
   } catch (err) {
     // We cannot know which ops ran: ask the disk.
     for (const step of entry.steps) if ((await inspect(step)).where === 'done') step.state = 'applied'
@@ -173,9 +172,13 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
   const toRevert: { index: number; lastOp: number }[] = []
   const planned = new Set<string>()
   let problem: string | null = null
+  // A settled entry is trusted: only its applied steps are undone. An in-progress one was cut off, so the disk
+  // decides for its pending and applied steps.
+  const cutOff = entry.status === 'in-progress'
   for (let i = entry.steps.length - 1; i >= 0; i -= 1) {
     const step = entry.steps[i]!
-    if (step.kind === 'remove-cache') continue
+    if (step.kind === 'remove-cache' || step.state === 'reverted') continue
+    if (!cutOff && step.state !== 'applied') continue
     const onDisk = await inspect(step)
     if (onDisk.where === 'not-done') {
       if (step.state === 'applied') step.state = 'reverted'
