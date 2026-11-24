@@ -525,13 +525,20 @@ describe('fixture generator', () => {
     const odActive = await stat(join(odDir, 'Users/Player/OneDrive/Documents/Electronic Arts/The Sims 4/Options.ini'))
     const odStale = await stat(join(odDir, 'Users/Player/Documents/Electronic Arts/The Sims 4/Options.ini'))
     expect(odActive.mtimeMs).toBeGreaterThan(odStale.mtimeMs)
-    // Folders inside the stale user folder are as old as the folder itself, so a scan of
-    // the stale tree never finds an entry newer than the active folder.
+    // Folders inside the stale user folder are as old as the folder itself. Its one newer
+    // entry is a mod file installed after the game stopped using the folder.
     const staleFolderMs = Date.parse('2026-09-10T10:00:00.000Z')
     for (const dir of ['', 'Mods', 'Mods/CAS', 'saves', 'Tray', 'cache']) {
       const info = await stat(join(odDir, 'Users/Player/Documents/Electronic Arts/The Sims 4', dir))
       expect(info.mtimeMs, `stale dir ${dir || '.'}`).toBe(staleFolderMs)
     }
+    const staleRoot = join(odDir, 'Users/Player/Documents/Electronic Arts/The Sims 4')
+    const activeRoot = join(odDir, 'Users/Player/OneDrive/Documents/Electronic Arts/The Sims 4')
+    const lateMod = await stat(join(staleRoot, 'Mods/CAS/late_install_hair.package'))
+    const activeSave = await stat(join(activeRoot, 'saves/Slot_00000002.save'))
+    const staleSave = await stat(join(staleRoot, 'saves/Slot_00000002.save'))
+    expect(lateMod.mtimeMs).toBeGreaterThan(activeSave.mtimeMs)
+    expect(activeSave.mtimeMs).toBeGreaterThan(staleSave.mtimeMs)
 
     // exceptions: game-only LE, mod-matching LE -> ts4script .pyc, cut-off LE, lastCrash, BE HTML, CurseForge JSON
     const exSpec = await loadSpec(join(SPECS_DIR, 'exceptions.json'))

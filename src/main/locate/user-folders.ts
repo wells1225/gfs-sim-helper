@@ -72,10 +72,28 @@ async function hasOptionsIniFile(folderPath: string): Promise<boolean> {
   }
 }
 
-async function findNewestFileDate(rootDir: string): Promise<Date> {
+// Only what the game itself writes dates a folder. A mod manager can keep installing into Mods/
+// of a folder the game no longer uses, and caches and Tray files are copied around by hand.
+const GAME_WRITTEN_FILE_NAMES = new Set(['options.ini', 'gameversion.txt', 'config.log', 'usersetting.ini'])
+const GAME_WRITTEN_LOG_PATTERN = /^last(exception|uiexception|crash).*\.txt$/
+const SAVES_DIR_NAME = 'saves'
+
+async function findNewestGameWrittenFileDate(rootDir: string): Promise<Date> {
   let newestMs = 0
   // Real paths already walked, so a link back into the folder cannot loop.
   const visited = new Set<string>()
+
+  async function countFile(filePath: string): Promise<void> {
+    try {
+      // stat follows links, so a linked file is dated by its target.
+      const info = await stat(filePath)
+      if (info.isFile() && info.mtimeMs > newestMs) {
+        newestMs = info.mtimeMs
+      }
+    } catch {
+      // Ignore transient/unreadable files and broken links
+    }
+  }
 
   async function walk(currentDir: string): Promise<void> {
     const key = normalizeForComparison(await resolveRealPath(currentDir))
@@ -110,8 +128,24 @@ async function findNewestFileDate(rootDir: string): Promise<Date> {
     }
   }
 
+  let topEntries
+  try {
+    topEntries = await readdir(rootDir, { withFileTypes: true })
+  } catch {
+    return new Date(0)
+  }
+
   // Folder mtimes are ignored on purpose: a look-alike folder can be touched without the game using it.
-  await walk(rootDir)
+  for (const entry of topEntries) {
+    const name = entry.name.toLowerCase()
+    const fullPath = join(rootDir, entry.name)
+    if (name === SAVES_DIR_NAME) {
+      // walk() returns quietly when saves is a plain file or a broken link.
+      await walk(fullPath)
+    } else if (GAME_WRITTEN_FILE_NAMES.has(name) || GAME_WRITTEN_LOG_PATTERN.test(name)) {
+      await countFile(fullPath)
+    }
+  }
   return new Date(newestMs)
 }
 
@@ -170,7 +204,7 @@ export async function findUserFolders(host: Pick<Host, 'documentsDir' | 'env'>):
 
       const inOneDrive =
         oneDriveRoots.some((root) => isInsideRoot(realPath, root)) || isParentOfDocumentsOneDrive(realPath)
-      const newestFileAt = await findNewestFileDate(realPath)
+      const newestFileAt = await findNewestGameWrittenFileDate(realPath)
 
       folders.push({
         path: realPath,

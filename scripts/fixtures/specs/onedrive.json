@@ -1,6 +1,6 @@
 {
   "name": "onedrive",
-  "description": "Active Sims 4 user folder synced inside OneDrive/Documents plus an older stale local Documents folder (its GameVersion.txt has non-text bytes before the version: inferred, unverified layout) and a newer look-alike folder with a German name and no Options.ini.",
+  "description": "Active Sims 4 user folder synced inside OneDrive/Documents plus an older stale local Documents folder that a mod manager still installs into, so its newest file is a mod newer than anything in the active folder (its GameVersion.txt has non-text bytes before the version: inferred, unverified layout) and a newer look-alike folder with a German name and no Options.ini.",
   "seed": 6006,
   "baseTime": "2026-11-22T15:00:00.000Z",
   "gameInstall": {
@@ -50,6 +50,13 @@
           "mtime": "2026-09-09T08:00:00.000Z",
           "keys": [
             { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0006000000000002" }
+          ]
+        },
+        {
+          "relPath": "CAS/late_install_hair.package",
+          "mtime": "2026-11-23T08:00:00.000Z",
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0006000000000004" }
           ]
         }
       ]

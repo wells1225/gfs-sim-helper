@@ -222,10 +222,59 @@ describe('locate', () => {
     await utimes(join(realSaves, 'Slot_00000002.save'), saveTime, saveTime)
     const linkType = process.platform === 'win32' ? 'junction' : 'dir'
     await symlink(realSaves, join(simsFolder, 'saves'), linkType)
-    await symlink(simsFolder, join(simsFolder, 'loop'), linkType)
+    // The loop sits inside saves, the only folder that is walked.
+    await symlink(realSaves, join(realSaves, 'loop'), linkType)
 
     const folders = await findUserFolders({ documentsDir: docs, env: {} })
     expect(folders.map((f) => f.newestFileAt)).toEqual([saveTime])
+  })
+
+  it('dates a folder only by files the game writes, whatever their letter case', async () => {
+    const docs = join(workDir, 'game-written/Documents')
+    const simsFolder = join(docs, 'Electronic Arts/The Sims 4')
+    const old = new Date('2026-08-01T12:00:00.000Z')
+    const newer = new Date('2026-11-23T12:00:00.000Z')
+    const put = async (relPath: string, time: Date): Promise<void> => {
+      await mkdir(dirname(join(simsFolder, relPath)), { recursive: true })
+      await writeFile(join(simsFolder, relPath), 'x')
+      await utimes(join(simsFolder, relPath), time, time)
+    }
+    const newestAt = async (): Promise<Date | undefined> =>
+      (await findUserFolders({ documentsDir: docs, env: {} }))[0]?.newestFileAt
+
+    await put('Options.ini', old)
+    // None of these are written by the game on its own, so none may date the folder.
+    for (const ignored of [
+      'Mods/CAS/new_hair.package',
+      'Mods/saves/Slot_00000001.save',
+      'Mods/lastException.txt',
+      'Tray/0x00000000!0x0001.trayitem',
+      'localthumbcache.package',
+      'cachestr/spotlight_en-us.package',
+      'Screenshots/shot.png',
+      'BE-ExceptionReport.html',
+      'notes about lastException.txt',
+      'Options.ini.bak'
+    ]) {
+      await put(ignored, newer)
+    }
+    expect(await newestAt()).toEqual(old)
+
+    // Each game-written name counts on its own, in any letter case.
+    const stamps: Array<[string, string]> = [
+      ['gameversion.TXT', '2026-09-01T12:00:00.000Z'],
+      ['CONFIG.LOG', '2026-09-02T12:00:00.000Z'],
+      ['UserSetting.ini', '2026-09-03T12:00:00.000Z'],
+      ['lastException_63887256771.txt', '2026-09-04T12:00:00.000Z'],
+      ['lastUIException_63887256772.txt', '2026-09-05T12:00:00.000Z'],
+      ['LastCrash.txt', '2026-09-06T12:00:00.000Z'],
+      ['Saves/Slot_00000002.save', '2026-09-07T12:00:00.000Z'],
+      ['Saves/Scratch/Slot_00000003.save.ver0', '2026-09-08T12:00:00.000Z']
+    ]
+    for (const [relPath, iso] of stamps) {
+      await put(relPath, new Date(iso))
+      expect(await newestAt(), relPath).toEqual(new Date(iso))
+    }
   })
 
   it('reads version from PE first, then falls back to a messy binary-prefixed GameVersion.txt', async () => {

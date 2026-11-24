@@ -81,7 +81,7 @@ jobs:
             }
             Write-Host "Registry + real Host locate OK: $($result.gameInstall.path) ($($result.gameInstall.version))"
 
-            # (3) Copy a small exe as TS4_x64.exe, start it, assert gameRunning=true, then stop it
+            # (3) Copy a small exe as TS4_x64.exe, start it, assert gameRunning='running', then stop it
             New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
             $fakeExe = Join-Path $tempDir 'TS4_x64.exe'
             Copy-Item -Path (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination $fakeExe
