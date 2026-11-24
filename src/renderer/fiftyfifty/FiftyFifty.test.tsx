@@ -680,9 +680,13 @@ describe('the found card only says what History shows', () => {
   })
 
   it('a cause whose move is half done is not called set aside or back', async () => {
-    setup(<FiftyFiftyScreen />, { 'fifty:get': found, 'journal:list': [moved('dir:hair', 'Hair', 'needs-attention')] })
-    expect(await screen.findByRole('heading', { name: 'We found the most likely cause' })).toBeInTheDocument()
-    await waitFor(() => expect(screen.queryByText(/Hair is set aside|Hair is in your Mods folder|left Hair set aside/)).not.toBeInTheDocument())
+    setup(<FiftyFiftyScreen />, {
+      'fifty:get': found,
+      'journal:list': [moved('dir:hair', 'Hair', 'needs-attention'), moved('cf:901234', 'Wicked Wardrobe', 'done')]
+    })
+    // The warning shows History has answered, so what follows is about the answer and not the wait for it.
+    expect(await screen.findByText(/not back in your Mods folder yet: Wicked Wardrobe\./)).toBeInTheDocument()
+    expect(screen.queryByText(/Hair is set aside|Hair is in your Mods folder|left Hair set aside/)).not.toBeInTheDocument()
   })
 })
 
@@ -740,6 +744,23 @@ describe('a damaged progress file', () => {
     expect(await screen.findByText(TITLE)).toBeInTheDocument()
     expect(screen.getByText(/not back in your Mods folder yet: Hair\. Wait a moment/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument()
+  })
+
+  it('a stop on the 50/50 screen that finds the file damaged leaves no old notice behind once it is fixed', async () => {
+    const gets: FiftyGet[] = [round(), { status: 'damaged' }, null]
+    const stops: FiftyStopResult[] = [{ status: 'stopped-part-way', state: null, notBack: ['Hair'], detail: 'disk hiccup' }, ok(null)]
+    const { user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': () => gets.shift() ?? null,
+      'fifty:stop': () => stops.shift()!,
+      'journal:list': []
+    })
+    await user.click(await screen.findByRole('button', { name: 'Stop the test' }))
+    await user.click(screen.getByRole('button', { name: 'Put everything back and stop' }))
+    expect(await screen.findByText(TITLE)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Put everything back and stop' }))
+    expect(await screen.findByRole('button', { name: 'Start the 50/50 test' })).toBeInTheDocument()
+    expect(screen.queryByText(/Some mods were moved but not all/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
   })
 
   it('names a mod that is still not back after the file is removed', async () => {
