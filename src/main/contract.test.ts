@@ -18,7 +18,7 @@ import type {
   UpdateInstall,
   UpdateState
 } from '../shared/model.ts'
-import { sampleJournalEntry } from '../shared/testing/sample.ts'
+import { sampleFiftyFifty, sampleJournalEntry } from '../shared/testing/sample.ts'
 import { appPaths } from './app-paths.ts'
 import { assistHandlers } from './assist/handlers.ts'
 import { fiftyHandlers } from './fiftyfifty/handlers.ts'
@@ -345,5 +345,14 @@ describe('auto-update contract (PR 13)', () => {
     expect(launchEnv({ SIMS_HELPER_UPDATES: 'on', PATH: '/bin' }, {})).toMatchObject({ SIMS_HELPER_UPDATES: 'off', PATH: '/bin' })
     expect(launchEnv({}, { SIMS_HELPER_UPDATES: undefined })).not.toHaveProperty('SIMS_HELPER_UPDATES')
     expect(launchEnv({}, { SIMS_HELPER_UPDATES: 'on' })).toMatchObject({ SIMS_HELPER_UPDATES: 'on' })
+  })
+})
+
+describe('50/50 control round (PR 11)', () => {
+  it('the sample at round 1 has the round 0 control in its history and counts it in roundsAtMost', () => {
+    const state = sampleFiftyFifty()
+    expect(state.roundsAtMost).toBe(Math.ceil(Math.log2(state.groups.length)) + 1)
+    expect(state.history).toEqual([{ round: 0, parked: state.suspects, answer: 'worked' }])
+    expect(state.round).toBe(1)
   })
 })

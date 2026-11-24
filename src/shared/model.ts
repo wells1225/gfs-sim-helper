@@ -331,8 +331,8 @@ export interface FiftyFifty {
   startedAt: IsoTime
   folderPath: string
   phase: FiftyPhase
-  round: number
-  roundsAtMost: number // rounds start at 1; roundsAtMost is ceil(log2(groups at the start))
+  round: number // 0 is the control round: every group set aside. The halving rounds follow from 1
+  roundsAtMost: number // ceil(log2(groups at the start)) + 1, the control round included
   groups: ModGroup[] // as scanned when the test started
   suspects: string[] // group ids that may still be the cause; script groups first, then by label
   parked: string[]
