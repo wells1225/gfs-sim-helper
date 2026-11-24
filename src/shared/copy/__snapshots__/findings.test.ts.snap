@@ -59,15 +59,15 @@ exports[`finding words > match the reviewed snapshot 1`] = `
     "title": "Wicked Wardrobe may be causing errors",
   },
   "mods-off: both": {
-    "detail": "The game turns mods off after most updates, so this is common on patch day. Don't save your game until mods are back on: saving now may remove CC and mod items from your save.",
+    "detail": "The game turns mods off after most updates, so this is common on patch day. Don't save your game until mods are back on. Saving now may remove CC and mod items from your save.",
     "title": "Your mods and script mods are turned off",
   },
   "mods-off: mods only": {
-    "detail": "The game's “Enable Custom Content and Mods” setting is off, so none of your mods are loading. Don't save your game until mods are back on: saving now may remove CC and mod items from your save.",
+    "detail": "The game's “Enable Custom Content and Mods” setting is off, so none of your mods are loading. Don't save your game until mods are back on. Saving now may remove CC and mod items from your save.",
     "title": "Your mods are turned off",
   },
   "mods-off: script mods only": {
-    "detail": "The game's “Script Mods Allowed” setting is off, so your script mods aren't running. Don't save your game until mods are back on: saving now may remove CC and mod items from your save.",
+    "detail": "The game's “Script Mods Allowed” setting is off, so no script mods can run. Don't save your game until mods are back on. Saving now may remove CC and mod items from your save.",
     "title": "Script mods are turned off",
   },
   "package-too-deep: 1, depth 1": {

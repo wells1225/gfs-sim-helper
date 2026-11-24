@@ -44,6 +44,14 @@ describe('mods-off', () => {
     expect(only(scan, 'mods-off')[0]!.evidence).toEqual(['Options.ini: scriptmodsenabled = 0'])
   })
 
+  it('fires when only script mods are off and she has only package files, in words that hold either way', () => {
+    const scan = withFiles([pkg('CAS/dress.package')], { facts: { ...CLEAN_FACTS, options: { status: 'ok', mods: 'on', scriptMods: 'off' } } })
+    const [finding] = only(scan, 'mods-off')
+    expect(finding!.title).toBe('Script mods are turned off')
+    expect(finding!.detail).toContain('no script mods can run')
+    expect(finding!.detail).toContain("Don't save your game until mods are back on.")
+  })
+
   it('stays silent with no package or script, when a switch is only missing, or when Options.ini was not read', () => {
     const off = { ...CLEAN_FACTS, options: { status: 'ok', mods: 'off', scriptMods: 'off' } as const }
     expect(only(withFiles([archive('a.zip'), other('readme.txt')], { facts: off }), 'mods-off')).toEqual([])

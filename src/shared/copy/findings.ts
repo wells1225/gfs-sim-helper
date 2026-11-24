@@ -25,8 +25,7 @@ function itThem(count: number): 'it' | 'them' {
 }
 
 export function modsOffWords(input: { modsOff: boolean; scriptModsOff: boolean }): FindingWords {
-  const saveWarning =
-    "Don't save your game until mods are back on: saving now may remove CC and mod items from your save."
+  const saveWarning = "Don't save your game until mods are back on. Saving now may remove CC and mod items from your save."
   if (input.modsOff && input.scriptModsOff) {
     return {
       title: 'Your mods and script mods are turned off',
@@ -41,7 +40,7 @@ export function modsOffWords(input: { modsOff: boolean; scriptModsOff: boolean }
   }
   return {
     title: 'Script mods are turned off',
-    detail: `The game's “Script Mods Allowed” setting is off, so your script mods aren't running. ${saveWarning}`
+    detail: `The game's “Script Mods Allowed” setting is off, so no script mods can run. ${saveWarning}`
   }
 }
 
