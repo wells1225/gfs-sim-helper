@@ -1,4 +1,4 @@
-# Who may touch which file (PRs 4 to 12)
+# Who may touch which file (PRs 4 to 13)
 
 One rule: **a file has one owner.** A PR creates and edits only the paths in its row. Nobody edits a shared file
 after the contract commit. Where `plan.md`'s "Files it may touch" column differs, this file wins (for example,
@@ -21,6 +21,7 @@ stub belongs to the PR whose row covers it.
 | 10 | `wells/pr-10-fixes` | `wells/contracts` |
 | 11 | `wells/pr-11-fifty-fifty` | `wells/contracts` |
 | 12 | `wells/pr-12-assist` | `wells/contracts` |
+| 13 | `wells/pr-13-update` | `wells/contracts` |
 
 ## Owned paths
 
@@ -37,9 +38,15 @@ stub belongs to the PR whose row covers it.
 | 10 | `src/main/fixes/**` · `src/renderer/fixes/**` · `test/e2e/screens/pr-10-fixes.spec.ts` · `test/e2e/live/pr-10-fixes.spec.ts` |
 | 11 | `src/main/fiftyfifty/**` · `src/renderer/fiftyfifty/**` · `test/e2e/screens/pr-11-fifty-fifty.spec.ts` · `test/e2e/live/pr-11-fifty-fifty.spec.ts` |
 | 12 | `src/main/assist/**` · `src/renderer/assist/**` · `test/e2e/screens/pr-12-assist.spec.ts` |
+| 13 | `src/main/update/**` · `src/renderer/update/**` · `scripts/release/**` · `.github/workflows/release.yml` · `.github/workflows/pr-13-update.yml` · `test/e2e/screens/pr-13-update.spec.ts` · `test/e2e/live/pr-13-update.spec.ts` |
 
 Inside PR 12, Fable writes `src/main/assist/key-store.ts` and `src/main/assist/key-store.test.ts`. The PR 12 builder
 writes everything else in that row and does not edit those two files.
+
+Inside PR 13, Fable writes `src/main/update/updater.ts` and `src/main/update/updater.test.ts`: the only code that
+loads `electron-updater`, decides whether updates are allowed and starts the installer. The PR 13 builder writes
+everything else in that row. The allow-list entry `ALLOWED_PACKAGES['electron-updater'] = ['main/update/updater.ts']`
+goes in `gate-lint.test.ts`, which is PR 8's file.
 
 ## Shared files: the contract commit only
 
@@ -71,6 +78,8 @@ A needed change to any of these goes to the lead as a "Contract request". The le
 - PRs 5, 6, 8: no workflow file. Their Windows proof is their unit tests in `ci.yml`.
 - PRs 7, 10, 11, 12: no workflow file. Their screenshots come from their own `test/e2e/screens/<pr-slug>.spec.ts`,
   which `ci.yml` runs and uploads.
+- PR 13 adds `.github/workflows/pr-13-update.yml` (installer A updates itself to B on `windows-latest`) and
+  `.github/workflows/release.yml` (a `v*` tag builds a draft release; only Tyler publishes). See `briefs/pr-13.md`.
 - PRs 4 and 9 have a timing probe, so each adds its own `.github/workflows/<pr-slug>.yml`. Shape:
 
 ```yaml
@@ -107,6 +116,7 @@ each with `npm view <name> version` and lets `package-lock.json` pin it. No PR r
 | `sonner` | toasts with Undo | PRs 10, 11 |
 | `@fontsource-variable/plus-jakarta-sans` | the bundled font | contract |
 | `@testing-library/user-event` | clicks and typing in component tests | PRs 7, 10, 11, 12 |
+| `electron-updater` (locked at 6.8.11) | check, download and install updates, inside `updater.ts` only | PR 13 |
 
 On purpose **not** added: a router, a state library, an XML or HTML parser (the logs are read with bounded regular
 expressions), an ini parser, `@s4tk/models` (we read the package index ourselves).

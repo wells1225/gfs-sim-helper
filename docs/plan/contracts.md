@@ -1,6 +1,6 @@
-# Shared contract for PRs 4 to 12
+# Shared contract for PRs 4 to 13
 
-PRs 4 to 12 are built at the same time, each on its own branch from `wells/contracts`. This file is everything they
+PRs 4 to 13 are built at the same time, each on its own branch from `wells/contracts`. This file is everything they
 share. A builder codes against it and never needs another builder's code. Who owns which file is in
 [`ownership.md`](ownership.md). Where this file and `plan.md` differ, this file wins.
 
@@ -16,6 +16,10 @@ share. A builder codes against it and never needs another builder's code. Who ow
   section 3). Only `src/main/services.ts` (contract) and a module's own `cli.ts` import across modules. Your unit
   tests pass fakes.
 - **Reads and writes.** No file under `src/` except `src/main/safety/gate.ts` imports anything that changes the disk.
+  **One named exception:** `src/main/update/updater.ts` (PR 13, Fable) is the only file that may load
+  `electron-updater`, which writes its own download cache under `%LOCALAPPDATA%\sims-helper-updater\` and starts the
+  installer. It never touches the Sims folder or `dataDir`, and it is off unless the app is installed outside
+  Documents and OneDrive (`docs/research/fable-auto-update.md`, section 5).
   From `node:fs` and `node:fs/promises` only `readdir`, `readFile`, `realpath`, `stat`, `lstat`, `readlink` and
   `statfs` are allowed, as named imports. For part of a file, a stream or a hash use `src/main/fs-read.ts` (contract):
   `openForRead(file)` (gives `{ size, read(buffer, position), close() }`), `readStream(file)`, `sha256File(file)`.
@@ -152,6 +156,7 @@ export type BackupStatus =
 export interface BackupRecord { id: string; at: IsoTime; folderPath: string; files: number; bytes: number; state: 'copying' | 'verified' | 'failed' }
 export type BackupRefusal =
   | 'game-running' | 'game-state-unknown' | 'backup-folder-in-onedrive' | 'not-enough-space' | 'sims-folder-missing' | 'backup-already-running'
+  | 'backup-folder-in-sims-folder'
 export type BackupResult = { status: 'verified'; record: BackupRecord } | { status: 'refused'; reason: BackupRefusal } | { status: 'failed'; detail: string }
 export type StepState = 'pending' | 'applied' | 'reverted'
 export type JournalStep =
@@ -162,7 +167,9 @@ export type ActionKind = Exclude<FixId, 'enable-group'> // enabling a group is t
 export type JournalOrigin = { by: 'fix' } | { by: 'fifty-fifty'; sessionId: string; round: number }
 export interface JournalEntry {
   id: string; at: IsoTime; action: ActionKind; summary: string; origin: JournalOrigin
-  folderPath: string; groupId: string | null; backupId: string; steps: JournalStep[]
+  folderPath: string; groupId: string | null
+  groupLabel: string | null; hasScript: boolean // copied from ActionPlan; null and false when groupId is null
+  backupId: string; steps: JournalStep[]
   status: 'in-progress' | 'done' | 'undone' | 'needs-attention'; undo: 'can-undo' | 'cannot-undo'; undoneAt: IsoTime | null
 }
 // ── Fixes (PR 10)
@@ -173,16 +180,21 @@ export type FixRefusal =
   | { why: 'gate'; refusal: GateRefusal } | { why: 'backup'; reason: BackupRefusal | 'backup-failed' }
   | { why: 'out-of-date'; detail: 'no-scan' | 'unknown-finding' | 'unknown-group' | 'file-changed' | 'nothing-to-do' }
   | { why: 'fifty-fifty-running' }
+  | { why: 'not-started' } // the action failed before anything changed (for example the journal could not be written)
 export type FixOutcome =
   | { status: 'done'; entry: JournalEntry } | { status: 'refused'; refusal: FixRefusal } // refused: nothing changed
   | { status: 'stopped-part-way'; entry: JournalEntry; detail: string } // History shows it and can undo it
-export interface DisabledGroup { groupId: string; label: string; entryId: string; at: IsoTime }
+export interface DisabledGroup {
+  groupId: string; label: string; entryId: string; at: IsoTime
+  origin: JournalOrigin['by'] // 'fix' or 'fifty-fifty': who set the group aside
+}
 // ── 50/50 (PR 11)
 export type FiftyPhase = 'close-curseforge' | 'ready-to-test' | 'awaiting-answer' | 'found' | 'stopped'
 export type FiftyAnswer = 'crashed' | 'worked' | 'not-sure'
 export interface FiftyFifty {
   id: string; startedAt: IsoTime; folderPath: string; phase: FiftyPhase
-  round: number; roundsAtMost: number // rounds start at 1; roundsAtMost is ceil(log2(groups at the start))
+  round: number // 0 is the control round: every group set aside. The halving rounds follow from 1
+  roundsAtMost: number // ceil(log2(groups at the start)) + 1, the control round included
   groups: ModGroup[] // as scanned when the test started
   suspects: string[] // group ids that may still be the cause; script groups first, then by label
   parked: string[]; inMods: string[] // the half of the suspects set aside this round, and the half still in Mods
@@ -194,11 +206,21 @@ export type FiftyResult =
   | { status: 'stopped-part-way'; state: FiftyFifty; detail: string }
 // ── AI help (PR 12)
 export type KeyStatus = 'set' | 'not-set' | 'encryption-unavailable'
+/** What setKey answers: a KeyStatus, or 'not-saved' when the new key was refused and the old one is still stored. */
+export type KeySetResult = KeyStatus | 'not-saved'
 export interface AssistStatus { key: KeyStatus; offer: 'offer' | 'hide' }
 export interface AssistPreview { id: string; text: string } // text: exactly what will be sent
 export type AssistAnswer =
   | { status: 'answered'; text: string }
-  | { status: 'no-answer'; why: 'no-key' | 'declined' | 'offline' | 'limit-reached' | 'preview-expired' | 'error' }
+  | { status: 'no-answer'; why: 'no-key' | 'key-rejected' | 'declined' | 'offline' | 'limit-reached' | 'preview-expired' | 'error' } // key-rejected: HTTP 401
+// ── Updates (PR 13)
+export type UpdateState =
+  | { state: 'off'; why: 'not-installed-app' | 'switched-off' | 'unsafe-install-folder' }
+  | { state: 'idle'; current: string; checkedAt: IsoTime | null; justUpdated: boolean } | { state: 'checking'; current: string }
+  | { state: 'available'; current: string; next: string } | { state: 'downloading'; current: string; next: string; percent: number }
+  | { state: 'ready'; current: string; next: string } // downloaded, checksum passed, waits for her click
+  | { state: 'failed'; current: string; step: 'check' | 'download'; why: 'offline' | 'bad-file' | 'error' }
+export type UpdateInstall = { status: 'restarting' } | { status: 'refused'; why: 'busy' | 'not-ready' }
 ```
 
 Differences from `plan.md`, on purpose: times are `IsoTime`; `ModFile` keeps a key count, not the keys; files are
@@ -243,8 +265,21 @@ export interface GateDeps {
   backupStatus(folderPath: string): Promise<BackupStatus>
 }
 export type PlannedStep =
-  | { kind: 'move'; from: string; to: string } | { kind: 'edit'; path: string; newText: string } | { kind: 'remove-cache'; path: string }
-export interface ActionPlan { action: ActionKind; summary: string; origin: JournalOrigin; folderPath: string; groupId: string | null; steps: PlannedStep[] }
+  | { kind: 'move'; from: string; to: string } | { kind: 'remove-cache'; path: string }
+  | { kind: 'edit'; path: string; newText: string; beforeSha256: Sha256 } // the hash when read; runAction refuses 'file-changed' if it differs
+export interface ActionPlan {
+  entryId: string // chosen by the planner; runAction uses it for the journal entry and holding/<entryId>/ paths
+  action: ActionKind; summary: string; origin: JournalOrigin; folderPath: string; groupId: string | null
+  groupLabel: string | null; hasScript: boolean // ModGroup.label and .hasScript for a one-group action, else null and false
+  steps: PlannedStep[]
+}
+/** planFix's third argument: where to plan, plus what applyFix read from the disk first. */
+export interface PlanFixAt {
+  holdingDir: string; entryId: string
+  optionsText?: string // Options.ini as read, for 'turn-mods-on'
+  existingCaches?: readonly string[] // the CACHE_NAMES present now, for 'clear-caches'
+  existingModPaths?: readonly RelPath[] // destinations already taken, for 'move-script-up'
+}
 export type OnProgress = (progress: Progress) => void
 export interface Safety { // PR 9
   backupStatus(folderPath: string): Promise<BackupStatus>
@@ -272,9 +307,10 @@ export interface DisableMechanism { // section 6
   plan(group: ModGroup, at: { modsDir: string; holdingDir: string; entryId: string }): PlannedStep[]
 }
 export interface AssistMessage { model: string; system: string; user: string; maxTokens: number }
-export type AssistReply = { status: 'text'; text: string } | { status: 'failed'; why: 'no-key' | 'declined' | 'offline' | 'limit-reached' | 'error' }
+export type AssistReply = // key-rejected: HTTP 401, the stored key no longer works
+  | { status: 'text'; text: string } | { status: 'failed'; why: 'no-key' | 'key-rejected' | 'declined' | 'offline' | 'limit-reached' | 'error' }
 export interface KeyStore { // PR 12, section 8
-  status(): Promise<KeyStatus>; set(key: string): Promise<KeyStatus>; clear(): Promise<KeyStatus>
+  status(): Promise<KeyStatus>; set(key: string): Promise<KeySetResult>; clear(): Promise<KeyStatus>
   send(message: AssistMessage): Promise<AssistReply>
 }
 export interface SafeStorageLike { isEncryptionAvailable(): boolean; encryptString(text: string): Uint8Array; decryptString(data: Uint8Array): string }
@@ -289,12 +325,28 @@ export interface ScanDeps { // the real functions of PRs 4, 5 and 6, or fakes
   runRules: typeof import('./rules/index.ts').runRules
   clock: Clock; newId(): string; paths: AppPaths
 }
+export interface UpdaterInput { // PR 13: createUpdater(input) in src/main/update/updater.ts gives the Updater
+  isPackaged: boolean; version: string // app.isPackaged, app.getVersion()
+  installDir: string // the folder of the running .exe
+  argv: readonly string[] // '--updated': the installer just restarted the app after an update
+  env: Readonly<Record<string, string | undefined>> // SIMS_HELPER_UPDATES=off switches updates off; nothing can point the feed elsewhere
+  keepOutOf: readonly string[] // Documents and the OneDrive roots: off when installDir is inside or contains one
+  platform: NodeJS.Platform // off except on 'win32'
+}
+export interface Updater { // PR 13. The feed is only the installed app's app-update.yml
+  state(): UpdateState
+  check(): Promise<UpdateState> // during checking, downloading or ready: the state unchanged
+  download(): Promise<UpdateState> // only from 'available'
+  install(): UpdateInstall // only from 'ready': quitAndInstall(true, true), once
+}
 /** Built once in services.ts and handed to every handlers file. */
 export interface AppContext {
   host: Host; clock: Clock; paths: AppPaths; newId(): string // newId: 'yyyymmdd-hhmmss-xxxx', sorts by time
   redact(text: string): string // src/main/redact.ts: her Windows user name becomes <user>
   gameState(): Promise<GameRunState>
   scan: ScanDeps; gate: Gate; safety: Safety; fixes: Fixes; keyStore: KeyStore
+  updater: Updater // createContext's optional `updater`; without one, always 'off'
+  busy(): boolean // true while a safety or fixes call runs (services.ts counts them); update:install refuses 'busy'
   session: { scan: Scan | null } // the last finished scan
   emit(progress: Progress): void // sends the 'progress' event to the window
   reveal(file: string): void // shows a file in Explorer
@@ -329,7 +381,7 @@ runGate(deps: GateDeps, request: WriteRequest): Promise<GateResult>
 // PR 9  src/main/safety/index.ts: the six Safety methods as functions of the same names, `deps: SafetyDeps` first
 // PR 10  src/main/fixes/index.ts, disable.ts, handlers.ts: the Fixes methods the same way, `deps: FixDeps` first
 //        (apply is exported as applyFix), plus:
-planFix(scan: Scan, request: FixRequest, at: { holdingDir: string; entryId: string }):
+planFix(scan: Scan, request: FixRequest, at: PlanFixAt):
   { status: 'planned'; plan: ActionPlan } | { status: 'refused'; refusal: FixRefusal } // pure
 DISABLE: DisableMechanism
 // PR 11  src/main/fiftyfifty/index.ts, handlers.ts
@@ -345,6 +397,8 @@ assistOffer(scan: Scan | null, key: KeyStatus): 'offer' | 'hide' // pure
 buildPreview(scan: Scan, redact: (text: string) => string, id: string): AssistPreview // pure
 ask(keyStore: KeyStore, preview: AssistPreview): Promise<AssistAnswer>
 ASSIST_MODEL = 'claude-haiku-5-5'
+// PR 13  src/main/update/updater.ts (Fable), src/main/update/handlers.ts
+createUpdater(input: UpdaterInput): Updater // the stub is always { state: 'off', why: 'switched-off' }
 ```
 
 ## 5. The write gate (PR 8, written by Fable)
@@ -411,14 +465,18 @@ export interface IpcInvoke { // renderer asks, main answers
   'fifty:get': { req: void; res: FiftyFifty | null } // PR 11 owns this block
   'fifty:start': { req: void; res: FiftyResult }
   'fifty:begin-round': { req: void; res: FiftyResult }
-  'fifty:answer': { req: { answer: FiftyAnswer }; res: FiftyResult }
+  'fifty:answer': { req: { answer: FiftyAnswer; round: number }; res: FiftyResult } // the round on her screen
   'fifty:stop': { req: void; res: FiftyResult }
   'fifty:finish': { req: { keep: 'keep-set-aside' | 'put-back' }; res: FiftyResult }
   'assist:status': { req: void; res: AssistStatus } // PR 12 owns this block
   'assist:preview': { req: void; res: AssistPreview | null }
   'assist:send': { req: { previewId: string }; res: AssistAnswer }
-  'assist:set-key': { req: { key: string }; res: KeyStatus } // the only message that carries the key
+  'assist:set-key': { req: { key: string }; res: KeySetResult } // the only message that carries the key
   'assist:clear-key': { req: void; res: KeyStatus }
+  'update:get': { req: void; res: UpdateState } // PR 13 owns this block
+  'update:check': { req: { by: 'start' | 'click' }; res: UpdateState } // 'start' checks at most once in 24 hours
+  'update:download': { req: void; res: UpdateState } // only from 'available'
+  'update:install': { req: void; res: UpdateInstall } // only from 'ready'; 'busy' while ctx.busy()
 }
 export interface IpcEvents { progress: Progress } // main tells the renderer
 export const INVOKE_CHANNELS: readonly (keyof IpcInvoke)[] // every key above; preload refuses any other channel
@@ -430,8 +488,8 @@ export interface SimsHelperApi { // window.simsHelper
 ```
 
 Each UI PR owns one handlers file exporting `<name>Handlers(ctx: AppContext): Handlers<its channels>`: `scanHandlers`
-(PR 7, `src/main/scan/handlers.ts`), `fixHandlers` (PR 10), `fiftyHandlers` (PR 11), `assistHandlers` (PR 12).
-`src/main/ipc.ts` (contract) registers all four and accepts calls only from the app's own window. A handler never
+(PR 7, `src/main/scan/handlers.ts`), `fixHandlers` (PR 10), `fiftyHandlers` (PR 11), `assistHandlers` (PR 12),
+`updateHandlers` (PR 13, `src/main/update/handlers.ts`). `src/main/ipc.ts` (contract) registers all five and accepts calls only from the app's own window. A handler never
 trusts a path or a list of files from the renderer.
 
 ## 8. The AI key store (PR 12; Fable writes `key-store.ts`)
@@ -440,10 +498,11 @@ trusts a path or a list of files from the renderer.
   its cipher from `deps.safeStorage` (Electron `safeStorage`, Windows DPAPI) and its own default transport on
   `@anthropic-ai/sdk`. The encrypted bytes go to `paths.keyFile` through the gate (`reason: 'key'`).
 - The key crosses IPC once, renderer to main, in `assist:set-key`. No type that travels main to renderer can hold it:
-  the renderer learns only `KeyStatus`. `encryption-unavailable` means nothing is stored; the key is never written
-  in the clear.
+  the renderer learns only `KeySetResult` or `KeyStatus`. `encryption-unavailable` means nothing is stored; the key
+  is never written in the clear. `not-saved` means the new key was refused and the old one is still stored.
 - The key never appears in a log line, an error message, a thrown error, the report zip, the journal or
-  `settings.json`. Errors from the SDK are mapped to `AssistReply` reasons and their text is dropped.
+  `settings.json`. Errors from the SDK are mapped to `AssistReply` reasons and their text is dropped. An HTTP 401 is
+  `key-rejected`, not `no-key`.
 - Tests and CI use a fake `transport` and a made-up key. No test calls the network.
 
 ## 9. Renderer
@@ -479,6 +538,13 @@ Slots, so no PR edits another PR's screen. Each is a stub that renders nothing u
 | `fiftyfifty/FiftyEntry.tsx` `<FiftyEntry scan />` | PR 7's check-up screen, under the cards | PR 11 |
 | `fiftyfifty/ResumeBanner.tsx` | shell, under the header | PR 11 |
 | `assist/AskEntry.tsx` `<AskEntry scan />` | PR 7's check-up screen, under the cards | PR 12 |
+| `update/UpdateBanner.tsx` | shell, first under the header | PR 13 |
+| `update/UpdateRow.tsx` | the `about` route, after `<About />` | PR 13 |
+
+**Content-Security-Policy.** The built page gets `default-src 'self'; script-src 'self'; style-src 'self'
+'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none';
+frame-src 'none'; form-action 'none'` from a build-only Vite plugin in `electron.vite.config.ts` (`cspAtBuild`). The
+source `index.html` has none, so `npm run dev` can run the React plugin's inline script.
 
 **Look (Tyler approves it at the end).** A house-with-a-sparkle emblem (`components/Emblem.tsx`, also the app icon),
 never a diamond or gem. Plus Jakarta Sans, bundled with `@fontsource-variable`, body text 15 px or larger. The native
@@ -494,7 +560,8 @@ broken CC, 50/50, last exception, patch day (`docs/research/grok-ui-x.md`).
   a temp folder (`generateFixture(await loadSpec(...), tmpDir)`), never in `test/fixtures/`. The generator and the
   existing specs are frozen; a PR may add `scripts/fixtures/specs/<its slug>-*.json`.
 - **Sample data.** `src/shared/testing/sample.ts` (contract): `sampleScan(overrides?)`, `sampleFinding`,
-  `sampleJournalEntry`, `sampleFiftyFifty`. Component tests and screenshots use these.
+  `sampleJournalEntry`, `sampleFiftyFifty` (round 1, with the round 0 control in its history). Component tests and
+  screenshots use these. `fakeApi()` answers `update:get` and `update:check` with `off` unless a test passes its own.
 - **Screens while main is stubs.** `test/e2e/support/app.ts` (contract): `launchApp(options?)`;
   `stubIpc(app, { '<channel>': value | inOrder([...]) })`, which replaces handlers inside the running main process
   and reloads the window, so no fake code ships in the app; and `shoot(page, '<pr-slug>', '<name>')`, which saves
@@ -504,7 +571,9 @@ broken CC, 50/50, last exception, patch day (`docs/research/grok-ui-x.md`).
 - **Live runs.** `launchApp({ fixture: 'patch-day' })` copies the fixture to a temp folder and starts the app with
   `SIMS_HELPER_DOCUMENTS_DIR`, `SIMS_HELPER_DESKTOP_DIR`, `LOCALAPPDATA`, `APPDATA`, `USERNAME`, `ProgramFiles` and
   `ProgramFiles(x86)` pointing into it. `src/main/app-host.ts` (contract) reads the two `SIMS_HELPER_*` variables.
-- **CI.** `ci.yml` runs `smoke` and `screens` for every PR and uploads the artifact `screens`. It runs `live` only
+  Every `launchApp` sets `SIMS_HELPER_UPDATES=off` unless the caller's `env` overrides it, so no test reaches GitHub.
+- **CI.** `ci.yml` runs `smoke` and `screens` for every PR and uploads the artifact `screens`. After the silent
+  install it checks `dist/latest.yml` and the installed `resources\app-update.yml` (provider `github`, this repo). It runs `live` only
   on pushes to `main` and on PRs whose base is `main` (details in `ownership.md`).
 - **Two bars per PR.** *Branch bar:* your unit tests and `screens` spec pass on your branch, neighbors as fakes.
   *Main bar:* once the PRs you depend on are in `main` and you have merged `main` into your branch, your `live` spec

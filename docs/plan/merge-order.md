@@ -1,8 +1,8 @@
-# Merge order for PRs 1 to 12
+# Merge order for PRs 1 to 13
 
 Where things stand on 2026-11-24: PRs 1, 2 and 3 are open and stacked (`main` ← #1 `wells/electron-installer-scaffold`
 ← #2 `wells/sims-fixture-generator` ← #3 `wells/locate-sims-folders`). A dry-run merge of `main` with #1 and with #3
-shows no conflict. The contract branch and the nine PR branches are in [`ownership.md`](ownership.md).
+shows no conflict. The contract branch and the ten PR branches are in [`ownership.md`](ownership.md).
 
 ## The order
 
@@ -16,7 +16,8 @@ shows no conflict. The contract branch and the nine PR branches are in [`ownersh
 | 6 | PR 4 inventory, PR 5 logs | step 4 | either order |
 | 7 | PR 6 rules | step 6 | its "after main" tests need 4 and 5 |
 | 8 | PR 7 screens | steps 5 and 7 | **Tyler approves the screens** |
-| G1 | no merge: Tyler runs the installer from step 8 on her PC | step 8 | see "What G1 settles" |
+| 8b | PR 13 update | steps 5 and 8 | lands before G1 (Tyler, 2026-11-24), so the G1 installer is the last one handed over by hand; PR 8's lint must allow `electron-updater` in `updater.ts` first; **Tyler approves the screens** |
+| G1 | no merge: Tyler runs the installer from step 8b on her PC | step 8b | see "What G1 settles"; every later version reaches her through the Update button |
 | 9 | PR 9 backup | step 5 | may merge before G1: nothing in the app can reach it yet |
 | 10 | PR 12 AI help | step 8 | may merge before G1: with no key stored, the button never shows |
 | 11 | PR 10 fixes | steps 8, 9 and **G1** | first PR that lets her change files; **Tyler approves** |
@@ -66,9 +67,10 @@ git push --force-with-lease=wells/pr-04-inventory origin wells/pr-04-inventory  
 | 1 | PR 8 (Fable), PR 7, PR 4, PR 5 | 7 is the largest and Tyler must see it; 8 is the base of every write |
 | 2 | PR 6, PR 9, PR 10, PR 11 | start each as a wave 1 slot frees up, in this order; 6 completes the G1 build |
 | 3 | PR 12 (Fable writes `key-store.ts` first), and each PR's "after main" tests as its neighbors land | optional, so last |
+| 4 | PR 13 (Fable writes `updater.ts`) | asked for on 2026-11-24; must merge before G1 |
 
 Run it as a queue, not as fixed batches: when one builder finishes, the next in the order 8, 7, 4, 5, 6, 9, 10, 11,
-12 starts. The first installer for G1 needs 4, 5, 6, 7 and 8, so those five come first.
+12, 13 starts. The installer for G1 needs 4, 5, 6, 7, 8 and 13.
 
 Each builder runs only its own test files, 2 workers. The full check runs once per merge step, by the merge agent
 or CI, never by nine builders at once.
@@ -94,6 +96,10 @@ or CI, never by nine builders at once.
 - **Workflow minutes.** After step 12, `main` runs `ci.yml` and the two probe workflows on each push. The repo is
   public, so this costs nothing.
 
+- **Releases after PR 13.** Only Tyler publishes: `release.yml` leaves a draft and his Publish click ships it.
+  Before the first release, turn on immutable releases and a `v*` tag ruleset. Never rename, transfer or delete the
+  repo: every installed copy reads its updates from `wells1225/gfs-sim-helper`.
+
 ## What G1 settles, and what it can still change
 
 | Question for her PC | Decides | Change if the answer is bad |
@@ -106,3 +112,4 @@ or CI, never by nine builders at once.
 | What is CurseForge's process name? | PR 11's "close CurseForge" check | one constant |
 | Do the registry, OneDrive paths and process detection work on a real PC? | PR 3 | fix in `src/main/locate/` |
 | Which model answers her real logs well, Haiku or Sonnet? | `ASSIST_MODEL` in PR 12 | one constant |
+| Is Smart App Control on? Did the first install warn? Did the first real update raise a warning? | whether unsigned updates reach her | code signing, or the Releases page link as plan B (`docs/research/fable-auto-update.md`, section 6) |
