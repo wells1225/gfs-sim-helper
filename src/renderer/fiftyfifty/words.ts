@@ -1,4 +1,4 @@
-import type { FiftyFifty, FixRefusal, JournalEntry } from '../../shared/model.ts'
+import type { FiftyDamaged, FiftyFifty, FiftyGet, FixRefusal, JournalEntry } from '../../shared/model.ts'
 
 export function groupsWord(n: number): string {
   return n === 1 ? '1 mod group' : `${n} mod groups`
@@ -57,18 +57,23 @@ export const PART_WAY = partWayWords()
 /** For a card with no Try again button: its stop button is the way to try again. */
 export const STOP_AGAIN = `click ${STOP_CONFIRM} again`
 
-/**
- * Main's `fifty:get` fails with these words in the message when fiftyfifty.json is there but cannot be read
- * (PROGRESS_DAMAGED in src/main/fiftyfifty/index.ts). Electron wraps the message, so look inside it.
- */
-const PROGRESS_DAMAGED = 'fifty-progress-damaged'
-export function isProgressDamaged(err: unknown): boolean {
-  return (err instanceof Error ? err.message : String(err)).includes(PROGRESS_DAMAGED)
+/** `fifty:get` answered that fiftyfifty.json is there but cannot be read. A session has no `status`. */
+export function isProgressDamaged(got: FiftyGet): got is FiftyDamaged {
+  return got !== null && 'status' in got
 }
 export const DAMAGED_TITLE = "The 50/50 test's progress file is damaged"
 export const DAMAGED_WHY =
   "We can't tell where the test got to, so other fixes are paused. Putting everything back moves every mod the test set aside into your Mods folder again. After that you can start a new test."
 export const DAMAGED_NOT_FINISHED = `We couldn't finish putting your mods back. Wait a moment, then ${STOP_AGAIN}. If that does not finish it, you can put them back from History.`
+/**
+ * A stop on a damaged file that ended part way. History cannot put mods back while the file is damaged (its undo
+ * is refused), so the words point at the stop button and never at History.
+ */
+export function damagedPartWayWords(notBack: string[]): string {
+  const again = `Wait a moment, then ${STOP_AGAIN}.`
+  if (notBack.length === 0) return `We couldn't finish stopping the test. ${again}`
+  return `Some mods are not back in your Mods folder yet: ${listWords(notBack)}. ${again}`
+}
 
 /**
  * Labels of the groups the test moved that are not fully back in Mods, read from History's entries.
@@ -87,13 +92,15 @@ export function notBackLabels(journal: JournalEntry[], sessionId: string | null,
 }
 
 const NAMED_AT_MOST = 5
-export function notBackWords(labels: string[]): string {
+function listWords(labels: string[]): string {
   const named = labels.slice(0, NAMED_AT_MOST)
   const more = labels.length - named.length
   const last = more > 0 ? `${more} more` : named.pop()
-  const list = named.length > 0 ? `${named.join(', ')} and ${last}` : last
+  return named.length > 0 ? `${named.join(', ')} and ${last}` : `${last}`
+}
+export function notBackWords(labels: string[]): string {
   const them = labels.length === 1 ? 'it' : 'them'
-  return `Some mods are not back in your Mods folder yet: ${list}. Open History to put ${them} back.`
+  return `Some mods are not back in your Mods folder yet: ${listWords(labels)}. Open History to put ${them} back.`
 }
 export const BACK_UNKNOWN =
   "We couldn't check that every mod is back in place. History lists every move, and you can put mods back from there."

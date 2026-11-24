@@ -3,7 +3,16 @@ import { useRef, useState, type ReactNode } from 'react'
 import { useApi } from '../api.tsx'
 import { Button } from '../components/ui/button.tsx'
 import { backWords, checkBack, HistoryButton, type BackCheck } from './back-check.tsx'
-import { DAMAGED_NOT_FINISHED, DAMAGED_TITLE, DAMAGED_WHY, partWayWords, refusalWords, STOP_AGAIN, STOP_CONFIRM } from './words.ts'
+import {
+  DAMAGED_NOT_FINISHED,
+  DAMAGED_TITLE,
+  DAMAGED_WHY,
+  damagedPartWayWords,
+  partWayWords,
+  refusalWords,
+  STOP_AGAIN,
+  STOP_CONFIRM
+} from './words.ts'
 
 type Left = Exclude<BackCheck, { kind: 'all-back' }>
 
@@ -41,12 +50,12 @@ export function StoppedCard({ back, onDone }: { back: Left; onDone(): void }) {
 /**
  * fiftyfifty.json is there but cannot be read. Fixes are refused while it is, so this is her way out: one button
  * that asks main to put back everything the test set aside and remove the file. No second question: there is
- * no test left to keep.
+ * no test left to keep. `startWith`: what a stop that just found the damage already has to say.
  */
-export function DamagedProgress({ onFixed }: { onFixed(): void }) {
+export function DamagedProgress({ onFixed, startWith = null }: { onFixed(): void; startWith?: string | null }) {
   const api = useApi()
   const [busy, setBusy] = useState(false)
-  const [problem, setProblem] = useState<string | null>(null)
+  const [problem, setProblem] = useState<string | null>(startWith)
   const [left, setLeft] = useState<Left | null>(null)
   const busyRef = useRef(false)
 
@@ -61,8 +70,10 @@ export function DamagedProgress({ onFixed }: { onFixed(): void }) {
         const back = await checkBack(api, null, null)
         if (back.kind === 'all-back') onFixed()
         else setLeft(back)
+      } else if (result.status === 'refused') {
+        setProblem(refusalWords(result.refusal, STOP_AGAIN))
       } else {
-        setProblem(result.status === 'refused' ? refusalWords(result.refusal, STOP_AGAIN) : partWayWords(STOP_AGAIN))
+        setProblem(result.state === null ? damagedPartWayWords(result.notBack) : partWayWords(STOP_AGAIN))
       }
     } catch {
       setProblem(DAMAGED_NOT_FINISHED)

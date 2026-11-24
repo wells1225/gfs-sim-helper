@@ -1,4 +1,13 @@
-import type { FiftyAnswer, FiftyFifty, FiftyResult, FixOutcome, FixRefusal, Scan } from '../../shared/model.ts'
+import type {
+  FiftyAnswer,
+  FiftyFifty,
+  FiftyGet,
+  FiftyResult,
+  FiftyStopResult,
+  FixOutcome,
+  FixRefusal,
+  Scan
+} from '../../shared/model.ts'
 import type { AppContext, GroupsOutcome } from '../ports.ts'
 import { answer, begin } from './machine.ts'
 import { clearState, loadState, readSaved, saveState } from './store.ts'
@@ -12,12 +21,6 @@ export type FiftyDeps = Pick<AppContext, 'fixes' | 'safety' | 'gate' | 'paths' |
 export type Problem =
   | { status: 'refused'; refusal: FixRefusal }
   | { status: 'stopped-part-way'; detail: string }
-
-/**
- * `fifty:get` fails with this in its message when the progress file is there but cannot be read. The contract's
- * answer (`FiftyFifty | null`) has no room for it, so the screens look for the same words in the failure.
- */
-export const PROGRESS_DAMAGED = 'fifty-progress-damaged'
 
 const NO_SESSION: FiftyResult = { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
 
@@ -103,10 +106,10 @@ async function clearCachesProblem(deps: FiftyDeps, folderPath: string): Promise<
   return nothingToClear ? null : groupsProblem(caches)
 }
 
-/** What `fifty:get` answers: the session or null, and a failure naming PROGRESS_DAMAGED for a damaged file. */
-export async function getState(deps: FiftyDeps): Promise<FiftyFifty | null> {
+/** What `fifty:get` answers: the session, null with no file, or the damaged shape for a file that cannot be read. */
+export async function getState(deps: FiftyDeps): Promise<FiftyGet> {
   const saved = await readSaved(deps)
-  if (saved.kind === 'damaged') throw new Error(PROGRESS_DAMAGED)
+  if (saved.kind === 'damaged') return { status: 'damaged' }
   return saved.kind === 'session' ? saved.state : null
 }
 
@@ -115,7 +118,7 @@ export async function getState(deps: FiftyDeps): Promise<FiftyFifty | null> {
  * test ever ran on, clear the caches, then remove the file. A group she set aside herself (origin 'fix') is
  * never touched. The file goes last, so anything that does not finish leaves it there and stop can be tried again.
  */
-async function stopDamaged(deps: FiftyDeps, savedFolder: string | null): Promise<FiftyResult> {
+async function stopDamaged(deps: FiftyDeps, savedFolder: string | null): Promise<FiftyStopResult> {
   const folders = new Set<string>(savedFolder ? [savedFolder] : [])
   try {
     for (const entry of await deps.safety.listJournal()) {
@@ -128,19 +131,32 @@ async function stopDamaged(deps: FiftyDeps, savedFolder: string | null): Promise
   for (const folderPath of folders) {
     const off = await deps.fixes.disabledGroups(folderPath)
     const ours = off.filter((d) => d.origin === 'fifty-fifty').map((d) => d.groupId)
-    const moved = ours.length > 0 ? groupsProblem(await deps.fixes.putBack(folderPath, ours)) : null
+    const moved = ours.length > 0 ? await moveProblem(() => deps.fixes.putBack(folderPath, ours)) : null
     const problem = moved ?? (await clearCachesProblem(deps, folderPath))
-    if (problem) return damagedProblem(problem)
+    if (problem) return damagedProblem(deps, folders, problem)
   }
 
   const problem = await clearState(deps)
-  return problem ? damagedProblem(problem) : { status: 'ok', state: null }
+  return problem ? damagedProblem(deps, folders, problem) : { status: 'ok', state: null }
 }
 
-/** `stopped-part-way` needs a session to hand back and a damaged file has none, so a half-done step fails the call. */
-function damagedProblem(problem: Problem): FiftyResult {
+/**
+ * A damaged file has no session to hand back, so a half-done step names what the test still has out of Mods:
+ * read again after the step, so a group that did get back is not named. A folder that cannot be read adds no
+ * name; the file is still there, so stop can be tried again either way.
+ */
+async function damagedProblem(deps: FiftyDeps, folders: Set<string>, problem: Problem): Promise<FiftyStopResult> {
   if (problem.status === 'refused') return problem
-  throw new Error(`The 50/50 put-back stopped part way: ${problem.detail}`)
+  const notBack: string[] = []
+  for (const folderPath of folders) {
+    try {
+      const off = await deps.fixes.disabledGroups(folderPath)
+      notBack.push(...off.filter((d) => d.origin === 'fifty-fifty').map((d) => d.label))
+    } catch {
+      // nothing to name for this folder
+    }
+  }
+  return { status: 'stopped-part-way', state: null, notBack, detail: problem.detail }
 }
 
 async function saveOrProblem(deps: FiftyDeps, state: FiftyFifty): Promise<FiftyResult> {
@@ -235,7 +251,7 @@ async function endWith(deps: FiftyDeps, state: FiftyFifty, keep: string[]): Prom
   return problem ? withState(problem, state) : { status: 'ok', state: ended }
 }
 
-export async function stop(deps: FiftyDeps): Promise<FiftyResult> {
+export async function stop(deps: FiftyDeps): Promise<FiftyStopResult> {
   const saved = await readSaved(deps)
   if (saved.kind === 'damaged') return stopDamaged(deps, saved.folderPath)
   if (saved.kind === 'none') return { status: 'ok', state: null }

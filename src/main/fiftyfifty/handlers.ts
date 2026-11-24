@@ -1,5 +1,5 @@
 import type { Handlers } from '../../shared/ipc.ts'
-import type { FiftyAnswer } from '../../shared/model.ts'
+import type { FiftyAnswer, FiftyResult } from '../../shared/model.ts'
 import type { AppContext } from '../ports.ts'
 import { beginRound, finish, getState, giveAnswer, start, stop } from './index.ts'
 
@@ -13,7 +13,6 @@ export type FiftyChannel =
 
 /** The driver, passed in so the handler tests can watch the order of calls. */
 export interface FiftyApi {
-  /** Fails, naming PROGRESS_DAMAGED, when the progress file is there but cannot be read. */
   loadState: typeof getState
   start: typeof start
   beginRound: typeof beginRound
@@ -61,7 +60,12 @@ export function makeFiftyHandlers(ctx: AppContext, api: FiftyApi = DRIVER): Hand
         return Promise.reject(new Error('fifty:answer needs the round it answers'))
       }
       if (inFlightMutations > 0) {
-        return one(async () => ({ status: 'ok', state: await api.loadState(ctx) }))
+        return one(async (): Promise<FiftyResult> => {
+          const saved = await api.loadState(ctx)
+          // 'ok' with no session would show her the Start button over a damaged file. A refusal makes the screen read again.
+          if (saved !== null && 'status' in saved) return { status: 'refused', refusal: { why: 'fifty-fifty-running' } }
+          return { status: 'ok', state: saved }
+        })
       }
       return mutate(() => api.giveAnswer(ctx, given as FiftyAnswer, round as number))
     },

@@ -1,6 +1,6 @@
 import { LoaderCircle, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { FiftyAnswer, FiftyFifty, FiftyResult } from '../../shared/model.ts'
+import type { FiftyAnswer, FiftyFifty, FiftyStopResult } from '../../shared/model.ts'
 import { useApi } from '../api.tsx'
 import { Alert, AlertDescription } from '../components/ui/alert.tsx'
 import { Button } from '../components/ui/button.tsx'
@@ -34,13 +34,14 @@ export function FiftyFiftyScreen() {
   const [asking, setAsking] = useState(false)
   const busyRef = useRef(false)
 
-  /** What is saved now. A failed read falls back to `fallback`, except the one that says the file is damaged. */
+  /** What is saved now. A failed read falls back to `fallback`. */
   const read = useCallback(
     async (fallback: FiftyFifty | null): Promise<View> => {
       try {
-        return { kind: 'session', state: await api.invoke('fifty:get') }
-      } catch (err) {
-        return isProgressDamaged(err) ? { kind: 'damaged' } : { kind: 'session', state: fallback }
+        const got = await api.invoke('fifty:get')
+        return isProgressDamaged(got) ? { kind: 'damaged' } : { kind: 'session', state: got }
+      } catch {
+        return { kind: 'session', state: fallback }
       }
     },
     [api]
@@ -63,10 +64,13 @@ export function FiftyFiftyScreen() {
     }
   }, [read])
 
-  /** Runs one call with every button locked. Anything but ok reads the saved state again and says why. */
+  /**
+   * Runs one call with every button locked. Anything but ok reads the saved state again and says why. A stop that
+   * found the file damaged has no state, and the read that follows shows the damaged card in place of the notice.
+   */
   const run = async (
     working: string,
-    call: () => Promise<FiftyResult>,
+    call: () => Promise<FiftyStopResult>,
     retryFor: (fresh: FiftyFifty | null) => () => void,
     onOk: (state: FiftyFifty | null) => void | Promise<void>
   ) => {
