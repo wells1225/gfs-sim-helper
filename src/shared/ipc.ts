@@ -39,7 +39,7 @@ export interface IpcInvoke {
   'fifty:get': { req: void; res: FiftyFifty | null }
   'fifty:start': { req: void; res: FiftyResult }
   'fifty:begin-round': { req: void; res: FiftyResult }
-  'fifty:answer': { req: { answer: FiftyAnswer }; res: FiftyResult }
+  'fifty:answer': { req: { answer: FiftyAnswer; round: number }; res: FiftyResult } // round: the round on her screen, so a late click cannot answer the next one
   'fifty:stop': { req: void; res: FiftyResult }
   'fifty:finish': { req: { keep: 'keep-set-aside' | 'put-back' }; res: FiftyResult }
   // PR 12 owns this block

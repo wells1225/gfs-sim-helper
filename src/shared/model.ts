@@ -319,6 +319,7 @@ export interface DisabledGroup {
   label: string
   entryId: string
   at: IsoTime
+  origin: JournalOrigin['by'] // 'fix' or 'fifty-fifty': who set the group aside
 }
 
 // ── 50/50 (PR 11)

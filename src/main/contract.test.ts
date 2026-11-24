@@ -6,8 +6,8 @@ import { promisify } from 'node:util'
 import type { Page } from '@playwright/test'
 import { afterAll, describe, expect, it } from 'vitest'
 import { readFile, rm } from 'node:fs/promises'
-import { INVOKE_CHANNELS } from '../shared/ipc.ts'
-import type { BackupRefusal, FixRefusal, GateRefusal, GameRunState as ModelGameRunState } from '../shared/model.ts'
+import { INVOKE_CHANNELS, type IpcInvoke } from '../shared/ipc.ts'
+import type { BackupRefusal, DisabledGroup, FixRefusal, GateRefusal, GameRunState as ModelGameRunState } from '../shared/model.ts'
 import { sampleJournalEntry } from '../shared/testing/sample.ts'
 import { appPaths } from './app-paths.ts'
 import { assistHandlers } from './assist/handlers.ts'
@@ -211,5 +211,20 @@ describe('fix contract requests from PR 10', () => {
     }
     const bare: PlanFixAt = { holdingDir: 'C:\\Data\\holding', entryId: 'entry-3' }
     expect([at.optionsText, bare.optionsText]).toEqual(['[options]\n', undefined])
+  })
+})
+
+describe('50/50 contract requests from PR 11', () => {
+  it('sends the round the answer is for, so a stale click cannot answer the next round', () => {
+    const req: IpcInvoke['fifty:answer']['req'] = { answer: 'worked', round: 2 }
+    expect(req.round).toBe(2)
+  })
+
+  it('says whether a disabled group was set aside by a fix or by the 50/50 test', () => {
+    const groups: DisabledGroup[] = [
+      { groupId: 'dir:hair', label: 'Hair', entryId: 'e1', at: '2026-11-24T12:00:00.000Z', origin: 'fix' },
+      { groupId: 'cf:1', label: 'Zed', entryId: 'e2', at: '2026-11-24T12:01:00.000Z', origin: 'fifty-fifty' }
+    ]
+    expect(groups.map((g) => g.origin)).toEqual(['fix', 'fifty-fifty'])
   })
 })
