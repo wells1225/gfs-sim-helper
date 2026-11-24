@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   link,
@@ -17,6 +18,7 @@ import {
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, parse, posix, sep, win32 } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { generateFixture, loadSpec } from '../../../scripts/fixtures/make-fixture.ts'
 import type { BackupStatus, GameRunState, GateRefusal } from '../../shared/model.ts'
@@ -721,6 +723,38 @@ describe('the Sims folder', () => {
       await expectRefusal(w, () => w.run([], { folderPath: simsLink }), { reason: 'not-a-sims-folder', path: simsLink })
     } finally {
       await rm(simsLink) // the link only: nothing may walk into the root
+    }
+  })
+
+  // The danger itself: a root on a drive that does not hold app data is taken as the Sims folder, and an op
+  // runs there. subst makes such a drive without admin rights; it maps to a folder inside this test's world.
+  it.runIf(ON_WINDOWS)('refuses the root of a drive without app data, and makes nothing there', async () => {
+    const w = await makeWorld()
+    const backing = join(w.root, 'pc', 'OtherDrive')
+    await mkdir(join(backing, 'Mods'), { recursive: true })
+    await writeFile(join(backing, 'Options.ini'), 'modsdisabled = 0\n')
+    let letter: string | null = null
+    for (const free of 'ZYXWVUTSRQPONMLKJIHG') {
+      const taken = await stat(`${free}:\\`).then(
+        () => true,
+        (err: { code?: string }) => err.code !== 'ENOENT'
+      )
+      if (!taken) {
+        letter = free
+        break
+      }
+    }
+    if (letter === null) throw new Error('no free drive letter for subst')
+    const subst = promisify(execFile)
+    await subst('subst', [`${letter}:`, backing])
+    try {
+      const root = `${letter}:\\`
+      await expectRefusal(w, () => w.run([{ op: 'mkdir', path: `${root}Mods\\New` }], { folderPath: root }), {
+        reason: 'not-a-sims-folder',
+        path: root
+      })
+    } finally {
+      await subst('subst', [`${letter}:`, '/D'])
     }
   })
 
