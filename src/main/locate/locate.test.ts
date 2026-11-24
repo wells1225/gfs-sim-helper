@@ -190,6 +190,23 @@ describe('locate', () => {
     expect(paths).toEqual(new Set([await realpath(consumerFolder), await realpath(commercialFolder)]))
   })
 
+  it('dates a folder by its newest file, not by folder mtimes that are newer than every file', async () => {
+    const docs = join(workDir, 'dir-mtime/Documents')
+    const simsFolder = join(docs, 'Electronic Arts/The Sims 4')
+    await mkdir(join(simsFolder, 'saves'), { recursive: true })
+    await writeFile(join(simsFolder, 'Options.ini'), '[options]\n')
+    await writeFile(join(simsFolder, 'saves/Slot_00000002.save'), 'save')
+    const fileTime = new Date('2026-10-01T12:00:00.000Z')
+    const dirTime = new Date('2026-11-23T09:00:00.000Z')
+    await utimes(join(simsFolder, 'Options.ini'), fileTime, fileTime)
+    await utimes(join(simsFolder, 'saves/Slot_00000002.save'), fileTime, fileTime)
+    await utimes(join(simsFolder, 'saves'), dirTime, dirTime)
+    await utimes(simsFolder, dirTime, dirTime)
+
+    const folders = await findUserFolders({ documentsDir: docs, env: {} })
+    expect(folders.map((f) => f.newestFileAt)).toEqual([fileTime])
+  })
+
   it('reads version from PE first, then falls back to a messy binary-prefixed GameVersion.txt', async () => {
     const odRoot = fixtureDirs.get('onedrive')!
     const localStaleFolder = await realpath(join(odRoot, 'Users/Player/Documents/Electronic Arts/The Sims 4'))

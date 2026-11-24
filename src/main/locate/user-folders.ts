@@ -105,17 +105,8 @@ async function findNewestFileDate(rootDir: string): Promise<Date> {
     }
   }
 
+  // Folder mtimes are ignored on purpose: a look-alike folder can be touched without the game using it.
   await walk(rootDir)
-
-  if (newestMs === 0) {
-    try {
-      const info = await stat(rootDir)
-      newestMs = info.mtimeMs
-    } catch {
-      // Keep epoch fallback if stat fails
-    }
-  }
-
   return new Date(newestMs)
 }
 
