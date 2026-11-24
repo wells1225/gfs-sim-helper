@@ -626,6 +626,81 @@ describe('recover', () => {
     expect(await readFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), 'utf8')).toBe('updated by CurseForge')
   })
 
+  it('puts back an action that crashed half way through a move to another drive (the copy is made, the original not yet removed)', async () => {
+    const ws = await backedUp()
+    const before = await snapshotTree(ws.simsFolder)
+    const entry = await interrupted(ws, 1)
+    // Across drives the gate copies, checks, and only then removes the source. The crash fell between the two.
+    const stray = held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package')
+    await copyFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), stray)
+
+    const touched = await recover(ws.deps)
+
+    expect(touched.map((e) => [e.id, e.status])).toEqual([[entry.id, 'undone']])
+    expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+    expect(await pathExists(stray)).toBe(true) // recover deletes nothing
+    expect((await listJournal(ws.deps))[0]!.status).toBe('undone')
+  })
+
+  it('finishes an undo that crashed half way through a move back from another drive', async () => {
+    const ws = await backedUp()
+    const before = await snapshotTree(ws.simsFolder)
+    const moved = await runAction(ws.deps, disablePlan(ws))
+    if (moved.status !== 'done') throw new Error(moved.status)
+    const lastStep = moved.entry.steps[1]!
+    if (lastStep.kind !== 'move') throw new Error('expected a move')
+    await copyFile(lastStep.to, lastStep.from)
+    await writeFile(join(ws.paths.journalDir, `${moved.entry.id}.json`), JSON.stringify({ ...moved.entry, status: 'in-progress' }))
+
+    const touched = await recover(ws.deps)
+
+    expect(touched.map((e) => e.status)).toEqual(['undone'])
+    expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+    expect(await pathExists(lastStep.to)).toBe(true)
+  })
+
+  it('still stops when the original is back but something else sits where the action put it', async () => {
+    const ws = await backedUp()
+    const moved = await runAction(ws.deps, disablePlan(ws))
+    if (moved.status !== 'done') throw new Error(moved.status)
+    const lastStep = moved.entry.steps[1]!
+    if (lastStep.kind !== 'move') throw new Error('expected a move')
+    await copyFile(lastStep.to, lastStep.from)
+    await writeFile(lastStep.to, 'not the file the action moved')
+
+    const undone = await undo(ws.deps, moved.entry.id)
+
+    expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    expect(await readFile(lastStep.to, 'utf8')).toBe('not the file the action moved')
+  })
+
+  it('goes on to the next entry when one entry cannot be saved, and leaves that one in progress', async () => {
+    const ws = await backedUp()
+    const before = await snapshotTree(ws.simsFolder)
+    const moved = await runAction(ws.deps, disablePlan(ws))
+    const newText = '[options]\nmodsdisabled = 0\n'
+    const edited = await runAction(ws.deps, editPlan(ws, newText))
+    if (moved.status !== 'done' || edited.status !== 'done') throw new Error('actions failed')
+    for (const entry of [moved.entry, edited.entry]) {
+      await writeFile(join(ws.paths.journalDir, `${entry.id}.json`), JSON.stringify({ ...entry, status: 'in-progress' }))
+    }
+    // The newer entry (the edit) comes first, and its journal file cannot be written.
+    ws.gate.hooks.beforeRequest = (request) =>
+      request.reason === 'journal' && request.ops.some((op) => op.op === 'write' && op.path.endsWith('edit-1.json'))
+        ? { status: 'failed', opsDone: 0, detail: 'the disk said ENOSPC' }
+        : undefined
+
+    const touched = await recover(ws.deps)
+
+    expect(touched.map((e) => [e.id, e.status])).toEqual([[moved.entry.id, 'undone']])
+    const after = await snapshotTree(ws.simsFolder)
+    expect(after['Mods/BuildBuy/lamp_a.package']).toBe(before['Mods/BuildBuy/lamp_a.package'])
+    expect(after['Mods/BuildBuy/lamp_b.package']).toBe(before['Mods/BuildBuy/lamp_b.package'])
+    expect(await readFile(join(ws.simsFolder, 'Options.ini'), 'utf8')).toBe(newText)
+    const left = (await listJournal(ws.deps)).find((e) => e.id === edited.entry.id)
+    expect(left?.status).toBe('in-progress')
+  })
+
   it('marks an entry it cannot settle as needing attention, and deletes nothing', async () => {
     const ws = await backedUp()
     const entry = await interrupted(ws, 2)

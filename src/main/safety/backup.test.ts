@@ -439,6 +439,49 @@ describe('backupStatus', () => {
     expect((await backupStatus(ws.deps, ws.simsFolder)).state).toBe('stale')
   })
 
+  it('is stale when an older backup folder that still holds the bytes was deleted, and the next backup copies them again', async () => {
+    const ws = await makeWorkspace(TOOLS)
+    const first = await createBackup(ws.deps, ws.simsFolder)
+    if (first.status !== 'verified') throw new Error(first.status)
+    await writeFile(join(ws.mods, 'new_hair.package'), 'new')
+    const second = await createBackup(ws.deps, ws.simsFolder)
+    if (second.status !== 'verified') throw new Error(second.status)
+    expect((await backupStatus(ws.deps, ws.simsFolder)).state).toBe('verified')
+
+    // Someone frees disk space by deleting the old backup. The newest list still points at it for almost every file.
+    await rm(join(ws.paths.backupsDir, first.record.id), { recursive: true })
+
+    expect(await backupStatus(ws.deps, ws.simsFolder)).toEqual({
+      state: 'stale',
+      backupId: second.record.id,
+      at: second.record.at
+    })
+
+    const third = await createBackup(ws.deps, ws.simsFolder)
+    if (third.status !== 'verified') throw new Error(third.status)
+    const manifest = await readManifest(ws.paths.backupsDir, third.record.id)
+    for (const file of manifest.files) {
+      const stored = join(ws.paths.backupsDir, file.storedIn, 'files', ...file.path.split('/'))
+      expect(await sha256File(stored), file.path).toBe(file.sha256)
+    }
+    expect((await backupStatus(ws.deps, ws.simsFolder)).state).toBe('verified')
+  })
+
+  it('is stale when one stored copy is gone, in Mods or in saves', async () => {
+    for (const top of ['Mods/', 'saves/']) {
+      const ws = await makeWorkspace(TOOLS)
+      const result = await createBackup(ws.deps, ws.simsFolder)
+      if (result.status !== 'verified') throw new Error(result.status)
+      const manifest = await readManifest(ws.paths.backupsDir, result.record.id)
+      const line = manifest.files.find((f) => f.path.startsWith(top))
+      if (!line) throw new Error(`no ${top} file in the backup`)
+
+      await rm(join(ws.paths.backupsDir, line.storedIn, 'files', ...line.path.split('/')))
+
+      expect((await backupStatus(ws.deps, ws.simsFolder)).state, top).toBe('stale')
+    }
+  })
+
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('is unknown when Mods cannot be read', async () => {
     const ws = await makeWorkspace(TOOLS)
     await createBackup(ws.deps, ws.simsFolder)
