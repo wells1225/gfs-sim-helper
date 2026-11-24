@@ -3,34 +3,21 @@ import { decodeEntities } from './decode.ts'
 import { parseGameLog } from './game-log.ts'
 
 const RAW_LE_ID = 'beRawLEData'
-const DIV_OPEN_PATTERN = /^<div\b/i
 const RAW_LE_ATTR_PATTERN = /\bid\s*=\s*["']beRawLEData["']/i
 
+// One pass over the <div> open tags, so no search rescans text an earlier one already read.
 function extractRawLeBlock(html: string): { content: string; cutOff: boolean } | null {
-  let searchFrom = 0
-  while (searchFrom < html.length) {
-    const idIdx = html.indexOf(RAW_LE_ID, searchFrom)
-    if (idIdx === -1) return null
-
-    const tagStart = html.lastIndexOf('<', idIdx)
-    const tagEnd = html.indexOf('>', idIdx)
-    if (tagStart !== -1 && tagEnd !== -1 && html.indexOf('>', tagStart) === tagEnd) {
-      const openTag = html.slice(tagStart, tagEnd + 1)
-      if (DIV_OPEN_PATTERN.test(openTag) && RAW_LE_ATTR_PATTERN.test(openTag)) {
-        const contentStart = tagEnd + 1
-        const closeDivRe = /<\/div\s*>/gi
-        closeDivRe.lastIndex = contentStart
-        const closeMatch = closeDivRe.exec(html)
-        if (!closeMatch) {
-          return { content: html.slice(contentStart), cutOff: true }
-        }
-        return { content: html.slice(contentStart, closeMatch.index), cutOff: false }
-      }
-    }
-
-    searchFrom = idIdx + RAW_LE_ID.length
+  const divOpen = /<div\b[^<>]*>/gi
+  for (let open = divOpen.exec(html); open !== null; open = divOpen.exec(html)) {
+    if (!open[0].includes(RAW_LE_ID) || !RAW_LE_ATTR_PATTERN.test(open[0])) continue
+    const contentStart = open.index + open[0].length
+    const closeDiv = /<\/div\s*>/gi
+    closeDiv.lastIndex = contentStart
+    const close = closeDiv.exec(html)
+    return close
+      ? { content: html.slice(contentStart, close.index), cutOff: false }
+      : { content: html.slice(contentStart), cutOff: true }
   }
-
   return null
 }
 

@@ -56,7 +56,8 @@ const BLOCK_TAGS = new Set([
 
 const VERSION_PATTERN = /\d+\.\d+\.\d+\.\d+/
 const PYTHON_FRAME_PATTERN = /\bFile\s+"([^"\r\n]+)",\s*line\s+(\d+)/
-const UI_FRAME_PATTERN = /^\s*at\s+([^\r\n()]+)\(\)/
+// The name starts with a non-space so `\s+` and the name cannot trade characters (that backtracks quadratically).
+const UI_FRAME_PATTERN = /^\s*at\s+([^\s()][^\r\n()]*)\(\)/
 const PY_EXTENSION_PATTERN = /\.(?:py|pyc|pyo)$/
 
 export function decodeEntities(text: string): string {
@@ -133,14 +134,18 @@ export function capMessage(text: string | null): string | null {
   return trimmed.length > MAX_MESSAGE_LENGTH ? trimmed.slice(0, MAX_MESSAGE_LENGTH) : trimmed
 }
 
-export function extractFirstLine(text: string): string | null {
-  for (const line of text.split(/\r?\n|\r/)) {
-    const trimmed = line.trim()
-    if (trimmed.length > 0) {
-      return trimmed.length > MAX_MESSAGE_LENGTH ? trimmed.slice(0, MAX_MESSAGE_LENGTH) : trimmed
-    }
+export function extractFirstLine(lines: readonly string[]): string | null {
+  for (const line of lines) {
+    const message = capMessage(line)
+    if (message !== null) return message
   }
   return null
+}
+
+// Game code lives under T:\InGame\. A pseudo-file such as <frozen importlib._bootstrap> or <string> is the
+// interpreter's own, never a file a mod ships.
+function isGameFramePath(normalizedPath: string): boolean {
+  return normalizedPath.startsWith('t:/ingame/') || normalizedPath.startsWith('<')
 }
 
 export function extractPythonFrames(lines: readonly string[]): {
@@ -149,6 +154,8 @@ export function extractPythonFrames(lines: readonly string[]): {
   lastFrameLineIndex: number
 } {
   const allFrames: LogFrame[] = []
+  const seenHints = new Set<string>()
+  const modHints: string[] = []
   let lastFrameLineIndex = -1
 
   for (let i = 0; i < lines.length; i += 1) {
@@ -157,7 +164,15 @@ export function extractPythonFrames(lines: readonly string[]): {
     const framePath = match[1]!
     const lineNum = Number.parseInt(match[2]!, 10)
     const normalized = framePath.replaceAll('\\', '/').toLowerCase()
-    const origin: 'game' | 'mod' = normalized.startsWith('t:/ingame/') ? 'game' : 'mod'
+    const origin: 'game' | 'mod' = isGameFramePath(normalized) ? 'game' : 'mod'
+    // Hints come from every frame, before the cap: mod injectors often sit at the outer end of a long traceback.
+    if (origin === 'mod') {
+      const hint = normalized.replace(PY_EXTENSION_PATTERN, '')
+      if (hint.length > 0 && !seenHints.has(hint)) {
+        seenHints.add(hint)
+        modHints.push(hint)
+      }
+    }
     allFrames.push({
       path: framePath,
       line: Number.isFinite(lineNum) ? lineNum : null,
@@ -167,20 +182,10 @@ export function extractPythonFrames(lines: readonly string[]): {
   }
 
   const frames = allFrames.length > MAX_FRAMES ? allFrames.slice(-MAX_FRAMES) : allFrames
-  const seenHints = new Set<string>()
-  const modHints: string[] = []
-  for (const frame of frames) {
-    if (frame.origin !== 'mod') continue
-    const hint = frame.path.replaceAll('\\', '/').toLowerCase().replace(PY_EXTENSION_PATTERN, '')
-    if (hint.length > 0 && !seenHints.has(hint)) {
-      seenHints.add(hint)
-      modHints.push(hint)
-    }
-  }
-
   return { frames, modHints, lastFrameLineIndex }
 }
 
+// ActionScript lists the innermost call first. Keep the 60 innermost and return them innermost last.
 export function extractUiFrames(lines: readonly string[]): LogFrame[] {
   const frames: LogFrame[] = []
   for (const line of lines) {
@@ -191,5 +196,5 @@ export function extractUiFrames(lines: readonly string[]): LogFrame[] {
     frames.push({ path: name, line: null, origin: 'game' })
     if (frames.length >= MAX_FRAMES) break
   }
-  return frames
+  return frames.reverse()
 }

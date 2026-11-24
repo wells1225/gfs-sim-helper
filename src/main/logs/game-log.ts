@@ -36,13 +36,11 @@ function baseFileName(file: string): string {
   return idx === -1 ? normalized : normalized.slice(idx + 1)
 }
 
+// A lastCrash file is a crash even when its <type> is missing or cut off, so it can never name a mod.
 function determineKind(rawType: string | null, file: string): LogKind {
-  if (rawType !== null && rawType.toLowerCase() === 'crash') {
-    return 'crash'
-  }
-  if (baseFileName(file).toLowerCase().startsWith('lastuiexception')) {
-    return 'uiException'
-  }
+  const name = baseFileName(file).toLowerCase()
+  if (rawType?.toLowerCase() === 'crash' || name.startsWith('lastcrash')) return 'crash'
+  if (name.startsWith('lastuiexception')) return 'uiException'
   return 'exception'
 }
 
@@ -52,12 +50,14 @@ export function parseGameLog(text: string, file: string, fileModifiedAt: IsoTime
   const results: LogReport[] = []
 
   let pos = 0
+  // Reused while still ahead, so many <report> tags with no (or one far) </report> never rescan the text.
+  let closeIdx = -2
   while (pos < text.length) {
     const openIdx = text.indexOf(REPORT_OPEN, pos)
     if (openIdx === -1) break
 
     const contentStart = openIdx + REPORT_OPEN.length
-    const closeIdx = text.indexOf(REPORT_CLOSE, contentStart)
+    if (closeIdx !== -1 && closeIdx < contentStart) closeIdx = text.indexOf(REPORT_CLOSE, contentStart)
     const nextOpenIdx = text.indexOf(REPORT_OPEN, contentStart)
 
     let chunk: string
@@ -103,9 +103,8 @@ export function parseGameLog(text: string, file: string, fileModifiedAt: IsoTime
     let modHints: string[] = []
 
     if (kind !== 'crash' && desyncTag.value !== null) {
-      const decodedDesync = decodeEntities(desyncTag.value)
-      message = extractFirstLine(decodedDesync)
-      const lines = decodedDesync.split(/\r?\n|\r/)
+      const lines = decodeEntities(desyncTag.value).split(/\r?\n|\r/)
+      message = extractFirstLine(lines)
       if (kind === 'uiException') {
         frames = extractUiFrames(lines)
         modHints = []

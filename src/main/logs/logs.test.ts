@@ -163,9 +163,10 @@ describe('log parsers and readLogs', () => {
       expect(report.gameVersion).toBe('1.129.39.1030')
       expect(report.categoryId).toBe('(AS)widgets.Example::ExampleWidget/onUpdate')
       expect(report.message).toBe('TypeError: Error #1009: Cannot access a property or method of a null object reference.')
+      // ActionScript lists the innermost call first; frames are innermost last, as for Python.
       expect(report.frames).toEqual([
-        { path: 'widgets.Example::ExampleWidget/onUpdate', line: null, origin: 'game' },
-        { path: 'olympus.controls::GUIComponent/validateNow', line: null, origin: 'game' }
+        { path: 'olympus.controls::GUIComponent/validateNow', line: null, origin: 'game' },
+        { path: 'widgets.Example::ExampleWidget/onUpdate', line: null, origin: 'game' }
       ])
       expect(report.modHints).toEqual([])
       expect(report.completeness).toBe('complete')
@@ -366,6 +367,96 @@ describe('log parsers and readLogs', () => {
       expect(mcccReports[0]!.modHints).toEqual(['d:/mod/y'])
       expect(mcccReports[0]!.message).toBe('KeyError: missing')
     })
+  })
+
+  describe('review fixes', () => {
+    const mtime = '2026-11-24T12:00:00.000Z'
+    const HOSTILE_BYTES = 8 * 1024 * 1024
+
+    function timed(run: () => unknown): number {
+      const start = performance.now()
+      run()
+      return performance.now() - start
+    }
+
+    it('collects modHints from every frame before capping frames at 60', () => {
+      const lines = ['  File "C:\\Users\\Author\\injector\\hooks.py", line 5, in wrapper']
+      for (let i = 2; i <= 100; i += 1) {
+        lines.push(`  File "T:\\InGame\\Gameplay\\Scripts\\Server\\frame_${i}.py", line ${i}, in fn`)
+      }
+      const xml = `<report><type>desync</type><categoryid>frame_100.py:100</categoryid><desyncdata>Boom&#13;&#10;${lines.join('&#13;&#10;')}</desyncdata></report>`
+
+      const [report] = parseGameLog(xml, 'lastException.txt', mtime)
+      expect(report!.frames).toHaveLength(60)
+      expect(report!.frames.every((frame) => frame.origin === 'game')).toBe(true)
+      expect(report!.modHints).toEqual(['c:/users/author/injector/hooks'])
+    })
+
+    it('treats <frozen ...> and <string> pseudo-files as game frames, never modHints', () => {
+      const xml = [
+        '<report><type>desync</type><categoryid>x.py:1</categoryid><desyncdata>Boom&#13;&#10;',
+        '  File "&lt;frozen importlib._bootstrap&gt;", line 219, in _call_with_frames_removed&#13;&#10;',
+        '  File "&lt;string&gt;", line 1, in &lt;module&gt;&#13;&#10;',
+        '  File "T:\\InGame\\Gameplay\\Scripts\\Core\\x.py", line 1, in f</desyncdata></report>'
+      ].join('')
+
+      const [report] = parseGameLog(xml, 'lastException.txt', mtime)
+      expect(report!.frames.map((frame) => frame.origin)).toEqual(['game', 'game', 'game'])
+      expect(report!.modHints).toEqual([])
+    })
+
+    it('never names a mod from a lastCrash file, even without a <type> tag', () => {
+      const xml =
+        '<report><createtime>2026-11-24 11:00:00</createtime><desyncdata>  File "C:\\Mods\\sus\\mod.py", line 1, in boom</desyncdata></report>'
+
+      for (const file of ['lastCrash.txt', 'LastCrash_63887260000.txt']) {
+        const [report] = parseGameLog(xml, file, mtime)
+        expect(report!.kind).toBe('crash')
+        expect(report!.frames).toEqual([])
+        expect(report!.modHints).toEqual([])
+        expect(report!.message).toBeNull()
+      }
+    })
+
+    it('keeps the 60 innermost UI frames, innermost last', () => {
+      const atLines = Array.from({ length: 80 }, (_, i) => `\tat widgets.W${i + 1}::Fn()`)
+      const xml = `<report><type>desync</type><desyncdata>TypeError: boom&#13;&#10;${atLines.join('&#13;&#10;')}</desyncdata></report>`
+
+      const [report] = parseGameLog(xml, 'lastUIException.txt', mtime)
+      expect(report!.frames).toHaveLength(60)
+      expect(report!.frames[59]!.path).toBe('widgets.W1::Fn')
+      expect(report!.frames[0]!.path).toBe('widgets.W60::Fn')
+    })
+
+    it('decodes each escaping layer exactly once in Better Exceptions and MCCC', () => {
+      // Raw XML holds the literal text "&lt;b&gt;" (written &amp;lt;b&amp;gt;); BE escapes that XML once more.
+      const be = `<div id="beRawLEData">&lt;report&gt;&lt;type&gt;desync&lt;/type&gt;&lt;desyncdata&gt;Bad &amp;amp;lt;b&amp;amp;gt; and &amp;lt;module&amp;gt;&lt;/desyncdata&gt;&lt;/report&gt;</div>`
+      expect(parseBetterExceptions(be, 'BE-ExceptionReport.html', mtime)[0]!.message).toBe('Bad &lt;b&gt; and <module>')
+
+      const mccc = '<p>KeyError: &amp;lt;b&amp;gt; in &lt;module&gt;</p>'
+      expect(parseMccc(mccc, 'Mods/mc_lastexception.html', mtime)[0]!.message).toBe('KeyError: &lt;b&gt; in <module>')
+    })
+
+    it('stays linear on 8 MB inputs built to make searches rescan', () => {
+      const reports = '<report>'.repeat(HOSTILE_BYTES / 8)
+      const shapes: Array<[string, () => unknown]> = [
+        ['many <report>', () => parseGameLog(reports, 'lastException.txt', mtime)],
+        ['many <report>, one close', () => parseGameLog(`${reports}</report>`, 'lastException.txt', mtime)],
+        ['many beRawLEData', () => parseBetterExceptions('beRawLEData'.repeat(HOSTILE_BYTES / 11), 'BE.html', mtime)],
+        [
+          'one div, many ids',
+          () => parseBetterExceptions(`<div ${'beRawLEData '.repeat(HOSTILE_BYTES / 12)}>`, 'BE.html', mtime)
+        ],
+        [
+          'UI at + spaces',
+          () =>
+            parseGameLog(`<report><desyncdata>at${' '.repeat(HOSTILE_BYTES)}x</desyncdata></report>`, 'lastUIException.txt', mtime)
+        ]
+      ]
+      for (const [name, run] of shapes) {
+        expect({ name, fast: timed(run) < 2000 }).toEqual({ name, fast: true })
+      }
+    }, 60_000)
   })
 
   describe('readLogs', () => {
