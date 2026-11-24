@@ -280,7 +280,9 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
     if (cloudRoots.some((root) => isInside(nativePath, place, root))) return outside(dataDir)
   }
 
-  // The Sims folder: a localized name from PR 3, with Options.ini inside.
+  // The Sims folder: a localized name from PR 3, with Options.ini inside. It may be a link or a junction:
+  // players move the folder to another drive. The real folder may then have any name, but it still holds
+  // Options.ini (stat follows the link), and it is never inside a saves or Tray folder.
   let realFolder: string | null = null
   const realForbidden: string[] = []
   if (folderPath !== null) {
@@ -291,6 +293,8 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
       if (!(await stat(folderPath)).isDirectory()) return notSims
       if (!(await stat(nativePath.join(folderPath, 'Options.ini'))).isFile()) return notSims
       realFolder = await resolveReal(folderPath)
+      const realNames = (looseParts(nativePath, realFolder) ?? []).slice(1)
+      if (realNames.some((name) => FORBIDDEN_NAMES.has(looseFold(name)))) return notSims
       // saves or Tray may itself be a link to another drive. Where it leads is forbidden too.
       for (const name of ['saves', 'Tray']) realForbidden.push(await resolveReal(nativePath.join(folderPath, name)))
     } catch {
