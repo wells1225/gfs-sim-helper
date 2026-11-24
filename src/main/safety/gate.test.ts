@@ -62,15 +62,15 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       await real.rename(from, to)
     }) as typeof real.rename,
     link: (async (existing, added) => {
-      if (disk.noHardLinks) {
-        disk.noHardLinks.hits += 1
-        throw errno(disk.noHardLinks.code, 'link')
-      }
-      if (disk.crossDrive && String(existing) === disk.crossDrive.from) {
+      if (disk.crossDrive && String(existing) === disk.crossDrive.from && !disk.noHardLinks) {
         disk.crossDrive.hits += 1
         throw errno('EXDEV', 'link')
       }
       await lastMoment()
+      if (disk.noHardLinks) {
+        disk.noHardLinks.hits += 1
+        throw errno(disk.noHardLinks.code, 'link')
+      }
       await real.link(existing, added)
     }) as typeof real.link,
     realpath: (async (target: string) => {
@@ -856,6 +856,9 @@ describe('which op may write into which zone', () => {
 
   it('yes: copy into app data keeps the bytes and the file date and leaves the source alone', async () => {
     const w = await makeWorld()
+    // A copy only reads Mods. It is how the backup is made, so it waits for neither the game nor a backup.
+    w.game = 'running'
+    w.backup = { state: 'none' }
     const from = w.inFolder(...MOD)
     const to = w.inData('backups', 'b1', 'Mods', 'cozy_rug.package')
     const before = await snapshotTree(w.folder)
@@ -864,6 +867,7 @@ describe('which op may write into which zone', () => {
     expect(Math.abs((await stat(to)).mtimeMs - (await stat(from)).mtimeMs)).toBeLessThan(2)
     expect(await snapshotTree(w.folder)).toEqual(before)
     expect(await readdir(dirname(to))).toEqual(['cozy_rug.package'])
+    expect(w.asked).toEqual([])
   })
 
   it('yes: move out of Mods, back into Mods, inside Mods and inside app data', async () => {
@@ -1493,15 +1497,23 @@ describe('doing the ops', () => {
     const w = await makeWorld()
     const target = w.inData('holding', 'late.package')
     const from = w.inFolder(...MOD)
-    const cases: [string, WriteOp, boolean][] = [
+    const ops: [string, WriteOp, boolean][] = [
       ['write', { op: 'write', path: target, data: 'ours', mode: 'create' }, false],
       ['copy', { op: 'copy', from, to: target }, false],
       ['move on one drive', { op: 'move', from, to: target }, false],
       ['move across drives', { op: 'move', from, to: target }, true]
     ]
-    for (const [name, op, crossDrive] of cases) {
+    // On a disk with no hard links the gate looks right before it renames: the file appears just before that look.
+    const cases = [false, true].flatMap((noHardLinks) =>
+      ops.map(
+        ([name, op, crossDrive]) =>
+          [`${name}${noHardLinks ? ', no hard links' : ''}`, op, crossDrive, noHardLinks] as const
+      )
+    )
+    for (const [name, op, crossDrive, noHardLinks] of cases) {
       await rm(target, { force: true })
       disk.crossDrive = crossDrive ? { from, hits: 0 } : null
+      disk.noHardLinks = noHardLinks ? { code: 'EPERM', hits: 0 } : null
       let appeared = false
       disk.atTheLastMoment = async () => {
         await writeFile(target, 'someone else was first')

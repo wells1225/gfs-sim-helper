@@ -2,7 +2,7 @@
 // It checks a whole request first, and only then does the ops itself. Any doubt while checking refuses.
 import { createHash, randomBytes } from 'node:crypto'
 import type { BigIntStats, Stats } from 'node:fs'
-import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink, utimes } from 'node:fs/promises'
+import { link, lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink, utimes } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import nativePath from 'node:path'
 import type { PlatformPath } from 'node:path'
@@ -331,8 +331,18 @@ function readRequest(deps: GateDeps, request: WriteRequest): Asked | GateRefusal
 
 /** Each path of an op, with what the op does there. */
 function pathUses(op: WriteOp): [string, WriteUse | 'read'][] {
-  if (op.op === 'copy') return [[op.from, 'read'], [op.to, 'copy-to']] // prettier-ignore
-  if (op.op === 'move') return [[op.from, 'move'], [op.to, 'move']] // prettier-ignore
+  if (op.op === 'copy') {
+    return [
+      [op.from, 'read'],
+      [op.to, 'copy-to']
+    ]
+  }
+  if (op.op === 'move') {
+    return [
+      [op.from, 'move'],
+      [op.to, 'move']
+    ]
+  }
   return [[op.path, op.op === 'write' ? `write-${op.mode}` : op.op]]
 }
 
@@ -569,7 +579,17 @@ async function askBackup(deps: GateDeps, folderPath: string): Promise<'verified'
   }
 }
 
+// One request at a time. Two that ran together could each find a name free and both take it. So neither
+// deps.gameState nor deps.backupStatus may call the gate: it would wait for itself.
+let lastTurn: Promise<unknown> = Promise.resolve()
+
 export async function runGate(deps: GateDeps, request: WriteRequest): Promise<GateResult> {
+  const turn = lastTurn.then(() => takeTurn(deps, request))
+  lastTurn = turn.catch(() => undefined)
+  return await turn
+}
+
+async function takeTurn(deps: GateDeps, request: WriteRequest): Promise<GateResult> {
   const refused = (refusal: GateRefusal): GateResult => ({ status: 'refused', refusal })
   let approved: Approved | GateRefusal
   try {
@@ -632,7 +652,7 @@ async function carryOut(op: WriteOp, approved: Approved, followAgain: () => Prom
   } else if (op.op === 'write') {
     if (op.mode === 'create') await mustBeMissing(op.path)
     await makeParent(op.path, roots)
-    await viaTemp(op.path, async (temp) => {
+    await viaTemp(op.path, op.mode === 'replace', async (temp) => {
       const handle = await open(temp, 'wx', approved.asked.secret ? 0o600 : 0o666)
       try {
         await handle.writeFile(op.data)
@@ -640,7 +660,6 @@ async function carryOut(op: WriteOp, approved: Approved, followAgain: () => Prom
       } finally {
         await handle.close()
       }
-      if (op.mode === 'create') await mustBeMissing(op.path)
     })
   } else {
     // Only a plain file is copied or moved. A link or a folder could carry a link into an allowed zone,
@@ -655,7 +674,7 @@ async function carryOut(op: WriteOp, approved: Approved, followAgain: () => Prom
       return
     }
     try {
-      await rename(op.from, op.to)
+      await nameWithoutOverwrite(op.from, op.to)
       return
     } catch (err) {
       if (errorCode(err) !== 'EXDEV') throw err
@@ -675,9 +694,35 @@ async function carryOut(op: WriteOp, approved: Approved, followAgain: () => Prom
   }
 }
 
-/** Never overwrite: the target must be missing. Asked again right before each rename onto it. */
+/** Never overwrite: the target must be missing. */
 async function mustBeMissing(target: string): Promise<void> {
   if ((await lstatOrNull(target)) !== null) throw new OpFailure('the target already exists')
+}
+
+/**
+ * Gives a file its new name, never in place of a file that is already there. A hard link does that in one
+ * step: it fails when the name is taken, and the old name is removed after. A disk with no hard links (exFAT,
+ * some network drives) gets the next best thing: look, then rename at once.
+ */
+async function nameWithoutOverwrite(from: string, to: string): Promise<void> {
+  try {
+    await link(from, to)
+  } catch (err) {
+    const code = errorCode(err)
+    if (code === 'EEXIST') throw new OpFailure('the target already exists')
+    if (code === 'EXDEV' || code === 'ENOENT') throw err
+    await mustBeMissing(to)
+    await rename(from, to)
+    return
+  }
+  try {
+    await unlink(from)
+  } catch (err) {
+    // One file with two names now. Take the new name back, but only while the old one is surely still there.
+    const still = await lstatOrNull(from).catch(() => null)
+    if (still?.isFile()) await unlink(to).catch(() => undefined)
+    throw err
+  }
 }
 
 /** Makes the folders above a new file, in the two zones where the gate may make folders. */
@@ -686,13 +731,17 @@ async function makeParent(target: string, roots: GateRoots): Promise<void> {
   if (zone === 'mods' || zone === 'app-data') await mkdir(nativePath.dirname(target), { recursive: true })
 }
 
-/** Fills a temp file beside the target, then renames it into place. The temp file never outlives a failure. */
-async function viaTemp(target: string, fill: (temp: string) => Promise<void>): Promise<void> {
+/**
+ * Fills a temp file beside the target, then gives it the target's name. Only `replace` may take the name from
+ * a file that is there. The temp file never outlives a failure.
+ */
+async function viaTemp(target: string, replace: boolean, fill: (temp: string) => Promise<void>): Promise<void> {
   // Not .package or .ts4script: the game must never load a half-written file.
   const temp = `${target}.${randomBytes(6).toString('hex')}.sims-helper-tmp`
   try {
     await fill(temp)
-    await rename(temp, target)
+    if (replace) await rename(temp, target)
+    else await nameWithoutOverwrite(temp, target)
   } catch (err) {
     await unlink(temp).catch(() => undefined)
     throw err
@@ -700,7 +749,7 @@ async function viaTemp(target: string, fill: (temp: string) => Promise<void>): P
 }
 
 async function placeCopy(from: string, to: string, source: Stats, verify: boolean): Promise<void> {
-  await viaTemp(to, async (temp) => {
+  await viaTemp(to, false, async (temp) => {
     const copied = await copyBytes(from, temp, verify)
     if (copied.bytes !== source.size) throw new OpFailure('the source changed while it was copied')
     if (verify) {
@@ -708,7 +757,6 @@ async function placeCopy(from: string, to: string, source: Stats, verify: boolea
       if (!matches) throw new OpFailure('the copy does not match the source')
     }
     await utimes(temp, source.atimeMs / 1000, source.mtimeMs / 1000) // keeps the file date
-    await mustBeMissing(to)
   })
 }
 
