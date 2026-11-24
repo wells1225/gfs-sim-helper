@@ -156,6 +156,12 @@ function mayWrite(use: WriteUse, sorted: SortedPath): boolean {
 
 const isDriveRoot = (place: string): boolean => nativePath.parse(place).root === place
 
+/** A folder path with no separator at its end. A bare drive root keeps its own: 'C:\' is not 'C:'. */
+function withoutTrailingSeparators(place: string): string {
+  const root = nativePath.parse(place).root
+  return root + place.slice(root.length).replace(nativePath.sep === '\\' ? /[\\/]+$/ : /\/+$/, '')
+}
+
 function errorCode(err: unknown): string | undefined {
   const code = (err as { code?: unknown } | null)?.code
   return typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,30}$/.test(code) ? code : undefined
@@ -257,7 +263,9 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
   const cloudRoots: string[] = []
   try {
     realData = await resolveReal(dataDir)
-    for (const root of paths.oneDriveRoots) {
+    for (const given of paths.oneDriveRoots) {
+      // An environment variable may end in a separator. It is the same folder, and its links are followed too.
+      const root = withoutTrailingSeparators(given)
       cloudRoots.push(root)
       if (isWellFormed(nativePath, root)) cloudRoots.push(await resolveReal(root))
     }
