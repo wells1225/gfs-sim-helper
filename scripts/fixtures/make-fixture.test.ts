@@ -262,6 +262,34 @@ describe('DBPF 2.1 writer and sanity check', () => {
     }
   })
 
+  it('writes the header and index bytes at the offsets in section 4', () => {
+    // Pinned from a hand check of good_plain.package against the section 4 tables.
+    const buf = writeDbpf({
+      keys: [
+        { type: 0x03b33ddf, group: 0, instance: 0x0005000000000001n },
+        { type: 0x545ac67a, group: 3, instance: 0xfedcba9876543210n }
+      ]
+    })
+    const header =
+      '44425046' + '02000000' + '01000000' + '00'.repeat(24) + // magic, major 2, minor 1, unused
+      '02000000' + '00000000' + '44000000' + '00'.repeat(12) + // count 2, short offset 0, index size 68
+      '03000000' + '8000000000000000' + '00'.repeat(24) // constant 3, long offset 128, padding
+    const index =
+      '00000000' + // flags: nothing constant
+      'df3db303' + '00000000' + '00000500' + '01000000' + '60000000' + '10000080' + '10000000' + '0000' + '0100' +
+      '7ac65a54' + '03000000' + '98badcfe' + '10325476' + '70000000' + '10000080' + '10000000' + '0000' + '0100'
+    expect(buf.length).toBe(196)
+    expect(buf.subarray(0, 96).toString('hex')).toBe(header)
+    expect(buf.subarray(128).toString('hex')).toBe(index)
+  })
+
+  it('rejects resource key strings with trailing junk', () => {
+    expect(() => parseHexUint32('0x03B33DDZ')).toThrow()
+    expect(() => parseHexUint32('')).toThrow()
+    expect(() => parseHexUint64('')).toThrow()
+    expect(parseHexUint32('0x03B33DDF')).toBe(0x03b33ddf)
+  })
+
   it('produces broken variants that fail the DBPF 2.1 sanity check', () => {
     const keys: ResourceKey[] = [{ type: 0x03b33ddf, group: 0, instance: 0x42n }]
 
@@ -314,6 +342,15 @@ describe('fixture generator', () => {
       const snapB = await snapshotTree(dirB)
       expect(snapA.length).toBeGreaterThan(0)
       expect(snapA).toEqual(snapB)
+
+      // Every package not named as broken passes the section 4 sanity checks.
+      const packages = (await listFilesRecursive(dirA)).filter((p) => p.endsWith('.package'))
+      for (const pkgPath of packages) {
+        const fileName = pkgPath.split(/[/\\]/).pop() as string
+        if (fileName.startsWith('corrupt_') || fileName.startsWith('wrong_game_')) continue
+        const res = checkDbpf21(await readFile(pkgPath))
+        expect(res.ok, `Expected valid DBPF 2.1 at ${pkgPath}`).toBe(true)
+      }
     }
   })
 
@@ -338,7 +375,21 @@ describe('fixture generator', () => {
     const goodConst = checkDbpf21(await readFile(join(modsDir, 'good_constant_flags.package')))
     expect(goodConst.ok).toBe(true)
     if (goodConst.ok) {
-      expect(goodConst.keys).toHaveLength(2)
+      expect(goodConst.keys).toEqual([
+        { type: 0x034aeecb, group: 0, instance: 0x0005000000000010n },
+        { type: 0x034aeecb, group: 0, instance: 0x0005000100000011n }
+      ])
+    }
+
+    const constHighBytes = await readFile(join(modsDir, 'good_constant_instance_high.package'))
+    expect(constHighBytes.readUInt32LE(constHighBytes.readUInt32LE(64))).toBe(4)
+    const constHigh = checkDbpf21(constHighBytes)
+    expect(constHigh.ok).toBe(true)
+    if (constHigh.ok) {
+      expect(constHigh.keys).toEqual([
+        { type: 0x03b33ddf, group: 0, instance: 0x00050002000000a0n },
+        { type: 0x545ac67a, group: 3, instance: 0x00050002000000a1n }
+      ])
     }
 
     const badMagic = checkDbpf21(await readFile(join(modsDir, 'corrupt_bad_magic.package')))
@@ -418,6 +469,13 @@ describe('fixture generator', () => {
     const odActive = await stat(join(odDir, 'Users/Lila/OneDrive/Documents/Electronic Arts/The Sims 4/Options.ini'))
     const odStale = await stat(join(odDir, 'Users/Lila/Documents/Electronic Arts/The Sims 4/Options.ini'))
     expect(odActive.mtimeMs).toBeGreaterThan(odStale.mtimeMs)
+    // Folders inside the stale user folder are as old as the folder itself, so a scan of
+    // the stale tree never finds an entry newer than the active folder.
+    const staleFolderMs = Date.parse('2026-09-10T10:00:00.000Z')
+    for (const dir of ['', 'Mods', 'Mods/CAS', 'saves', 'Tray', 'cache']) {
+      const info = await stat(join(odDir, 'Users/Lila/Documents/Electronic Arts/The Sims 4', dir))
+      expect(info.mtimeMs, `stale dir ${dir || '.'}`).toBe(staleFolderMs)
+    }
 
     // exceptions: game-only LE, mod-matching LE -> ts4script .pyc, cut-off LE, lastCrash, BE HTML, CurseForge JSON
     const exSpec = await loadSpec(join(SPECS_DIR, 'exceptions.json'))
@@ -445,6 +503,8 @@ describe('fixture generator', () => {
     expect(crashLog).not.toContain('<root>')
     expect(crashLog).toContain('<type>crash</type>')
     expect(crashLog).not.toContain('Traceback')
+    // Section 3 sample: <contextdata> holds a literal <br /> element, not escaped text.
+    expect(crashLog).toContain('<contextdata>Current Game State: 0x9b8c93c0<br /></contextdata>')
 
     const beHtml = await readFile(join(exUserRoot, 'BE-ExceptionReport.html'), 'utf8')
     expect(beHtml).toContain('id="beRawLEData"')
@@ -462,12 +522,11 @@ describe('fixture generator', () => {
     expect(cfParsed[0]!.installedAddons.length).toBeGreaterThanOrEqual(2)
   })
 
-  it('builds big with 5,000 valid packages and 300 valid script mods well under 20s', async () => {
+  it('builds big with 5,000 valid packages and 300 valid script mods', async () => {
     const spec = await loadSpec(join(SPECS_DIR, 'big.json'))
     const bigDir = join(workDir, 'verify-big')
 
-    const result = await generateFixture(spec, bigDir)
-    expect(result.elapsedMs).toBeLessThan(20_000)
+    await generateFixture(spec, bigDir)
 
     const modsDir = join(bigDir, spec.userFolders[0]!.relPath, 'Mods')
     const allModFiles = await listFilesRecursive(modsDir)

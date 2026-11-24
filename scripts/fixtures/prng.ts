@@ -3,7 +3,6 @@ export interface SeededRng {
   nextInt(min: number, maxExclusive: number): number
   pick<T>(items: readonly T[]): T
   bytes(length: number): Buffer
-  hex(byteLength: number): string
 }
 
 /**
@@ -54,9 +53,5 @@ export function createRng(seed: number): SeededRng {
     return out
   }
 
-  function hex(byteLength: number): string {
-    return bytes(byteLength).toString('hex')
-  }
-
-  return { nextUint32, nextInt, pick, bytes, hex }
+  return { nextUint32, nextInt, pick, bytes }
 }

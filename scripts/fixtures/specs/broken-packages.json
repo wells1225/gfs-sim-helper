@@ -1,6 +1,6 @@
 {
   "name": "broken-packages",
-  "description": "Valid DBPF 2.1 packages alongside bad-magic, truncated-index, truncated-header, Sims 3 (2.0) packages, and unextracted .zip archives.",
+  "description": "Valid DBPF 2.1 packages (including constant-flag indexes) alongside bad-magic, truncated-index, truncated-header, Sims 3 (2.0) packages, and unextracted .zip archives.",
   "seed": 5005,
   "baseTime": "2026-11-20T18:00:00.000Z",
   "gameInstall": {
@@ -38,6 +38,16 @@
           "keys": [
             { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0005000000000010" },
             { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0005000100000011" }
+          ]
+        },
+        {
+          "relPath": "good_constant_instance_high.package",
+          "mtime": "2026-11-15T12:07:00.000Z",
+          "variant": "valid",
+          "constantFlags": 4,
+          "keys": [
+            { "type": "0x03B33DDF", "group": "0x00000000", "instance": "0x00050002000000A0" },
+            { "type": "0x545AC67A", "group": "0x00000003", "instance": "0x00050002000000A1" }
           ]
         },
         {

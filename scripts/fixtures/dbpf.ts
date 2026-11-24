@@ -17,7 +17,6 @@ export interface WriteDbpfOptions {
   keys: readonly ResourceKey[]
   variant?: DbpfVariant
   constantFlags?: number
-  payloads?: readonly Buffer[]
   seed?: number
 }
 
@@ -28,23 +27,22 @@ const COMPRESSION_NONE = 0x0000
 const COMMITTED_FLAG = 0x0001
 const EXTENDED_SIZE_BIT = 0x80000000
 
-export function parseHexUint32(value: string | number): number {
-  if (typeof value === 'number') {
-    if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
-      throw new Error(`Uint32 out of range: ${value}`)
-    }
-    return value >>> 0
-  }
+export function parseHexUint32(value: string): number {
   const normalized = value.trim()
-  const parsed = Number.parseInt(normalized, normalized.startsWith('0x') || normalized.startsWith('0X') ? 16 : 10)
+  // Number() rejects trailing junk that parseInt would silently drop.
+  const parsed = normalized === '' ? Number.NaN : Number(normalized)
   if (!Number.isInteger(parsed) || parsed < 0 || parsed > 0xffffffff) {
     throw new Error(`Invalid uint32 string: ${value}`)
   }
   return parsed >>> 0
 }
 
-export function parseHexUint64(value: string | bigint): bigint {
-  const parsed = typeof value === 'bigint' ? value : BigInt(value.trim())
+export function parseHexUint64(value: string): bigint {
+  const normalized = value.trim()
+  if (normalized === '') {
+    throw new Error('Invalid uint64 string: empty')
+  }
+  const parsed = BigInt(normalized)
   if (parsed < 0n || parsed > 0xffffffffffffffffn) {
     throw new Error(`Uint64 out of range: ${value.toString()}`)
   }
@@ -74,13 +72,10 @@ function makeDefaultPayload(key: ResourceKey, index: number, seed: number): Buff
  * Layout follows docs/research/fable-files-logs-safety.md section 4.
  */
 export function writeDbpf(options: WriteDbpfOptions): Buffer {
-  const { keys, variant = 'valid', constantFlags = 0, payloads, seed = 1 } = options
+  const { keys, variant = 'valid', constantFlags = 0, seed = 1 } = options
 
   if ((constantFlags & ~0x07) !== 0) {
     throw new Error(`Unsupported DBPF constant flags: 0x${constantFlags.toString(16)}`)
-  }
-  if (payloads && payloads.length !== keys.length) {
-    throw new Error(`Payloads count (${payloads.length}) does not match keys count (${keys.length})`)
   }
 
   const hasConstType = (constantFlags & 0x01) !== 0
@@ -109,9 +104,7 @@ export function writeDbpf(options: WriteDbpfOptions): Buffer {
     }
   }
 
-  const entryPayloads: Buffer[] = keys.map((key, idx) =>
-    payloads ? (payloads[idx] as Buffer) : makeDefaultPayload(key, idx, seed)
-  )
+  const entryPayloads: Buffer[] = keys.map((key, idx) => makeDefaultPayload(key, idx, seed))
 
   const entryOffsets: number[] = []
   let payloadCursor = DBPF_HEADER_SIZE

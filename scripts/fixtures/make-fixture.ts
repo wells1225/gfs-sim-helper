@@ -1,5 +1,5 @@
 import { mkdir, open, readdir, readFile, rm, utimes } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseHexUint32, parseHexUint64, writeDbpf } from './dbpf.ts'
 import type { ResourceKey } from './dbpf.ts'
@@ -392,11 +392,18 @@ function planUserFolder(
   }
 }
 
+/** A folder whose directories, and every directory below it, get `date` as their mtime. */
+interface DirDate {
+  relPath: string
+  date: Date
+}
+
 async function writePlannedFiles(
   outDir: string,
   files: readonly PlannedFile[],
   emptyDirs: ReadonlySet<string>,
-  baseDate: Date
+  baseDate: Date,
+  dirDates: readonly DirDate[]
 ): Promise<void> {
   const leafDirs = new Set<string>([outDir])
   for (const dir of emptyDirs) {
@@ -447,10 +454,16 @@ async function writePlannedFiles(
 
   await Promise.all(Array.from({ length: workerCount }, () => worker()))
 
-  // Set deterministic mtimes on all directories bottom-up.
+  // Set deterministic mtimes on all directories bottom-up. A directory inside a user folder
+  // takes that folder's date, so a stale folder never looks newer than its files.
+  const roots = dirDates
+    .map((d) => ({ dir: join(outDir, d.relPath), date: d.date }))
+    .sort((a, b) => b.dir.length - a.dir.length)
   const sortedDirs = [...allDirs].sort((a, b) => b.length - a.length)
   for (const dir of sortedDirs) {
-    await utimes(dir, baseDate, baseDate)
+    const root = roots.find((r) => dir === r.dir || dir.startsWith(r.dir + sep))
+    const date = root ? root.date : baseDate
+    await utimes(dir, date, date)
   }
 }
 
@@ -484,7 +497,11 @@ export async function generateFixture(spec: FixtureSpec, outDir: string): Promis
     })
   }
 
-  await writePlannedFiles(resolvedOut, files, emptyDirs, baseDate)
+  const dirDates = spec.userFolders.map((folder) => ({
+    relPath: folder.relPath,
+    date: folder.folderMtime ? parseUtcDate(folder.folderMtime) : baseDate
+  }))
+  await writePlannedFiles(resolvedOut, files, emptyDirs, baseDate, dirDates)
 
   const elapsedMs = Math.round(performance.now() - start)
   return {

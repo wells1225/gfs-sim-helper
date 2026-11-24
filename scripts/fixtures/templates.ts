@@ -141,7 +141,7 @@ export function renderLastCrash(spec: LastCrashFileSpec): string {
     '<threads></threads>',
     '<screenshot></screenshot>',
     '<memdump>FIXTUREMEMDUMP0000000000000000</memdump>',
-    '<contextdata>Current Game State: 0x9b8c93c0&lt;br /&gt;</contextdata>',
+    '<contextdata>Current Game State: 0x9b8c93c0<br /></contextdata>',
     '</report>'
   ].join('')
 }
