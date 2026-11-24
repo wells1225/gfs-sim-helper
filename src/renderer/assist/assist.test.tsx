@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { AssistAnswer, AssistStatus, KeyStatus } from '../../shared/model.ts'
+import type { AssistAnswer, AssistStatus, KeySetResult, KeyStatus } from '../../shared/model.ts'
 import { sampleScan } from '../../shared/testing/sample.ts'
 import { ApiProvider } from '../api.tsx'
 import { NavProvider, useNav } from '../nav.tsx'
@@ -125,6 +125,11 @@ describe('AskScreen', () => {
     expect(NO_ANSWER_WORDS.declined.title).toBe("It couldn't answer this one.")
   })
 
+  it('tells a rejected key apart from a missing one', () => {
+    expect(NO_ANSWER_WORDS['key-rejected'].title).not.toBe(NO_ANSWER_WORDS['no-key'].title)
+    expect(NO_ANSWER_WORDS['key-rejected'].detail).toMatch(/Tyler/)
+  })
+
   it('after a no-answer, trying again shows the text again before anything is sent', async () => {
     let n = 0
     const api = fakeApi({
@@ -156,13 +161,14 @@ describe('AskScreen', () => {
   })
 })
 
-function keyApi(initial: KeyStatus, onSet: (key: string) => KeyStatus = () => 'set') {
-  let status = initial
+function keyApi(initial: KeyStatus, onSet: (key: string) => KeySetResult = () => 'set') {
+  let status: KeyStatus = initial
   return fakeApi({
     'assist:status': (): AssistStatus => ({ key: status, offer: 'hide' }),
     'assist:set-key': (req) => {
-      status = onSet(req.key)
-      return status
+      const result = onSet(req.key)
+      if (result !== 'not-saved') status = result
+      return result
     },
     'assist:clear-key': () => {
       status = 'not-set'
@@ -204,6 +210,17 @@ describe('KeySetupScreen', () => {
     fireEvent.change(keyField(), { target: { value: 'not a key' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect(await screen.findByText(/That key was not saved/)).toBeInTheDocument()
+  })
+
+  it('says a refused new key was not saved and the old key is still stored', async () => {
+    const api = keyApi('set', () => 'not-saved')
+    renderWith(api, <KeySetupScreen />)
+    await screen.findByText('A key is stored on this PC.')
+    fireEvent.change(keyField(), { target: { value: 'bad key' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('That key was not saved. The key stored before is still there.')).toBeInTheDocument()
+    expect(screen.getByText('A key is stored on this PC.')).toBeInTheDocument()
+    expect(keyField().value).toBe('')
   })
 
   it('says the key cannot be stored safely when encryption is unavailable', async () => {

@@ -277,7 +277,7 @@ describe('ask', () => {
     expect(await ask(store, preview)).toEqual({ status: 'answered', text: 'Probably Wicked Wardrobe.' })
   })
 
-  it.each(['no-key', 'declined', 'offline', 'limit-reached', 'error'] as const)(
+  it.each(['no-key', 'key-rejected', 'declined', 'offline', 'limit-reached', 'error'] as const)(
     'turns a failed reply (%s) into no-answer with the same reason',
     async (why) => {
       const { store } = fakeKeyStore({ status: 'failed', why })

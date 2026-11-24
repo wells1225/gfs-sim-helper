@@ -133,6 +133,12 @@ describe('assist:set-key and assist:clear-key', () => {
     expect(setCalls).toEqual([FAKE_KEY])
   })
 
+  it('passes not-saved through when the key store refuses a new key', async () => {
+    const { store } = fakeKeyStore('set')
+    store.set = async () => 'not-saved'
+    expect(await assistHandlers(makeCtx(store))['assist:set-key']({ key: FAKE_KEY })).toBe('not-saved')
+  })
+
   it('clears the key', async () => {
     const { store } = fakeKeyStore('set')
     expect(await assistHandlers(makeCtx(store))['assist:clear-key']()).toBe('not-set')
