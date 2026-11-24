@@ -48,11 +48,11 @@ describe('fiftyHandlers', () => {
     expect(seen).toEqual([scan, 'worked', 'keep-set-aside'])
   })
 
-  it('refuses answers and choices it does not know, without calling the driver', async () => {
+  it('refuses answers, bad rounds, and choices it does not know, without calling the driver', async () => {
     const log: string[] = []
     const h = makeFiftyHandlers(fakeCtx(), recordingApi(log))
-    for (const bad of [undefined, null, {}, { answer: 'maybe' }, { answer: 1 }, 'crashed']) {
-      await expect(h['fifty:answer'](bad as never)).rejects.toThrow(/answer/)
+    for (const bad of [undefined, null, {}, { answer: 'maybe' }, { answer: 1 }, 'crashed', { answer: 'crashed', round: -1 }, { answer: 'crashed', round: '1' }]) {
+      await expect(h['fifty:answer'](bad as never)).rejects.toThrow(/answer|round/)
     }
     for (const bad of [undefined, { keep: 'all' }]) {
       await expect(h['fifty:finish'](bad as never)).rejects.toThrow(/keep/)
@@ -60,17 +60,36 @@ describe('fiftyHandlers', () => {
     expect(log).toEqual([])
   })
 
-  it('runs one call at a time, so a double click cannot answer two rounds at once', async () => {
+  it('ignores a second answer that arrives while a step is in flight, while still running stop next', async () => {
     const log: string[] = []
     const h = makeFiftyHandlers(fakeCtx(), recordingApi(log, { giveAnswer: 20 }))
-    await Promise.all([
+    const [first, second, stopped] = await Promise.all([
       h['fifty:answer']({ answer: 'crashed' }),
       h['fifty:answer']({ answer: 'crashed' }),
       h['fifty:stop']()
     ])
-    expect(log).toEqual([
-      'giveAnswer:start', 'giveAnswer:end', 'giveAnswer:start', 'giveAnswer:end', 'stop:start', 'stop:end'
-    ])
+    expect(first).toEqual(OK)
+    expect(second).toEqual(OK)
+    expect(stopped).toEqual(OK)
+    expect(log).toEqual(['giveAnswer:start', 'giveAnswer:end', 'get', 'stop:start', 'stop:end'])
+  })
+
+  it('ignores a stale answer arriving while begin-round is still setting up the next round', async () => {
+    const log: string[] = []
+    const h = makeFiftyHandlers(fakeCtx(), recordingApi(log, { beginRound: 20 }))
+    await Promise.all([h['fifty:begin-round'](), h['fifty:answer']({ answer: 'worked' })])
+    expect(log).toEqual(['beginRound:start', 'beginRound:end', 'get'])
+  })
+
+  it('forwards an optional round field to giveAnswer when supplied', async () => {
+    const seen: unknown[] = []
+    const api: FiftyApi = {
+      ...recordingApi([]),
+      giveAnswer: async (_deps, a, r) => (seen.push([a, r]), OK)
+    }
+    const h = makeFiftyHandlers(fakeCtx(), api)
+    await h['fifty:answer']({ answer: 'worked', round: 2 } as never)
+    expect(seen).toEqual([['worked', 2]])
   })
 
   it('a call that throws does not block the next one', async () => {

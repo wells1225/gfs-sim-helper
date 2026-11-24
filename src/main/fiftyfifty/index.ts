@@ -72,7 +72,7 @@ export async function start(deps: FiftyDeps, scan: Scan | null): Promise<FiftyRe
   if (!scan) return { status: 'refused', refusal: { why: 'out-of-date', detail: 'no-scan' } }
 
   const running = await loadState(deps)
-  if (running) return { status: 'ok', state: running }
+  if (running && running.phase !== 'stopped') return { status: 'ok', state: running }
 
   // The scan can be older than a switch in "Your mods": a group already set aside is hers, not the test's.
   const off = new Set((await deps.fixes.disabledGroups(scan.folder.path)).map((d) => d.groupId))
@@ -118,10 +118,15 @@ export async function beginRound(deps: FiftyDeps): Promise<FiftyResult> {
   return saveOrProblem(deps, { ...state, phase: nextPhase })
 }
 
-export async function giveAnswer(deps: FiftyDeps, given: FiftyAnswer): Promise<FiftyResult> {
+export async function giveAnswer(
+  deps: FiftyDeps,
+  given: FiftyAnswer,
+  expectedRound?: number
+): Promise<FiftyResult> {
   const state = await loadState(deps)
   if (!state) return NO_SESSION
   if (state.phase !== 'awaiting-answer') return { status: 'ok', state }
+  if (expectedRound !== undefined && state.round !== expectedRound) return { status: 'ok', state }
 
   const next = answer(state, given)
   if (next.phase === 'stopped') {

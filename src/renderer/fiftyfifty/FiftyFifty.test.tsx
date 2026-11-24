@@ -11,6 +11,7 @@ import { fakeApi, type FakeApiAnswers } from '../testing/fake-api.ts'
 import { FiftyEntry } from './FiftyEntry.tsx'
 import { FiftyFiftyScreen } from './FiftyFiftyScreen.tsx'
 import { ResumeBanner } from './ResumeBanner.tsx'
+import { refusalWords } from './words.ts'
 
 afterEach(() => {
   cleanup()
@@ -169,6 +170,37 @@ describe('FiftyFiftyScreen', () => {
     await user.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('button', { name: "I've tested it" })).toBeInTheDocument()
     expect(channels(api)).toEqual(['fifty:get', 'fifty:answer', 'fifty:get', 'fifty:begin-round'])
+  })
+
+  it('retrying a refused control-round crash sends the answer again instead of begin-round', async () => {
+    const stoppedControl = controlRound({
+      phase: 'stopped',
+      suspects: [],
+      parked: [],
+      inMods: [],
+      cleared: ['cf:901234', 'dir:hair', 'dir:buildbuy', 'file:shoes.package'],
+      history: [{ round: 0, parked: ['cf:901234', 'dir:hair', 'dir:buildbuy', 'file:shoes.package'], answer: 'crashed' }]
+    })
+    let tries = 0
+    const { api, user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': controlRound(),
+      'fifty:answer': () => {
+        tries += 1
+        return tries === 1
+          ? { status: 'refused', refusal: { why: 'gate', refusal: { reason: 'game-running' } } }
+          : ok(stoppedControl)
+      }
+    })
+    await user.click(await screen.findByRole('button', { name: "I've tested it" }))
+    await user.click(screen.getByRole('button', { name: 'It still crashed' }))
+    expect(await screen.findByText(/The Sims 4 is still open/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('heading', { name: 'Mods are unlikely to be the cause' })).toBeInTheDocument()
+    expect(channels(api)).toEqual(['fifty:get', 'fifty:answer', 'fifty:get', 'fifty:answer'])
+  })
+
+  it('gives a close-the-game message for backup game-state-unknown refusals', () => {
+    expect(refusalWords({ why: 'backup', reason: 'game-state-unknown' })).toMatch(/Close the game/)
   })
 
   it('a round that is saved but not set up has its own button', async () => {

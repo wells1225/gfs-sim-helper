@@ -69,6 +69,8 @@ export function refusalWords(refusal: FixRefusal): string {
       switch (refusal.reason) {
         case 'game-running':
           return 'The Sims 4 is still open. Save and close the game, then click Try again.'
+        case 'game-state-unknown':
+          return "We couldn't tell whether The Sims 4 is open, so nothing was moved. Close the game, then click Try again."
         case 'not-enough-space':
           return "There isn't enough free space to make a safety copy first, so nothing was moved."
         case 'backup-already-running':

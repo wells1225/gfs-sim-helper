@@ -100,7 +100,7 @@ class FakeFixes implements Fixes {
   }
 }
 
-/** A gate that really writes app data in a temp folder. mkdir refuses an existing folder and remove a missing file. */
+/** A gate matching contracts.md section 5 in a temp folder: mkdir creates parents and succeeds if present; remove of a missing path is done. */
 class FakeGate implements Gate {
   requests: WriteRequest[] = []
   next: GateResult | null = null
@@ -111,12 +111,10 @@ class FakeGate implements Gate {
     this.next = null
     if (forced) return forced
     for (const op of request.ops) {
-      if (op.op === 'mkdir') await mkdir(op.path)
+      if (op.op === 'mkdir') await mkdir(op.path, { recursive: true })
       else if (op.op === 'write') await writeFile(op.path, op.data)
-      else if (op.op === 'remove') {
-        await stat(op.path)
-        await rm(op.path)
-      } else throw new Error(`unexpected op ${op.op}`)
+      else if (op.op === 'remove') await rm(op.path, { force: true })
+      else throw new Error(`unexpected op ${op.op}`)
     }
     return { status: 'done' }
   }
@@ -459,6 +457,34 @@ describe('restart and repeat', () => {
     expect(await loadState(makeDeps())).toBeNull()
     await writeFile(join(paths.stateDir, 'fiftyfifty.json'), '{"phase": "dancing"}')
     expect(await loadState(makeDeps())).toBeNull()
+    const base = stateOf(await start(makeDeps(), scanWith(makeGroups(2))))
+    await writeFile(join(paths.stateDir, 'fiftyfifty.json'), JSON.stringify({ ...base, round: -1 }))
+    expect(await loadState(makeDeps())).toBeNull()
+    await writeFile(join(paths.stateDir, 'fiftyfifty.json'), JSON.stringify({ ...base, history: [null] }))
+    expect(await loadState(makeDeps())).toBeNull()
+  })
+
+  it('start replaces a leftover stopped state file instead of returning it as active', async () => {
+    const deps = makeDeps()
+    const base = stateOf(await start(deps, scanWith(makeGroups(4))))
+    await writeFile(join(paths.stateDir, 'fiftyfifty.json'), JSON.stringify({ ...base, phase: 'stopped' }))
+    const fresh = stateOf(await start(deps, scanWith(makeGroups(6))))
+    expect(fresh.phase).toBe('close-curseforge')
+    expect(fresh.groups).toHaveLength(6)
+  })
+
+  it('giveAnswer ignores an answer whose expected round does not match the current round', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    await beginRound(deps)
+    const r1 = stateOf(await giveAnswer(deps, 'worked', 0))
+    expect(r1.round).toBe(1)
+    const writes = gate.stateWrites()
+    const moves = fixes.moves()
+    const stale = stateOf(await giveAnswer(deps, 'crashed', 0))
+    expect(stale).toEqual(r1)
+    expect(gate.stateWrites()).toBe(writes)
+    expect(fixes.moves()).toBe(moves)
   })
 })
 

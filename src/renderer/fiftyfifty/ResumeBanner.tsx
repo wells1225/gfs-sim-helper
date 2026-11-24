@@ -1,5 +1,5 @@
 import { FlaskConical } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FiftyFifty } from '../../shared/model.ts'
 import { Button } from '../components/ui/button.tsx'
 import { useNav } from '../nav.tsx'
@@ -15,11 +15,13 @@ export function ResumeBanner() {
   const [asking, setAsking] = useState(false)
   const [busy, setBusy] = useState(false)
   const [problem, setProblem] = useState<string | null>(null)
+  const busyRef = useRef(false)
 
   // Read again on every route change: the 50/50 screen may have stopped or finished the test.
   useEffect(() => {
     if (!api || onScreen) return
     let live = true
+    setProblem(null)
     api.invoke('fifty:get').then(
       (s) => live && setState(s),
       () => live && setState(null)
@@ -32,6 +34,8 @@ export function ResumeBanner() {
   if (!api || onScreen || !state || state.phase === 'stopped') return null
 
   const stopNow = async () => {
+    if (busyRef.current) return
+    busyRef.current = true
     setBusy(true)
     setProblem(null)
     try {
@@ -43,6 +47,7 @@ export function ResumeBanner() {
       setAsking(false)
       setProblem('Something went wrong. Please try again.')
     } finally {
+      busyRef.current = false
       setBusy(false)
     }
   }

@@ -1,5 +1,5 @@
 import { LoaderCircle, TriangleAlert } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FiftyAnswer, FiftyFifty, FiftyResult } from '../../shared/model.ts'
 import { useApi } from '../api.tsx'
 import { Alert, AlertDescription } from '../components/ui/alert.tsx'
@@ -26,23 +26,34 @@ export function FiftyFiftyScreen() {
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
   const [asking, setAsking] = useState(false)
+  const busyRef = useRef(false)
 
-  const reread = useCallback(async (fallback: FiftyFifty | null) => {
+  const reread = useCallback(async (fallback: FiftyFifty | null): Promise<FiftyFifty | null> => {
     const fresh = await api.invoke('fifty:get').catch(() => fallback)
     setView({ kind: 'session', state: fresh })
+    return fresh
   }, [api])
 
   useEffect(() => {
-    void reread(null)
-  }, [reread])
+    let live = true
+    api.invoke('fifty:get').then(
+      (fresh) => live && setView({ kind: 'session', state: fresh }),
+      () => live && setView({ kind: 'session', state: null })
+    )
+    return () => {
+      live = false
+    }
+  }, [api])
 
   /** Runs one call with every button locked. Anything but ok reads the saved state again and says why. */
   const run = async (
     working: string,
     call: () => Promise<FiftyResult>,
-    retry: () => void,
+    retryFor: (fresh: FiftyFifty | null) => () => void,
     onOk: (state: FiftyFifty | null) => void
   ) => {
+    if (busyRef.current) return
+    busyRef.current = true
     setBusy(working)
     setNotice(null)
     try {
@@ -51,12 +62,14 @@ export function FiftyFiftyScreen() {
         onOk(result.state)
         return
       }
-      await reread(result.status === 'stopped-part-way' ? result.state : null)
+      const fresh = await reread(result.status === 'stopped-part-way' ? result.state : null)
       setStep('test')
-      setNotice({ text: result.status === 'refused' ? refusalWords(result.refusal) : PART_WAY, retry })
+      setNotice({ text: result.status === 'refused' ? refusalWords(result.refusal) : PART_WAY, retry: retryFor(fresh) })
     } catch {
-      setNotice({ text: 'Something went wrong. Please try again.', retry })
+      const current = view.kind === 'session' ? view.state : null
+      setNotice({ text: 'Something went wrong. Please try again.', retry: retryFor(current) })
     } finally {
+      busyRef.current = false
       setBusy(null)
     }
   }
@@ -67,18 +80,20 @@ export function FiftyFiftyScreen() {
   }
 
   const beginRound = () =>
-    void run('Setting aside mods and clearing the cache…', () => api.invoke('fifty:begin-round'), beginRound, (state) => {
+    void run('Setting aside mods and clearing the cache…', () => api.invoke('fifty:begin-round'), () => beginRound, (state) => {
       show(state)
       if (state?.phase === 'close-curseforge') setNotice({ text: CURSEFORGE_OPEN })
     })
 
   const startTest = () =>
-    void run('Starting the 50/50 test…', () => api.invoke('fifty:start'), startTest, show)
+    void run('Starting the 50/50 test…', () => api.invoke('fifty:start'), () => startTest, show)
 
   const giveAnswer = (answer: FiftyAnswer) => {
     const controlCrash = view.kind === 'session' && !!view.state && isControlRound(view.state) && answer === 'crashed'
     const working = controlCrash ? 'Putting your mods back…' : 'Getting the next round ready…'
-    void run(working, () => api.invoke('fifty:answer', { answer }), beginRound, (next) => {
+    const retryFor = (fresh: FiftyFifty | null) =>
+      answer !== 'not-sure' && fresh?.phase === 'awaiting-answer' ? () => giveAnswer(answer) : beginRound
+    void run(working, () => api.invoke('fifty:answer', { answer }), retryFor, (next) => {
       if (next && isNotModsResult(next)) {
         setView({ kind: 'ended', how: 'not-mods', label: '' })
         return
@@ -90,14 +105,14 @@ export function FiftyFiftyScreen() {
   const stopTest = () => {
     // Close the question first, so a refusal (the game is still open) is not hidden behind it.
     setAsking(false)
-    void run('Putting your mods back…', () => api.invoke('fifty:stop'), stopTest, () =>
+    void run('Putting your mods back…', () => api.invoke('fifty:stop'), () => stopTest, () =>
       setView({ kind: 'ended', how: 'stopped', label: '' })
     )
   }
 
   const finish = (keep: 'keep-set-aside' | 'put-back', label: string) => {
     const again = () => finish(keep, label)
-    void run('Putting your mods back…', () => api.invoke('fifty:finish', { keep }), again, () =>
+    void run('Putting your mods back…', () => api.invoke('fifty:finish', { keep }), () => again, () =>
       setView({ kind: 'ended', how: keep === 'keep-set-aside' ? 'kept' : 'put-back', label })
     )
   }

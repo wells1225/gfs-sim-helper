@@ -30,28 +30,45 @@ function field(req: unknown, name: string): unknown {
 }
 
 export function makeFiftyHandlers(ctx: AppContext, api: FiftyApi = DRIVER): Handlers<FiftyChannel> {
-  // Every call waits for the one before it: two quick clicks must not both answer the same round.
+  // Every call waits for the one before it. If a state-changing step is already in flight, a late
+  // fifty:answer cannot belong to the round being set up, so it returns the current state instead.
   let queue: Promise<unknown> = Promise.resolve()
+  let inFlightMutations = 0
+
   const one = <T>(work: () => Promise<T>): Promise<T> => {
     const run = queue.then(work, work)
     queue = run.catch(() => undefined)
     return run
   }
 
+  const mutate = <T>(work: () => Promise<T>): Promise<T> => {
+    inFlightMutations += 1
+    return one(work).finally(() => {
+      inFlightMutations -= 1
+    })
+  }
+
   return {
     'fifty:get': () => one(() => api.loadState(ctx)),
-    'fifty:start': () => one(() => api.start(ctx, ctx.session.scan)),
-    'fifty:begin-round': () => one(() => api.beginRound(ctx)),
+    'fifty:start': () => mutate(() => api.start(ctx, ctx.session.scan)),
+    'fifty:begin-round': () => mutate(() => api.beginRound(ctx)),
     'fifty:answer': (req) => {
       const given = field(req, 'answer')
       if (!ANSWERS.includes(given as FiftyAnswer)) return Promise.reject(new Error('fifty:answer needs a known answer'))
-      return one(() => api.giveAnswer(ctx, given as FiftyAnswer))
+      const round = field(req, 'round')
+      if (round !== undefined && (!Number.isInteger(round) || (round as number) < 0)) {
+        return Promise.reject(new Error('fifty:answer needs a valid round'))
+      }
+      if (inFlightMutations > 0) {
+        return one(async () => ({ status: 'ok', state: await api.loadState(ctx) }))
+      }
+      return mutate(() => api.giveAnswer(ctx, given as FiftyAnswer, round as number | undefined))
     },
-    'fifty:stop': () => one(() => api.stop(ctx)),
+    'fifty:stop': () => mutate(() => api.stop(ctx)),
     'fifty:finish': (req) => {
       const keep = field(req, 'keep')
       if (!KEEPS.includes(keep as (typeof KEEPS)[number])) return Promise.reject(new Error('fifty:finish needs keep'))
-      return one(() => api.finish(ctx, keep as (typeof KEEPS)[number]))
+      return mutate(() => api.finish(ctx, keep as (typeof KEEPS)[number]))
     }
   }
 }
