@@ -11,6 +11,8 @@ import type {
   AssistAnswer,
   BackupRefusal,
   DisabledGroup,
+  FiftyDamaged,
+  FiftyStopPartWay,
   FixRefusal,
   GameRunState as ModelGameRunState,
   GateRefusal,
@@ -28,7 +30,7 @@ import type { Host } from './locate/host.ts'
 import type { ActionPlan, AssistReply, KeyStore, PlanFixAt, PlannedStep, Updater } from './ports.ts'
 import type { GameRunState as LocateGameRunState } from './locate/process.ts'
 import { scanHandlers } from './scan/handlers.ts'
-import { createContext } from './services.ts'
+import { createContext, updaterKeepOutOf, type CreateContextInput } from './services.ts'
 import { updateHandlers } from './update/handlers.ts'
 import { createUpdater } from './update/updater.ts'
 import { launchEnv, shoot } from '../../test/e2e/support/app.ts'
@@ -254,6 +256,29 @@ describe('50/50 contract requests from PR 11', () => {
     ]
     expect(groups.map((g) => g.origin)).toEqual(['fix', 'fifty-fifty'])
   })
+
+  it('answers fifty:get with a typed damaged result, beside the session or null', () => {
+    const answers: IpcInvoke['fifty:get']['res'][] = [sampleFiftyFifty(), null, { status: 'damaged' }]
+    const damaged = answers.filter((a): a is FiftyDamaged => a !== null && 'status' in a)
+    expect(damaged).toEqual([{ status: 'damaged' }])
+  })
+
+  it('lets fifty:stop end part way with no session, naming the groups not back yet', () => {
+    const partWay: FiftyStopPartWay = {
+      status: 'stopped-part-way',
+      state: null,
+      notBack: ['Wicked Wardrobe'],
+      detail: 'put-back stopped'
+    }
+    const res: IpcInvoke['fifty:stop']['res'] = partWay
+    const other: IpcInvoke['fifty:start']['res'] = { status: 'stopped-part-way', state: sampleFiftyFifty(), detail: 'x' }
+    expect([res.status, res.state, partWay.notBack, other.state?.id]).toEqual([
+      'stopped-part-way',
+      null,
+      ['Wicked Wardrobe'],
+      sampleFiftyFifty().id
+    ])
+  })
 })
 
 describe('AI key contract requests from PR 12', () => {
@@ -275,7 +300,7 @@ describe('AI key contract requests from PR 12', () => {
 })
 
 describe('auto-update contract (PR 13)', () => {
-  function makeContext(updater?: Updater) {
+  function makeContext(updater?: CreateContextInput['updater']) {
     return createContext({
       host: makeFakeHost(),
       paths: appPaths({ localAppData: '/fake/LocalAppData', appData: '/fake/Roaming', desktopDir: '/fake/Desktop', env: {} }),
@@ -330,18 +355,51 @@ describe('auto-update contract (PR 13)', () => {
     expect(ctx.updater.install()).toBe(refused)
   })
 
-  it('the stub updater from update/updater.ts is always off', async () => {
-    const updater = createUpdater({
-      isPackaged: true,
-      version: '0.2.0',
-      installDir: 'C:\\Users\\Lila\\AppData\\Local\\Programs\\Sims Helper',
-      argv: [],
-      env: {},
-      keepOutOf: ['C:\\Users\\Lila\\Documents'],
-      platform: 'win32'
+  it('hands a factory updater the same busy() as the context, so install refuses mid-change', async () => {
+    let seenBusy: (() => boolean) | null = null
+    const off: UpdateState = { state: 'off', why: 'switched-off' }
+    const ctx = makeContext((seams) => {
+      seenBusy = seams.busy
+      return { state: () => off, check: async () => off, download: async () => off, install: () => ({ status: 'refused', why: 'not-ready' }) }
     })
-    expect(updater.state().state).toBe('off')
-    expect((await updater.check()).state).toBe('off')
+    if (seenBusy === null) throw new Error('the factory was not called')
+    const busy: () => boolean = seenBusy
+    expect(busy()).toBe(false)
+    const call = ctx.safety.backupStatus('/fake/Documents/Electronic Arts/The Sims 4')
+    expect(busy()).toBe(true)
+    await call.catch(() => {})
+    expect(busy()).toBe(false)
+  })
+
+  it('keeps updates out of Documents, OneDrive and the app data folder', () => {
+    const keepOutOf = updaterKeepOutOf(['C:\\Users\\Lila\\Documents', 'C:\\Users\\Lila\\Documents', ''], {
+      dataDir: 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper',
+      oneDriveRoots: ['C:\\Users\\Lila\\OneDrive']
+    })
+    expect(keepOutOf).toEqual([
+      'C:\\Users\\Lila\\Documents',
+      'C:\\Users\\Lila\\OneDrive',
+      'C:\\Users\\Lila\\AppData\\Local\\SimsHelper'
+    ])
+  })
+
+  // Both the stub and PR 13's updater decide these before they touch electron-updater, so this holds on either.
+  // Outside Electron the real updater is also off as 'not-installed-app' once it reaches the engine, so that
+  // reason means the install folder was let through.
+  it('the updater is off for an install folder that is, holds or sits in the app data folder', async () => {
+    const dataDir = 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper'
+    const keepOutOf = updaterKeepOutOf(['C:\\Users\\Lila\\Documents'], { dataDir, oneDriveRoots: [] })
+    for (const installDir of [dataDir, 'C:\\Users\\Lila\\AppData\\Local', `${dataDir}\\app`]) {
+      const updater = createUpdater(
+        { isPackaged: true, version: '0.2.0', installDir, argv: [], env: {}, keepOutOf, platform: 'win32' },
+        { busy: () => false }
+      )
+      const state = updater.state()
+      expect(state).toMatchObject({ state: 'off' })
+      expect(state.state === 'off' ? state.why : null).not.toBe('not-installed-app')
+      expect((await updater.check()).state).toBe('off')
+      expect(updater.install()).toEqual({ status: 'refused', why: 'not-ready' })
+    }
   })
 
   it('busy() is true while a safety or fixes call is in flight', async () => {

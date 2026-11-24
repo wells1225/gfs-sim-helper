@@ -342,10 +342,33 @@ export interface FiftyFifty {
   history: { round: number; parked: string[]; answer: FiftyAnswer }[]
 }
 
+/** fiftyfifty.json is there but cannot be read as a session. Her way out is `fifty:stop`, which puts every group back. */
+export interface FiftyDamaged {
+  status: 'damaged'
+}
+
+/** What `fifty:get` answers: the session, null when there is none, or FiftyDamaged. FiftyFifty has no `status`. */
+export type FiftyGet = FiftyFifty | null | FiftyDamaged
+
 export type FiftyResult =
   | { status: 'ok'; state: FiftyFifty | null }
   | { status: 'refused'; refusal: FixRefusal }
   | { status: 'stopped-part-way'; state: FiftyFifty; detail: string }
+
+/**
+ * A stop on a damaged progress file that ended part way: there is no session to hand back, so `state` is null.
+ * notBack: the labels of the groups the 50/50 test set aside that are still out of Mods, in every folder it ran
+ * on. Groups she set aside herself (origin 'fix') are never listed. Stop can be tried again.
+ */
+export interface FiftyStopPartWay {
+  status: 'stopped-part-way'
+  state: null
+  notBack: string[]
+  detail: string
+}
+
+/** What `fifty:stop` answers: a FiftyResult, or FiftyStopPartWay when the damaged-file put-back ends part way. */
+export type FiftyStopResult = FiftyResult | FiftyStopPartWay
 
 // ── AI help (PR 12)
 export type KeyStatus = 'set' | 'not-set' | 'encryption-unavailable'
