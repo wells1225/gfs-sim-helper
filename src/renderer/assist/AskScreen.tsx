@@ -84,8 +84,8 @@ export function AskScreen() {
           <CardHeader>
             <CardTitle>Here is exactly what will be sent</CardTitle>
             <CardDescription>
-              Your error logs and your mod names, nothing else. Your saves, your Tray and your name stay on this PC.
-              It goes to Claude, an AI helper, only when you click Send.
+              Only the text below is sent: your game version, your newest error logs and your mod names. Your saves
+              and Tray files stay on this PC. It goes to Claude, an AI helper, only when you click Send.
             </CardDescription>
           </CardHeader>
           <CardContent>

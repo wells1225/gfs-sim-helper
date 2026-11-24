@@ -12,6 +12,8 @@ test('branch shot: key-setup', async () => {
       'assist:status': { key: 'not-set', offer: 'hide' }
     })
 
+    // The shell binds Ctrl+Shift+K in an effect after the first render: wait for it before pressing.
+    await expect(running.page.getByRole('button', { name: 'About' })).toHaveAttribute('aria-current', 'page')
     await running.page.keyboard.press('Control+Shift+K')
     await expect(running.page.getByText('Ask for help setup')).toBeVisible()
     await expect(running.page.getByText('No key is stored on this PC.')).toBeVisible()
@@ -32,6 +34,8 @@ test('branch shot: key-setup-saved', async () => {
       'assist:set-key': 'set'
     })
 
+    // The shell binds Ctrl+Shift+K in an effect after the first render: wait for it before pressing.
+    await expect(running.page.getByRole('button', { name: 'About' })).toHaveAttribute('aria-current', 'page')
     await running.page.keyboard.press('Control+Shift+K')
     await expect(running.page.getByText('No key is stored on this PC.')).toBeVisible()
 
