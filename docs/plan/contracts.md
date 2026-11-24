@@ -204,6 +204,18 @@ export interface FiftyFifty {
 export type FiftyResult =
   | { status: 'ok'; state: FiftyFifty | null } | { status: 'refused'; refusal: FixRefusal }
   | { status: 'stopped-part-way'; state: FiftyFifty; detail: string }
+/** fiftyfifty.json is there but cannot be read as a session. Her way out is `fifty:stop`, which puts every group back. */
+export interface FiftyDamaged { status: 'damaged' }
+/** What `fifty:get` answers: the session, null when there is none, or FiftyDamaged. FiftyFifty has no `status`. */
+export type FiftyGet = FiftyFifty | null | FiftyDamaged
+/**
+ * A stop on a damaged progress file that ended part way: there is no session to hand back, so `state` is null.
+ * notBack: the labels of the groups the 50/50 test set aside that are still out of Mods, in every folder it ran
+ * on. Groups she set aside herself (origin 'fix') are never listed. Stop can be tried again.
+ */
+export interface FiftyStopPartWay { status: 'stopped-part-way'; state: null; notBack: string[]; detail: string }
+/** What `fifty:stop` answers: a FiftyResult, or FiftyStopPartWay when the damaged-file put-back ends part way. */
+export type FiftyStopResult = FiftyResult | FiftyStopPartWay
 // ── AI help (PR 12)
 export type KeyStatus = 'set' | 'not-set' | 'encryption-unavailable'
 /** What setKey answers: a KeyStatus, or 'not-saved' when the new key was refused and the old one is still stored. */
@@ -389,8 +401,9 @@ type FiftyDeps = Pick<AppContext, 'fixes' | 'gate' | 'paths' | 'clock' | 'newId'
 begin(groups: ModGroup[], init: { id: string; startedAt: IsoTime; folderPath: string }): FiftyFifty // pure
 answer(state: FiftyFifty, given: FiftyAnswer): FiftyFifty // pure
 loadState(deps: FiftyDeps): Promise<FiftyFifty | null>
-start(deps, scan: Scan) · beginRound(deps) · giveAnswer(deps, given: FiftyAnswer) · stop(deps)
-finish(deps, keep: 'keep-set-aside' | 'put-back') // these five return Promise<FiftyResult>
+start(deps, scan: Scan) · beginRound(deps) · giveAnswer(deps, given: FiftyAnswer)
+finish(deps, keep: 'keep-set-aside' | 'put-back') // these four return Promise<FiftyResult>
+stop(deps): Promise<FiftyStopResult> // FiftyStopPartWay only when a damaged-file stop ends part way
 // PR 12  src/main/assist/key-store.ts (Fable), src/main/assist/index.ts, handlers.ts
 keyStatus · setKey · clearKey · sendWithKey // the four KeyStore methods, `deps: KeyStoreDeps` first
 assistOffer(scan: Scan | null, key: KeyStatus): 'offer' | 'hide' // pure
@@ -466,11 +479,11 @@ export interface IpcInvoke { // renderer asks, main answers
   'journal:list': { req: void; res: JournalEntry[] } // the first call also runs safety.recover()
   'journal:undo': { req: { entryId: string }; res: FixOutcome }
   'groups:disabled': { req: void; res: DisabledGroup[] }
-  'fifty:get': { req: void; res: FiftyFifty | null } // PR 11 owns this block
+  'fifty:get': { req: void; res: FiftyGet } // PR 11 owns this block. { status: 'damaged' }: the file cannot be read
   'fifty:start': { req: void; res: FiftyResult }
   'fifty:begin-round': { req: void; res: FiftyResult }
   'fifty:answer': { req: { answer: FiftyAnswer; round: number }; res: FiftyResult } // the round on her screen
-  'fifty:stop': { req: void; res: FiftyResult }
+  'fifty:stop': { req: void; res: FiftyStopResult } // FiftyStopPartWay: a damaged-file stop that ended part way
   'fifty:finish': { req: { keep: 'keep-set-aside' | 'put-back' }; res: FiftyResult }
   'assist:status': { req: void; res: AssistStatus } // PR 12 owns this block
   'assist:preview': { req: void; res: AssistPreview | null }
