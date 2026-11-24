@@ -31,6 +31,18 @@ function groupsProblem(outcome: GroupsOutcome | FixOutcome): Problem | null {
   return { status: 'stopped-part-way', detail: outcome.detail }
 }
 
+/**
+ * A fixes call can also throw after it moved some groups (runAction on a later group). That is a half-done
+ * step like any other: the session is kept, and the next round or stop reads what is set aside and finishes.
+ */
+async function moveProblem(call: () => Promise<GroupsOutcome | FixOutcome>): Promise<Problem | null> {
+  try {
+    return groupsProblem(await call())
+  } catch (err) {
+    return { status: 'stopped-part-way', detail: err instanceof Error ? err.message : String(err) }
+  }
+}
+
 /** G1 settles CurseForge's real process name. A list that cannot be read does not block. */
 async function curseForgeOpen(deps: FiftyDeps): Promise<boolean> {
   try {
@@ -69,7 +81,7 @@ async function arrange(deps: FiftyDeps, state: FiftyFifty, want: string[]): Prom
 
   const toPutBack = [...aside].filter((id) => !wanted.has(id))
   if (toPutBack.length > 0) {
-    const problem = groupsProblem(await deps.fixes.putBack(state.folderPath, toPutBack))
+    const problem = await moveProblem(() => deps.fixes.putBack(state.folderPath, toPutBack))
     if (problem) return problem
   }
 
@@ -77,7 +89,7 @@ async function arrange(deps: FiftyDeps, state: FiftyFifty, want: string[]): Prom
   const toSetAside = want.filter((id) => !aside.has(id)).flatMap((id) => byId.get(id) ?? [])
   if (toSetAside.length > 0) {
     const origin = { by: 'fifty-fifty', sessionId: state.id, round: state.round } as const
-    const problem = groupsProblem(await deps.fixes.setAside(state.folderPath, toSetAside, origin))
+    const problem = await moveProblem(() => deps.fixes.setAside(state.folderPath, toSetAside, origin))
     if (problem) return problem
   }
   return null

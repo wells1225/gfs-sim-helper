@@ -40,6 +40,8 @@ class FakeFixes implements Fixes {
   /** Queued answers for the next setAside / putBack / clearCaches calls. */
   refuseNext: FixRefusal | null = null
   partWayAfter: number | null = null
+  /** The next setAside throws once this many groups are set aside, as runAction can on a later group. */
+  throwAfter: number | null = null
   cacheOutcome: FixOutcome | null = null
   /** What safety.listJournal answers; null makes it throw. */
   journal: JournalEntry[] | null = []
@@ -66,6 +68,10 @@ class FakeFixes implements Fixes {
       if (this.partWayAfter === i) {
         this.partWayAfter = null
         return { status: 'stopped-part-way', entries, detail: 'disk hiccup' }
+      }
+      if (this.throwAfter === i) {
+        this.throwAfter = null
+        throw new Error('runAction blew up')
       }
       if (this.aside.has(g.id)) throw new Error(`setAside twice: ${g.id}`)
       const entryId = `e${++this.n}`
@@ -609,6 +615,28 @@ describe('refusals', () => {
     expect(fixes.asideIds()).toHaveLength(2)
     const state = stateOf(await beginRound(deps))
     expect(fixes.asideIds()).toEqual([...state.parked].sort())
+  })
+
+  it('a setAside that throws after some groups counts as stopped part way, and the next round finishes it', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    fixes.throwAfter = 3
+    const result = await beginRound(deps)
+    expect(result).toMatchObject({ status: 'stopped-part-way', state: { phase: 'ready-to-test', round: 0 } })
+    expect(fixes.asideIds()).toHaveLength(3)
+    const done = stateOf(await beginRound(deps))
+    expect(done.phase).toBe('awaiting-answer')
+    expect(fixes.asideIds()).toEqual([...done.parked].sort())
+  })
+
+  it('after a setAside that threw, stop puts back the groups that did get set aside', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    fixes.throwAfter = 3
+    await beginRound(deps)
+    expect(stateOf(await stop(deps)).phase).toBe('stopped')
+    expect(fixes.asideIds()).toEqual([])
+    expect(await stateFileExists()).toBe(false)
   })
 
   it('giveAnswer changes nothing unless the phase is awaiting-answer', async () => {
