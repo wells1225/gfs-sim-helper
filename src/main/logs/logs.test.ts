@@ -465,6 +465,56 @@ describe('log parsers and readLogs', () => {
     }, 60_000)
   })
 
+  describe('last check', () => {
+    const mtime = '2026-11-24T12:00:00.000Z'
+
+    // Outermost first, as Python prints them: one mod path far from the error and again next to it, 25 others between.
+    function manyModFrames(): string[] {
+      const lines = ['  File "C:\\Mods\\repeat\\r.py", line 1, in outer']
+      for (let i = 1; i <= 25; i += 1) {
+        lines.push(`  File "C:\\Mods\\m${i}\\a.py", line ${i}, in fn`)
+        lines.push(`  File "T:\\InGame\\Gameplay\\Scripts\\Server\\g${i}.py", line ${i}, in fn`)
+      }
+      lines.push('  File "C:\\Mods\\repeat\\r.py", line 9, in inner')
+      lines.push('  File "T:\\InGame\\Gameplay\\Scripts\\Server\\last.py", line 3, in boom')
+      return lines
+    }
+
+    const nearestTwenty = ['c:/mods/repeat/r']
+    for (let i = 25; i >= 7; i -= 1) nearestTwenty.push(`c:/mods/m${i}/a`)
+
+    it('caps modHints at 20, keeping the frames closest to the error, nearest first', () => {
+      const xml = `<report><type>desync</type><categoryid>last.py:3</categoryid><desyncdata>Boom&#13;&#10;${manyModFrames().join('&#13;&#10;')}</desyncdata></report>`
+      const [report] = parseGameLog(xml, 'lastException.txt', mtime)
+      expect(nearestTwenty).toHaveLength(20)
+      expect(report!.modHints).toEqual(nearestTwenty)
+      expect(report!.frames).toHaveLength(53)
+    })
+
+    it('applies the same cap to MCCC and Better Exceptions reports', () => {
+      const mccc = `<pre>\r\n${manyModFrames().join('\r\n').replaceAll('"', '&quot;')}\r\nKeyError: x\r\n</pre>`
+      expect(parseMccc(mccc, 'Mods/mc_lastexception.html', mtime)[0]!.modHints).toEqual(nearestTwenty)
+
+      const inner = `<report><type>desync</type><desyncdata>Boom&#13;&#10;${manyModFrames().join('&#13;&#10;')}</desyncdata></report>`
+      const be = `<div id="beRawLEData">${inner.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</div>`
+      expect(parseBetterExceptions(be, 'BE-ExceptionReport.html', mtime)[0]!.modHints).toEqual(nearestTwenty)
+    })
+
+    it('never takes an MCCC createdLocal from the traceback or the error text', () => {
+      const html = [
+        '<p>Game Version: 1.129.39.1030</p>',
+        '<pre>',
+        'Traceback (most recent call last):',
+        '  File &quot;C:\\Mods\\clock\\tick.py&quot;, line 4, in run',
+        'ValueError: bad save stamp 2019-01-02 03:04:05',
+        '</pre>'
+      ].join('\r\n')
+      const [report] = parseMccc(html, 'Mods/mc_lastexception.html', mtime)
+      expect(report!.createdLocal).toBeNull()
+      expect(report!.modHints).toEqual(['c:/mods/clock/tick'])
+    })
+  })
+
   describe('readLogs', () => {
     it('reads every log in the exceptions fixture ordered newest first', async () => {
       const reports = await readLogs({ folderPath: exceptionsSimsDir })
