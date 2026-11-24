@@ -221,14 +221,15 @@ describe('FiftyFiftyScreen', () => {
         return tries === 1
           ? { status: 'refused', refusal: { why: 'gate', refusal: { reason: 'game-running' } } }
           : ok(stoppedControl)
-      }
+      },
+      'journal:list': []
     })
     await user.click(await screen.findByRole('button', { name: "I've tested it" }))
     await user.click(screen.getByRole('button', { name: 'It still crashed' }))
     expect(await screen.findByText(/The Sims 4 is still open/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('heading', { name: 'Mods are unlikely to be the cause' })).toBeInTheDocument()
-    expect(channels(api)).toEqual(['fifty:get', 'fifty:answer', 'fifty:get', 'fifty:answer'])
+    expect(channels(api)).toEqual(['fifty:get', 'fifty:answer', 'fifty:get', 'fifty:answer', 'journal:list'])
   })
 
   it('gives a close-the-game message for backup game-state-unknown refusals', () => {

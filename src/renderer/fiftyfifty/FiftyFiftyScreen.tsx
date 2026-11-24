@@ -6,11 +6,17 @@ import { Alert, AlertDescription } from '../components/ui/alert.tsx'
 import { Button } from '../components/ui/button.tsx'
 import { useNav } from '../nav.tsx'
 import { useSession } from '../session.tsx'
+import { checkBack, type BackCheck } from './back-check.tsx'
+import { DamagedProgress } from './DamagedProgress.tsx'
 import { AnswerStep, CloseCurseForgeStep, Ended, FoundStep, Intro, ReadyStep, TestStep, type EndedHow } from './steps.tsx'
 import { StopDialog } from './StopDialog.tsx'
-import { CURSEFORGE_OPEN, groupLabel, isNotModsResult, NOT_COUNTED, PART_WAY, refusalWords } from './words.ts'
+import { CURSEFORGE_OPEN, groupLabel, isNotModsResult, isProgressDamaged, NOT_COUNTED, PART_WAY, refusalWords } from './words.ts'
 
-type View = { kind: 'loading' } | { kind: 'session'; state: FiftyFifty | null } | { kind: 'ended'; how: EndedHow; label: string }
+type View =
+  | { kind: 'loading' }
+  | { kind: 'session'; state: FiftyFifty | null }
+  | { kind: 'damaged' } // the progress file is there but cannot be read
+  | { kind: 'ended'; how: EndedHow; label: string; back: BackCheck }
 
 interface Notice {
   text: string
@@ -28,29 +34,41 @@ export function FiftyFiftyScreen() {
   const [asking, setAsking] = useState(false)
   const busyRef = useRef(false)
 
-  const reread = useCallback(async (fallback: FiftyFifty | null): Promise<FiftyFifty | null> => {
-    const fresh = await api.invoke('fifty:get').catch(() => fallback)
-    setView({ kind: 'session', state: fresh })
-    return fresh
-  }, [api])
+  /** What is saved now. A failed read falls back to `fallback`, except the one that says the file is damaged. */
+  const read = useCallback(
+    async (fallback: FiftyFifty | null): Promise<View> => {
+      try {
+        return { kind: 'session', state: await api.invoke('fifty:get') }
+      } catch (err) {
+        return isProgressDamaged(err) ? { kind: 'damaged' } : { kind: 'session', state: fallback }
+      }
+    },
+    [api]
+  )
+
+  const reread = useCallback(
+    async (fallback: FiftyFifty | null): Promise<FiftyFifty | null> => {
+      const fresh = await read(fallback)
+      setView(fresh)
+      return fresh.kind === 'session' ? fresh.state : null
+    },
+    [read]
+  )
 
   useEffect(() => {
     let live = true
-    api.invoke('fifty:get').then(
-      (fresh) => live && setView({ kind: 'session', state: fresh }),
-      () => live && setView({ kind: 'session', state: null })
-    )
+    void read(null).then((fresh) => live && setView(fresh))
     return () => {
       live = false
     }
-  }, [api])
+  }, [read])
 
   /** Runs one call with every button locked. Anything but ok reads the saved state again and says why. */
   const run = async (
     working: string,
     call: () => Promise<FiftyResult>,
     retryFor: (fresh: FiftyFifty | null) => () => void,
-    onOk: (state: FiftyFifty | null) => void
+    onOk: (state: FiftyFifty | null) => void | Promise<void>
   ) => {
     if (busyRef.current) return
     busyRef.current = true
@@ -59,7 +77,7 @@ export function FiftyFiftyScreen() {
     try {
       const result = await call()
       if (result.status === 'ok') {
-        onOk(result.state)
+        await onOk(result.state)
         return
       }
       const fresh = await reread(result.status === 'stopped-part-way' ? result.state : null)
@@ -72,6 +90,12 @@ export function FiftyFiftyScreen() {
       busyRef.current = false
       setBusy(null)
     }
+  }
+
+  /** The end card. It asks History first, so it only says every mod is back when that is so. */
+  const end = async (how: EndedHow, label: string, sessionId: string | null, keep: string | null) => {
+    const back = await checkBack(api, sessionId, keep)
+    setView({ kind: 'ended', how, label, back })
   }
 
   const show = (state: FiftyFifty | null) => {
@@ -96,10 +120,7 @@ export function FiftyFiftyScreen() {
         ? () => giveAnswer(answer, round)
         : beginRound
     void run(working, () => api.invoke('fifty:answer', { answer, round }), retryFor, (next) => {
-      if (next && isNotModsResult(next)) {
-        setView({ kind: 'ended', how: 'not-mods', label: '' })
-        return
-      }
+      if (next && isNotModsResult(next)) return end('not-mods', '', next.id, null)
       show(next)
       // Main only hands the same round back unarranged when it found the files were not as the round set them.
       if (answer !== 'not-sure' && next?.phase === 'ready-to-test' && next.round === round && next.culprit === null) {
@@ -108,18 +129,19 @@ export function FiftyFiftyScreen() {
     })
   }
 
-  const stopTest = () => {
+  const stopTest = (session: FiftyFifty) => {
     // Close the question first, so a refusal (the game is still open) is not hidden behind it.
     setAsking(false)
-    void run('Putting your mods back…', () => api.invoke('fifty:stop'), () => stopTest, () =>
-      setView({ kind: 'ended', how: 'stopped', label: '' })
+    void run('Putting your mods back…', () => api.invoke('fifty:stop'), () => () => stopTest(session), (stopped) =>
+      end('stopped', '', stopped?.id ?? session.id, null)
     )
   }
 
-  const finish = (keep: 'keep-set-aside' | 'put-back', label: string) => {
-    const again = () => finish(keep, label)
-    void run('Putting your mods back…', () => api.invoke('fifty:finish', { keep }), () => again, () =>
-      setView({ kind: 'ended', how: keep === 'keep-set-aside' ? 'kept' : 'put-back', label })
+  const finish = (keep: 'keep-set-aside' | 'put-back', label: string, session: FiftyFifty) => {
+    const again = () => finish(keep, label, session)
+    const kept = keep === 'keep-set-aside'
+    void run('Putting your mods back…', () => api.invoke('fifty:finish', { keep }), () => again, (ended) =>
+      end(kept ? 'kept' : 'put-back', label, ended?.id ?? session.id, kept ? session.culprit : null)
     )
   }
 
@@ -132,7 +154,14 @@ export function FiftyFiftyScreen() {
     return <Working text="Loading…" />
   }
   if (view.kind === 'ended') {
-    return <Ended how={view.how} label={view.label} onCheckAgain={checkAgain} />
+    return <Ended how={view.how} label={view.label} back={view.back} onCheckAgain={checkAgain} />
+  }
+  if (view.kind === 'damaged') {
+    return (
+      <main className="flex flex-col gap-4">
+        <DamagedProgress onFixed={() => void reread(null)} />
+      </main>
+    )
   }
 
   const state = view.state
@@ -169,7 +198,7 @@ export function FiftyFiftyScreen() {
       )
   } else {
     const label = groupLabel(state, state.culprit)
-    body = <FoundStep state={state} label={label} onFinish={(keep) => finish(keep, label)} locked={locked} />
+    body = <FoundStep state={state} label={label} onFinish={(keep) => finish(keep, label, state)} locked={locked} />
   }
 
   const inProgress = !!state && state.phase !== 'found' && state.phase !== 'stopped'
@@ -185,7 +214,7 @@ export function FiftyFiftyScreen() {
           </Button>
         </div>
       )}
-      <StopDialog open={asking} onOpenChange={setAsking} onConfirm={stopTest} busy={locked} />
+      <StopDialog open={asking} onOpenChange={setAsking} onConfirm={() => state && stopTest(state)} busy={locked} />
     </main>
   )
 }

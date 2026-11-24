@@ -112,12 +112,30 @@ test('found', async () => {
 
 test('stopped', async () => {
   const state = midSession()
-  const page = await enterAt(state, { 'fifty:stop': { status: 'ok', state: { ...state, phase: 'stopped', parked: [] } } })
+  const page = await enterAt(state, {
+    'fifty:stop': { status: 'ok', state: { ...state, phase: 'stopped', parked: [] } },
+    'journal:list': []
+  })
   await page.getByRole('button', { name: 'Stop the test' }).click()
   await expect(page.getByText('Stop the 50/50 test and put all your mods back?')).toBeVisible()
   await page.getByRole('dialog').getByRole('button', { name: 'Put everything back and stop' }).click()
   await expect(page.getByRole('heading', { name: 'The 50/50 test is stopped' })).toBeVisible()
   await shoot(page, SLUG, 'stopped')
+})
+
+test('damaged-progress', async () => {
+  // Main's fifty:get fails with these words when fiftyfifty.json is there but cannot be read. stubIpc only
+  // answers with values, so this one handler is swapped by hand.
+  await running.app.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('fifty:get')
+    ipcMain.handle('fifty:get', async () => {
+      throw new Error('fifty-progress-damaged')
+    })
+  })
+  await running.page.reload({ waitUntil: 'domcontentloaded' })
+  await expect(running.page.getByText("The 50/50 test's progress file is damaged")).toBeVisible()
+  await expect(running.page.getByRole('button', { name: 'Put everything back and stop' })).toBeVisible()
+  await shoot(running.page, SLUG, 'damaged-progress')
 })
 
 // After main: PR 7's check-up screen hosts <FiftyEntry />. Needs a scan with a 'fifty-fifty' finding.

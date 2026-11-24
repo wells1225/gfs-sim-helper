@@ -1,10 +1,11 @@
 import { CircleCheck, FlaskConical, Gamepad2, Info, ShieldCheck } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { FiftyAnswer, FiftyFifty, Scan } from '../../shared/model.ts'
-import { Alert } from '../components/ui/alert.tsx'
+import { Alert, AlertDescription } from '../components/ui/alert.tsx'
 import { Button } from '../components/ui/button.tsx'
 import { Card } from '../components/ui/card.tsx'
 import { Progress } from '../components/ui/progress.tsx'
+import { backWords, HistoryButton, type BackCheck } from './back-check.tsx'
 import {
   ALL_BACK,
   displayRound,
@@ -285,13 +286,25 @@ export function FoundStep({
   )
 }
 
-export function Ended({ how, label, onCheckAgain }: { how: EndedHow; label: string; onCheckAgain(): void }) {
+/** `back` decides the words: only a check that found every mod back may say so. */
+export function Ended({
+  how,
+  label,
+  back,
+  onCheckAgain
+}: {
+  how: EndedHow
+  label: string
+  back: BackCheck
+  onCheckAgain(): void
+}) {
   const heading =
     how === 'not-mods'
       ? 'Mods are unlikely to be the cause'
       : how === 'stopped'
         ? 'The 50/50 test is stopped'
         : 'All done'
+  const allBack = back.kind === 'all-back'
   return (
     <main>
       <Card>
@@ -299,7 +312,8 @@ export function Ended({ how, label, onCheckAgain }: { how: EndedHow; label: stri
         {how === 'not-mods' ? (
           <>
             <Text>
-              The game still crashed with all your mods set aside, so a mod is unlikely to be behind it. {ALL_BACK}
+              The game still crashed with all your mods set aside, so a mod is unlikely to be behind it.
+              {allBack && ` ${ALL_BACK}`}
             </Text>
             <Text>
               Try repairing the game in the EA app: open the EA app, find The Sims 4, click Manage, and choose Repair.
@@ -307,18 +321,24 @@ export function Ended({ how, label, onCheckAgain }: { how: EndedHow; label: stri
           </>
         ) : how === 'kept' ? (
           <Text>
-            {label} is set aside. Everything else is back in your Mods folder. You can turn it back on from Your mods
-            whenever you like.
+            {label} is set aside.{allBack && ' Everything else is back in your Mods folder.'} You can turn it back on
+            from Your mods whenever you like.
           </Text>
         ) : (
-          <Text>{ALL_BACK}</Text>
+          allBack && <Text>{ALL_BACK}</Text>
+        )}
+        {!allBack && (
+          <Alert variant="warn">
+            <AlertDescription>{backWords(back)}</AlertDescription>
+          </Alert>
         )}
         <p className="flex items-center gap-2 text-sm text-muted-foreground">
           <Info className="size-4 shrink-0" strokeWidth={1.75} aria-hidden />
           Every move is listed in History.
         </p>
-        <div>
+        <div className="flex flex-wrap gap-2">
           <Button onClick={onCheckAgain}>Check again</Button>
+          {!allBack && <HistoryButton />}
         </div>
       </Card>
     </main>

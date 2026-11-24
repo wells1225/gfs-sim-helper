@@ -1,4 +1,4 @@
-import type { FiftyFifty, FixRefusal } from '../../shared/model.ts'
+import type { FiftyFifty, FixRefusal, JournalEntry } from '../../shared/model.ts'
 
 export function groupsWord(n: number): string {
   return n === 1 ? '1 mod group' : `${n} mod groups`
@@ -54,6 +54,49 @@ export function partWayWords(again = 'click Try again'): string {
   return `Some mods were moved but not all. To finish moving them, ${again}. If that does not finish it, you can put them back from History.`
 }
 export const PART_WAY = partWayWords()
+/** For a card with no Try again button: its stop button is the way to try again. */
+export const STOP_AGAIN = `click ${STOP_CONFIRM} again`
+
+/**
+ * Main's `fifty:get` fails with these words in the message when fiftyfifty.json is there but cannot be read
+ * (PROGRESS_DAMAGED in src/main/fiftyfifty/index.ts). Electron wraps the message, so look inside it.
+ */
+const PROGRESS_DAMAGED = 'fifty-progress-damaged'
+export function isProgressDamaged(err: unknown): boolean {
+  return (err instanceof Error ? err.message : String(err)).includes(PROGRESS_DAMAGED)
+}
+export const DAMAGED_TITLE = "The 50/50 test's progress file is damaged"
+export const DAMAGED_WHY =
+  "We can't tell where the test got to, so other fixes are paused. Putting everything back moves every mod the test set aside into your Mods folder again. After that you can start a new test."
+export const DAMAGED_NOT_FINISHED = `We couldn't finish putting your mods back. Wait a moment, then ${STOP_AGAIN}. If that does not finish it, you can put them back from History.`
+
+/**
+ * Labels of the groups the test moved that are not fully back in Mods, read from History's entries.
+ * Only an undone entry is fully back. `sessionId` null means every test's entries (a damaged file names no session).
+ * `keep` is the one group she chose to leave set aside.
+ */
+export function notBackLabels(journal: JournalEntry[], sessionId: string | null, keep: string | null): string[] {
+  const labels = new Set<string>()
+  for (const entry of journal) {
+    if (entry.origin.by !== 'fifty-fifty' || entry.groupId === null) continue
+    if (sessionId !== null && entry.origin.sessionId !== sessionId) continue
+    if (entry.status === 'undone' || entry.groupId === keep) continue
+    labels.add(entry.groupLabel ?? 'a mod group')
+  }
+  return [...labels]
+}
+
+const NAMED_AT_MOST = 5
+export function notBackWords(labels: string[]): string {
+  const named = labels.slice(0, NAMED_AT_MOST)
+  const more = labels.length - named.length
+  const last = more > 0 ? `${more} more` : named.pop()
+  const list = named.length > 0 ? `${named.join(', ')} and ${last}` : last
+  const them = labels.length === 1 ? 'it' : 'them'
+  return `Some mods are not back in your Mods folder yet: ${list}. Open History to put ${them} back.`
+}
+export const BACK_UNKNOWN =
+  "We couldn't check that every mod is back in place. History lists every move, and you can put mods back from there."
 export const NOT_COUNTED =
   'Your mods were not set up the way this round needs, so that answer was not counted. Set up the round and test once more.'
 
