@@ -16,6 +16,11 @@ const RENDERER_FILE_URL = pathToFileURL(RENDERER_HTML_PATH)
 
 let mainWindow: BrowserWindow | null = null
 
+/** The dev server URL. Ignored in the installed app, so an environment variable cannot point it at another page. */
+function devRendererUrl(): string | undefined {
+  return app.isPackaged ? undefined : process.env['ELECTRON_RENDERER_URL']
+}
+
 function themeBackgroundColor(): string {
   return nativeTheme.shouldUseDarkColors ? DARK_BG : LIGHT_BG
 }
@@ -28,7 +33,7 @@ function isAppPageUrl(rawUrl: string): boolean {
     return false
   }
 
-  const devUrl = process.env['ELECTRON_RENDERER_URL']
+  const devUrl = devRendererUrl()
   if (devUrl) {
     try {
       const expected = new URL(devUrl)
@@ -90,7 +95,7 @@ function createWindow(): BrowserWindow {
     }
   })
 
-  const rendererUrl = process.env['ELECTRON_RENDERER_URL']
+  const rendererUrl = devRendererUrl()
   if (rendererUrl) {
     void win.loadURL(rendererUrl)
   } else {
