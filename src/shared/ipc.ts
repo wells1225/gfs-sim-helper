@@ -11,6 +11,7 @@ import type {
   FixOutcome,
   GameRunState,
   JournalEntry,
+  KeySetResult,
   KeyStatus,
   LocateView,
   Progress,
@@ -46,7 +47,7 @@ export interface IpcInvoke {
   'assist:status': { req: void; res: AssistStatus }
   'assist:preview': { req: void; res: AssistPreview | null }
   'assist:send': { req: { previewId: string }; res: AssistAnswer }
-  'assist:set-key': { req: { key: string }; res: KeyStatus } // the only message that carries the key
+  'assist:set-key': { req: { key: string }; res: KeySetResult } // the only message that carries the key
   'assist:clear-key': { req: void; res: KeyStatus }
 }
 

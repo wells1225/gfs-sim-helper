@@ -7,7 +7,15 @@ import type { Page } from '@playwright/test'
 import { afterAll, describe, expect, it } from 'vitest'
 import { readFile, rm } from 'node:fs/promises'
 import { INVOKE_CHANNELS, type IpcInvoke } from '../shared/ipc.ts'
-import type { BackupRefusal, DisabledGroup, FixRefusal, GateRefusal, GameRunState as ModelGameRunState } from '../shared/model.ts'
+import type {
+  AssistAnswer,
+  BackupRefusal,
+  DisabledGroup,
+  FixRefusal,
+  GameRunState as ModelGameRunState,
+  GateRefusal,
+  KeySetResult
+} from '../shared/model.ts'
 import { sampleJournalEntry } from '../shared/testing/sample.ts'
 import { appPaths } from './app-paths.ts'
 import { assistHandlers } from './assist/handlers.ts'
@@ -15,7 +23,7 @@ import { fiftyHandlers } from './fiftyfifty/handlers.ts'
 import { fixHandlers } from './fixes/handlers.ts'
 import { collectHandlers } from './ipc.ts'
 import type { Host } from './locate/host.ts'
-import type { ActionPlan, PlanFixAt, PlannedStep } from './ports.ts'
+import type { ActionPlan, AssistReply, KeyStore, PlanFixAt, PlannedStep } from './ports.ts'
 import type { GameRunState as LocateGameRunState } from './locate/process.ts'
 import { scanHandlers } from './scan/handlers.ts'
 import { createContext } from './services.ts'
@@ -226,5 +234,23 @@ describe('50/50 contract requests from PR 11', () => {
       { groupId: 'cf:1', label: 'Zed', entryId: 'e2', at: '2026-11-24T12:01:00.000Z', origin: 'fifty-fifty' }
     ]
     expect(groups.map((g) => g.origin)).toEqual(['fix', 'fifty-fifty'])
+  })
+})
+
+describe('AI key contract requests from PR 12', () => {
+  it('tells a key the service rejected (HTTP 401) apart from no key at all', () => {
+    const reply: AssistReply = { status: 'failed', why: 'key-rejected' }
+    const answer: AssistAnswer = { status: 'no-answer', why: 'key-rejected' }
+    expect([reply.status === 'failed' && reply.why, answer.status === 'no-answer' && answer.why]).toEqual([
+      'key-rejected',
+      'key-rejected'
+    ])
+  })
+
+  it('lets setKey say a new key was not saved while the old one stays stored', () => {
+    const results: KeySetResult[] = ['set', 'not-set', 'encryption-unavailable', 'not-saved']
+    const res: IpcInvoke['assist:set-key']['res'] = 'not-saved'
+    const set: KeyStore['set'] = async () => 'not-saved'
+    expect([results.at(-1), res, typeof set]).toEqual(['not-saved', 'not-saved', 'function'])
   })
 })

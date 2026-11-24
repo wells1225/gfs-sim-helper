@@ -349,6 +349,8 @@ export type FiftyResult =
 
 // ── AI help (PR 12)
 export type KeyStatus = 'set' | 'not-set' | 'encryption-unavailable'
+/** What setKey answers: a KeyStatus, or 'not-saved' when the new key was refused and the old one is still stored. */
+export type KeySetResult = KeyStatus | 'not-saved'
 
 export interface AssistStatus {
   key: KeyStatus
@@ -362,4 +364,4 @@ export interface AssistPreview {
 
 export type AssistAnswer =
   | { status: 'answered'; text: string }
-  | { status: 'no-answer'; why: 'no-key' | 'declined' | 'offline' | 'limit-reached' | 'preview-expired' | 'error' }
+  | { status: 'no-answer'; why: 'no-key' | 'key-rejected' | 'declined' | 'offline' | 'limit-reached' | 'preview-expired' | 'error' } // key-rejected: HTTP 401

@@ -10,6 +10,7 @@ import type {
   GateRefusal,
   JournalEntry,
   JournalOrigin,
+  KeySetResult,
   KeyStatus,
   ModGroup,
   Progress,
@@ -158,12 +159,12 @@ export interface AssistMessage {
 
 export type AssistReply =
   | { status: 'text'; text: string }
-  | { status: 'failed'; why: 'no-key' | 'declined' | 'offline' | 'limit-reached' | 'error' }
+  | { status: 'failed'; why: 'no-key' | 'key-rejected' | 'declined' | 'offline' | 'limit-reached' | 'error' } // key-rejected: HTTP 401, the stored key no longer works
 
 export interface KeyStore {
   // PR 12, section 8
   status(): Promise<KeyStatus>
-  set(key: string): Promise<KeyStatus>
+  set(key: string): Promise<KeySetResult>
   clear(): Promise<KeyStatus>
   send(message: AssistMessage): Promise<AssistReply>
 }
