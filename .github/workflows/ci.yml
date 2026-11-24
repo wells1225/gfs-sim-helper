@@ -145,8 +145,19 @@ jobs:
           Write-Host "Installed executable: $installedExe"
           "SIMS_HELPER_EXE=$installedExe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Verify installed app with Playwright
-        run: npm run test:e2e
+      - name: Verify installed app with Playwright (smoke and screens)
+        run: npx playwright test --project=smoke --project=screens
+
+      - name: Upload screen screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screens
+          path: test-results/screens/
+          if-no-files-found: ignore
+
+      - name: Run live Playwright tests
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.base_ref == 'main')
+        run: npx playwright test --project=live --pass-with-no-tests
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
