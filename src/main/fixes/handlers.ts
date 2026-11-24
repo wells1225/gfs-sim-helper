@@ -39,6 +39,30 @@ async function readSavedFolderPath(stateDir: string): Promise<string | null> {
   }
 }
 
+const FIX_IDS: readonly string[] = [
+  'turn-mods-on',
+  'clear-caches',
+  'move-script-up',
+  'set-aside-files',
+  'disable-group',
+  'enable-group'
+]
+
+/** The window's message is not trusted: only the two FixCall shapes get through. */
+function isFixCall(call: unknown): call is FixCall {
+  if (!call || typeof call !== 'object') return false
+  const c = call as Record<string, unknown>
+  if (c.via === 'finding') {
+    return typeof c.findingId === 'string' && typeof c.fix === 'string' && FIX_IDS.includes(c.fix)
+  }
+  if (c.via === 'group') {
+    return (
+      typeof c.groupId === 'string' && (c.fix === 'disable-group' || c.fix === 'enable-group')
+    )
+  }
+  return false
+}
+
 export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
   let recovered = false
   let recoveryPromise: Promise<unknown> | null = null
@@ -69,6 +93,9 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
     },
 
     async 'fix:apply'(call: FixCall) {
+      if (!isFixCall(call)) {
+        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-finding' } }
+      }
       if (await isFiftyFiftyRunning(ctx.paths.stateDir)) {
         return { status: 'refused', refusal: { why: 'fifty-fifty-running' } }
       }

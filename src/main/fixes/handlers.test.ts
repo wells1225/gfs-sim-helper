@@ -270,3 +270,33 @@ describe('fixHandlers', () => {
     expect(undone.status).toBe('done')
   })
 })
+
+describe('review: fix:apply checks the shape of what the window sends', () => {
+  it('refuses a missing or malformed call instead of throwing, and never treats an unknown group fix as enable', async () => {
+    const applied: unknown[] = []
+    const { ctx } = await makeContext({
+      fixes: {
+        async apply(_scan, request) {
+          applied.push(request)
+          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+        }
+      }
+    })
+    ctx.session.scan = sampleScan()
+    const handlers = fixHandlers(ctx)
+    const apply = handlers['fix:apply'] as (req: unknown) => Promise<unknown>
+
+    for (const bad of [
+      null,
+      undefined,
+      {},
+      { via: 'finding', findingId: 42, fix: 'turn-mods-on' },
+      { via: 'group', fix: 'clear-caches', groupId: 'dir:hair' },
+      { via: 'group', fix: 'enable-group', groupId: 7 }
+    ]) {
+      const res = (await apply(bad)) as { status: string }
+      expect(res.status).toBe('refused')
+    }
+    expect(applied).toEqual([])
+  })
+})
