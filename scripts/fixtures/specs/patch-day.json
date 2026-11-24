@@ -1,10 +1,10 @@
 {
   "name": "patch-day",
-  "description": "Post-update state where the game disabled mods and script mods while mods are still installed.",
+  "description": "Post-update state (Origin default install path) where the game disabled mods and script mods while mods are still installed.",
   "seed": 2002,
   "baseTime": "2026-11-20T18:00:00.000Z",
   "gameInstall": {
-    "relPath": "Program Files/EA Games/The Sims 4",
+    "relPath": "Program Files (x86)/Origin Games/The Sims 4",
     "version": "1.129.39.1030",
     "packs": ["EP01", "EP02", "GP02", "SP18"]
   },

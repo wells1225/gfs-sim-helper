@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { parseHexUint32, parseHexUint64, writeDbpf } from './dbpf.ts'
 import type { ResourceKey } from './dbpf.ts'
 import { generateFixture, loadSpec } from './make-fixture.ts'
+import { writeMinimalVersionPe } from './pe.ts'
 
 const THIS_DIR = dirname(fileURLToPath(import.meta.url))
 const SPECS_DIR = join(THIS_DIR, 'specs')
@@ -315,6 +316,58 @@ describe('DBPF 2.1 writer and sanity check', () => {
   })
 })
 
+describe('minimal PE version resource writer', () => {
+  it('writes a valid PE32+ .rsrc version tree with VS_FIXEDFILEINFO and FileVersion for 1.129.39.1030', () => {
+    const pe = writeMinimalVersionPe('1.129.39.1030')
+
+    // DOS header + PE signature + COFF header + PE32+ optional header
+    expect(pe.subarray(0, 2).toString('ascii')).toBe('MZ')
+    const peOffset = pe.readUInt32LE(0x3c)
+    expect(pe.subarray(peOffset, peOffset + 4).toString('ascii')).toBe('PE\0\0')
+    expect(pe.readUInt16LE(peOffset + 4)).toBe(0x8664) // AMD64
+    expect(pe.readUInt16LE(peOffset + 6)).toBe(1) // 1 section (.rsrc)
+    const optSize = pe.readUInt16LE(peOffset + 20)
+    const optOffset = peOffset + 24
+    expect(pe.readUInt16LE(optOffset)).toBe(0x020b) // PE32+
+
+    // DataDirectory[2] (Resource Table) points at .rsrc section
+    const rsrcRva = pe.readUInt32LE(optOffset + 0x80)
+    const rsrcSize = pe.readUInt32LE(optOffset + 0x84)
+    expect(rsrcRva).toBeGreaterThan(0)
+    expect(rsrcSize).toBeGreaterThan(88)
+
+    const secOffset = optOffset + optSize
+    expect(pe.subarray(secOffset, secOffset + 5).toString('ascii')).toBe('.rsrc')
+    expect(pe.readUInt32LE(secOffset + 12)).toBe(rsrcRva)
+    const rsrcRaw = pe.readUInt32LE(secOffset + 20)
+
+    // Resource tree: Type 16 (RT_VERSION) -> ID 1 -> Language -> Data Entry
+    expect(pe.readUInt32LE(rsrcRaw + 16)).toBe(16)
+    const idDirOff = pe.readUInt32LE(rsrcRaw + 20) & 0x7fffffff
+    expect(pe.readUInt32LE(rsrcRaw + idDirOff + 16)).toBe(1)
+    const langDirOff = pe.readUInt32LE(rsrcRaw + idDirOff + 20) & 0x7fffffff
+    expect(pe.readUInt32LE(rsrcRaw + langDirOff + 16)).toBe(0x0409)
+    const dataEntryOff = pe.readUInt32LE(rsrcRaw + langDirOff + 20)
+    const dataRva = pe.readUInt32LE(rsrcRaw + dataEntryOff)
+    const dataSize = pe.readUInt32LE(rsrcRaw + dataEntryOff + 4)
+    const versionInfoOff = rsrcRaw + (dataRva - rsrcRva)
+
+    // VS_VERSIONINFO + VS_FIXEDFILEINFO
+    expect(pe.readUInt16LE(versionInfoOff)).toBe(dataSize)
+    expect(pe.readUInt16LE(versionInfoOff + 2)).toBe(52)
+    expect(pe.subarray(versionInfoOff + 6, versionInfoOff + 38).toString('utf16le')).toBe('VS_VERSION_INFO\0')
+    const ffiOff = versionInfoOff + 40
+    expect(pe.readUInt32LE(ffiOff)).toBe(0xfeef04bd)
+    expect(pe.readUInt32LE(ffiOff + 8)).toBe(0x00010081)
+    expect(pe.readUInt32LE(ffiOff + 12)).toBe(0x00270406)
+
+    // StringFileInfo contains UTF-16LE FileVersion string
+    const versionBlock = pe.subarray(versionInfoOff, versionInfoOff + dataSize)
+    expect(versionBlock.includes(Buffer.from('FileVersion\0', 'utf16le'))).toBe(true)
+    expect(versionBlock.includes(Buffer.from('1.129.39.1030\0', 'utf16le'))).toBe(true)
+  })
+})
+
 describe('fixture generator', () => {
   let workDir = ''
 
@@ -428,10 +481,13 @@ describe('fixture generator', () => {
       expect(res.ok, `Expected valid DBPF 2.1 at ${pkgPath}`).toBe(true)
     }
 
-    // patch-day: modsdisabled=1, scriptmodsenabled=0, with mods present
+    // patch-day: Origin default install path + modsdisabled=1, scriptmodsenabled=0, with mods present
     const patchSpec = await loadSpec(join(SPECS_DIR, 'patch-day.json'))
     const patchDir = join(workDir, 'verify-patch-day')
     await generateFixture(patchSpec, patchDir)
+    expect(patchSpec.gameInstall.relPath).toBe('Program Files (x86)/Origin Games/The Sims 4')
+    const patchExe = await readFile(join(patchDir, patchSpec.gameInstall.relPath, 'Game/Bin/TS4_x64.exe'))
+    expect(patchExe.subarray(0, 2).toString('ascii')).toBe('MZ')
     const patchUserRoot = join(patchDir, patchSpec.userFolders[0]!.relPath)
     const patchOptions = await readFile(join(patchUserRoot, 'Options.ini'), 'utf8')
     expect(patchOptions).toContain('modsdisabled=1')
