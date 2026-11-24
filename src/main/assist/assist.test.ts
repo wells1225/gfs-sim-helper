@@ -392,6 +392,24 @@ describe('buildPreview', () => {
     expect(text).toContain('Message: Folder Mods/Hair and <path>')
   })
 
+  it('strips a second path that follows a Mods folder path with no file extension', () => {
+    const messages = [
+      `Folder ${SIMS}\\Mods\\Hair and Private\\Stuff\\diary.txt`,
+      `Folder ${SIMS}\\Mods\\Braids and Private/Stuff/notes.txt`,
+      `Folder ${SIMS}\\Mods\\Skin and Lila\\secret.txt`
+    ]
+    const scan = sampleScan({
+      logs: messages.map((message, i) => logReport({ fileModifiedAt: `2026-11-2${i}T10:00:00.000Z`, message }))
+    })
+    const text = buildPreview(scan, redact, 'p').text
+
+    for (const gone of ['Private', 'Stuff', 'diary', 'notes.txt', 'secret.txt']) expect(text).not.toContain(gone)
+    expect(text).not.toMatch(/lila/i)
+    expect(text).toContain('Message: Folder Mods/Hair and <path>')
+    expect(text).toContain('Message: Folder Mods/Braids and <path>')
+    expect(text).toContain('Message: Folder Mods/Skin and <path>')
+  })
+
   it('never holds her user name in a frame or a mod file name, whatever sits in front of it', () => {
     const base = sampleScan({
       logs: [
