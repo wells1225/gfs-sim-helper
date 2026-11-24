@@ -1,6 +1,6 @@
 import { KeyRound, ShieldAlert, ShieldCheck, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import type { KeyStatus } from '../../shared/model.ts'
+import type { KeySetResult, KeyStatus } from '../../shared/model.ts'
 import { useApi } from '../api.tsx'
 import { Alert, AlertDescription } from '../components/ui/alert.tsx'
 import { Button } from '../components/ui/button.tsx'
@@ -9,6 +9,7 @@ import { Input } from '../components/ui/input.tsx'
 import { KEY_STATUS_WORDS } from './words.ts'
 
 const NOT_SAVED = 'That key was not saved. Check it and paste it again.'
+const OLD_KEY_KEPT = 'That key was not saved. The key stored before is still there.'
 
 /**
  * Tyler's hidden setup screen (Ctrl+Shift+K). The key is read from the field through a ref and the field is
@@ -37,11 +38,17 @@ export function KeySetupScreen() {
     }
   }, [api])
 
-  const finish = (next: KeyStatus, saved: boolean) => {
+  const finish = (next: KeyStatus, note: string | null = null) => {
     if (!live.current) return
     setStatus(next)
-    setNote(saved && next === 'not-set' ? NOT_SAVED : null)
+    setNote(note)
     setBusy(false)
+  }
+
+  const saved = (result: KeySetResult) => {
+    // not-saved: the new key was refused and the one stored before stays, so the status is still 'set'
+    if (result === 'not-saved') finish('set', OLD_KEY_KEPT)
+    else finish(result, result === 'not-set' ? NOT_SAVED : null)
   }
 
   const save = (event: FormEvent) => {
@@ -53,16 +60,16 @@ export function KeySetupScreen() {
     if (key.trim() === '') return
     setBusy(true)
     api.invoke('assist:set-key', { key }).then(
-      (next) => finish(next, true),
-      () => finish('not-set', true)
+      saved,
+      () => finish('not-set', NOT_SAVED)
     )
   }
 
   const remove = () => {
     setBusy(true)
     api.invoke('assist:clear-key').then(
-      (next) => finish(next, false),
-      () => finish(status ?? 'not-set', false)
+      (next) => finish(next),
+      () => finish(status ?? 'not-set')
     )
   }
 

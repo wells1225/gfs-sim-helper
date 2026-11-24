@@ -11,9 +11,14 @@ export interface NoAnswerCopy {
 // A Record over the whole union, so a new reason fails typecheck until it has words.
 export const NO_ANSWER_WORDS: Record<NoAnswerWhy, NoAnswerCopy> = {
   'no-key': {
+    title: "Ask for help isn't set up on this PC",
+    detail: 'Nothing was sent and nothing on your PC was changed. Let Tyler know, and he can set it up.',
+    canRetry: false
+  },
+  'key-rejected': {
     title: 'Ask for help needs Tyler for a moment',
     detail:
-      "The key Tyler set up for Ask for help isn't working on this PC any more. Nothing on your PC was changed. Let Tyler know, and he can set it up again.",
+      "The key Tyler set up for Ask for help isn't working any more. Nothing on your PC was changed. Let Tyler know, and he can set it up again.",
     canRetry: false
   },
   declined: {
