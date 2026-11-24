@@ -4,12 +4,12 @@ import { fileURLToPath } from 'node:url'
 import { createFixtureHost } from '../locate/fixture-host.ts'
 import { locate } from '../locate/index.ts'
 import { buildInventory } from './index.ts'
+import { timingFailures } from './perf-gate.ts'
 
 const THIS_DIR = dirname(fileURLToPath(import.meta.url))
 const BASELINE_PATH = join(THIS_DIR, 'perf-baseline.json')
 const EXPECTED_BIG_PACKAGES = 5000
 const EXPECTED_BIG_SCRIPTS = 300
-const HARD_TIME_LIMIT_MS = 30_000
 
 interface PerfBaseline {
   windowsBigMs: number | null
@@ -97,12 +97,7 @@ async function main(): Promise<void> {
       `Expected ${EXPECTED_BIG_PACKAGES} packages and ${EXPECTED_BIG_SCRIPTS} scripts, got ${packageCount} and ${scriptCount}`
     )
   }
-  if (elapsedMs > HARD_TIME_LIMIT_MS) {
-    failures.push(`Elapsed time ${elapsedMs} ms exceeded hard limit of ${HARD_TIME_LIMIT_MS} ms`)
-  }
-  if (baselineMs !== null && elapsedMs > baselineMs * 2) {
-    failures.push(`Elapsed time ${elapsedMs} ms exceeded 2x baseline (${baselineMs * 2} ms)`)
-  }
+  failures.push(...timingFailures(elapsedMs, baselineMs))
 
   if (failures.length > 0) {
     for (const msg of failures) {
