@@ -154,6 +154,8 @@ function mayWrite(use: WriteUse, sorted: SortedPath): boolean {
   return WRITE_ZONES[use].includes(sorted.zone) && (!sorted.atRoot || use === 'mkdir')
 }
 
+const isDriveRoot = (place: string): boolean => nativePath.parse(place).root === place
+
 function errorCode(err: unknown): string | undefined {
   const code = (err as { code?: unknown } | null)?.code
   return typeof code === 'string' && /^[A-Z][A-Z0-9_]{1,30}$/.test(code) ? code : undefined
@@ -249,7 +251,8 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
   const resolveReal = makeResolver()
 
   // The app data folder holds the backups. Inside a Sims folder or OneDrive it refuses every request.
-  if (!isWellFormed(nativePath, dataDir)) return outside(dataDir)
+  // So does a whole drive: every path on it would count as the helper's own.
+  if (!isWellFormed(nativePath, dataDir) || isDriveRoot(dataDir)) return outside(dataDir)
   let realData: string
   const cloudRoots: string[] = []
   try {
@@ -261,6 +264,7 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
   } catch {
     return outside(dataDir)
   }
+  if (isDriveRoot(realData)) return outside(dataDir)
   for (const place of [dataDir, realData]) {
     const names = (looseParts(nativePath, place) ?? []).slice(1)
     if (names.some((name) => SIMS_FOLDER_NAMES.has(normalizeSimsFolderName(name)))) return outside(dataDir)
