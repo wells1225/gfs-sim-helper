@@ -336,6 +336,25 @@ describe('storing the key', () => {
     expect(await setKey(deps, OTHER_KEY)).toBe('not-saved')
   })
 
+  it.each([
+    ['encrypting throws', 'encryptFails'],
+    ['the "encrypted" bytes still hold the key in the clear', 'writesClearText']
+  ] as const)('answers not-saved when %s for a new key and the old one stays stored', async (_name, fault) => {
+    const { deps, gate, safeStorage, transport } = rig()
+    await setKey(deps, KEY)
+    gate.requests.length = 0
+    safeStorage[fault] = true
+
+    expect(await setKey(deps, OTHER_KEY)).toBe('not-saved')
+    expect(await keyStatus(deps)).toBe('set')
+    expect(gate.requests).toEqual([])
+
+    await sendWithKey(deps, MESSAGE)
+    expect(transport.mock.calls[0]![0]).toBe(KEY)
+    expectNoKey(output)
+    expectNoKey(output, OTHER_KEY)
+  })
+
   it('answers not-set, not not-saved, when a new key is refused and the old one no longer decrypts', async () => {
     const { deps, safeStorage } = rig()
     await setKey(deps, KEY)
