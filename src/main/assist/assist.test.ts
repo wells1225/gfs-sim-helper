@@ -368,6 +368,64 @@ describe('buildPreview', () => {
     expect(text).toContain('Wicked Wardrobe')
     expect(text).toContain('Mods/Hair/cozy_braids.package')
   })
+
+  it('strips a second path that follows a Mods path in a message', () => {
+    const messages = [
+      `Failed ${SIMS}\\Mods\\a.package referenced by Lila\\Desktop\\secret.txt`,
+      `Failed ${SIMS}\\Mods\\b.package and Private/Stuff/diary.txt`,
+      `${SIMS}\\Mods\\cc\\x.package; also see Lila\\Pictures\\me.png`,
+      `Folder ${SIMS}\\Mods\\Hair and Private\\Stuff\\journal`
+    ]
+    const scan = sampleScan({
+      logs: messages.map((message, i) => logReport({ fileModifiedAt: `2026-11-2${i}T10:00:00.000Z`, message }))
+    })
+    const text = buildPreview(scan, redact, 'p').text
+
+    for (const gone of ['secret.txt', 'Desktop', 'Private', 'diary', 'Pictures', 'me.png', 'journal']) {
+      expect(text).not.toContain(gone)
+    }
+    expect(text).not.toMatch(/lila/i)
+    // the Mods paths and the words around them stay
+    expect(text).toContain('Message: Failed Mods/a.package referenced by <path>')
+    expect(text).toContain('Message: Failed Mods/b.package and <path>')
+    expect(text).toContain('Message: Mods/cc/x.package; also see <path>')
+    expect(text).toContain('Message: Folder Mods/Hair and <path>')
+  })
+
+  it('never holds her user name in a frame or a mod file name, whatever sits in front of it', () => {
+    const base = sampleScan({
+      logs: [
+        logReport({
+          frames: [
+            { path: `${SIMS}\\Mods\\a.package referenced by Lila\\Desktop\\secret.txt`, line: 1, origin: 'mod' },
+            { path: 'see Lila/x.txt', line: 2, origin: 'mod' },
+            { path: 'name=Lila\\Desktop', line: 3, origin: 'mod' },
+            { path: 'Mods/x.package|Lila\\Desktop\\q.txt', line: 4, origin: 'mod' },
+            { path: 'Mods/y.package>Lila\\Desktop\\q.txt', line: 5, origin: 'mod' }
+          ]
+        })
+      ]
+    })
+    const scan = withInventoryGroups(base, [group(1, ['Stuff for Lila/a.package', 'CC/Lila/b.package'])])
+    const text = buildPreview(scan, redact, 'p').text
+
+    expect(text).not.toMatch(/lila/i)
+    expect(text).toContain('Mods/Stuff for <user>/a.package')
+    expect(text).toContain('Mods/CC/<user>/b.package')
+  })
+
+  it('lists mod files whose folder name ends in a bracket, a mark or a letter outside ASCII', () => {
+    const files = ['Hair (new)/x.package', 'Café/y.package', '日本/z.package', 'Mod!/w.ts4script']
+    const text = buildPreview(withInventoryGroups(sampleScan(), [group(1, files)]), redact, 'p').text
+    for (const file of files) expect(text).toContain(`    Mods/${file}`)
+  })
+
+  it('still refuses a mod file name that is not a path inside Mods', () => {
+    const files = ['/Users/Lila/x.package', 'a//server/share/x.package', 'C:/x.package', 'a/../x.package', 'Tray/x.trayitem']
+    const text = buildPreview(withInventoryGroups(sampleScan(), [group(1, files)]), redact, 'p').text
+    const listed = text.split('Mods, by group:')[1]!.split('\n').slice(2)
+    expect(listed).toEqual(files.map(() => '    <path>'))
+  })
 })
 
 describe('ask', () => {
