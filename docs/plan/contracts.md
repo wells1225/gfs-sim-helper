@@ -92,7 +92,7 @@ export interface LogReport {
   message: string | null // first line of the error text, 300 characters at most
   count: number // reports in this file with this categoryId
   frames: LogFrame[] // innermost last, 60 at most; always empty for 'crash'
-  modHints: string[] // one per distinct mod frame: path lowercased, '\' to '/', extension dropped
+  modHints: string[] // distinct mod frames, at most 20, nearest the error first: path lowercased, '\' to '/', extension dropped
   completeness: 'complete' | 'cut-off'
 }
 // ── Folder facts and findings (PR 6)
