@@ -129,7 +129,10 @@ describe('createBackup', () => {
     ws.gate.hooks.afterOp = async (op) => {
       if (op.op === 'copy' && !corrupted && op.from.endsWith('lamp_b.package')) {
         corrupted = true
-        await writeFile(op.to, 'not the same bytes')
+        // Same size, different bytes: only the SHA-256 check can catch it.
+        const bytes = await readFile(op.to)
+        bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 0xff
+        await writeFile(op.to, bytes)
       }
     }
 
