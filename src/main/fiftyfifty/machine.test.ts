@@ -7,11 +7,10 @@ import { makeGroups } from './testing.ts'
 const INIT = { id: 's1', startedAt: '2026-11-24T12:00:00.000Z', folderPath: 'C:\\Sims 4' }
 
 /** Answers like the game would: it crashes while the bad group is in Mods. */
-function runToEnd(groups: ModGroup[], badId: string): FiftyFifty {
-  let state = begin(groups, INIT)
-  let guard = 0
-  while (state.phase !== 'found') {
-    expect(++guard).toBeLessThan(20)
+function runToEnd(groups: ModGroup[], badId: string, from: FiftyFifty = begin(groups, INIT)): FiftyFifty {
+  let state = from
+  for (let guard = 0; state.phase !== 'found'; guard++) {
+    if (guard > 20) throw new Error('the test did not end')
     // begin leaves the round waiting on CurseForge; the driver makes it awaiting-answer.
     state = { ...state, phase: 'awaiting-answer' }
     const given: FiftyAnswer = state.inMods.includes(badId) ? 'crashed' : 'worked'
@@ -59,16 +58,20 @@ describe('begin', () => {
 
 describe('answer', () => {
   it('names the bad group within ceil(log2 N) rounds for every N up to 200 and every position', () => {
+    const misses: string[] = []
     for (let n = 1; n <= 200; n++) {
       const groups = makeGroups(n, 7)
+      const start = begin(groups, INIT)
       const bound = Math.ceil(Math.log2(n))
+      if (start.roundsAtMost !== bound) misses.push(`n=${n}: roundsAtMost ${start.roundsAtMost}`)
       for (const bad of groups) {
-        const end = runToEnd(groups, bad.id)
-        expect(end.culprit, `n=${n} bad=${bad.id}`).toBe(bad.id)
-        expect(end.history.length, `n=${n} bad=${bad.id}`).toBeLessThanOrEqual(bound)
-        expect(end.roundsAtMost).toBe(bound)
+        const end = runToEnd(groups, bad.id, start)
+        if (end.culprit !== bad.id || end.history.length > bound) {
+          misses.push(`n=${n} bad=${bad.id}: named ${end.culprit} in ${end.history.length}`)
+        }
       }
     }
+    expect(misses).toEqual([])
   })
 
   it('takes exactly 6 rounds for 64 groups', () => {
