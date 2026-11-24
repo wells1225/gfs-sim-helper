@@ -30,6 +30,7 @@ const disk = vi.hoisted(() => ({
   crossDrive: null as null | { from: string; hits: number },
   corruptNewFiles: null as null | { hits: number },
   realpathFails: null as null | { under: string; code: string; hits: number },
+  statFails: null as null | { file: string; code: string; hits: number },
   unlinkFails: null as null | { file: string; hits: number },
   writeFileQuotesItsData: null as null | { hits: number },
   whenTempOpens: null as null | (() => Promise<void>)
@@ -55,6 +56,13 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       }
       return await real.realpath(target)
     }) as unknown as typeof real.realpath,
+    stat: (async (target: string, options?: object) => {
+      if (disk.statFails && String(target) === disk.statFails.file) {
+        disk.statFails.hits += 1
+        throw errno(disk.statFails.code, 'stat')
+      }
+      return await real.stat(target, options)
+    }) as unknown as typeof real.stat,
     unlink: (async (file) => {
       if (disk.unlinkFails && String(file) === disk.unlinkFails.file) {
         disk.unlinkFails.hits += 1
@@ -169,6 +177,7 @@ afterEach(async () => {
   disk.crossDrive = null
   disk.corruptNewFiles = null
   disk.realpathFails = null
+  disk.statFails = null
   disk.unlinkFails = null
   disk.writeFileQuotesItsData = null
   disk.whenTempOpens = null
@@ -262,6 +271,17 @@ describe('one test per refusal reason', () => {
       reason: 'not-a-sims-folder',
       path: w.folder
     })
+  })
+
+  it('check-failed: a path whose real place cannot be read', async () => {
+    const w = await makeWorld()
+    const from = w.inFolder(...MOD)
+    disk.realpathFails = { under: w.inFolder('Mods'), code: 'EACCES', hits: 0 }
+    await expectRefusal(w, () => w.run([{ op: 'move', from, to: w.inData('holding', 'x.package') }]), {
+      reason: 'check-failed',
+      path: from
+    })
+    expect(disk.realpathFails.hits, 'the injected error was really hit').toBeGreaterThan(0)
   })
 
   it('game-running', async () => {
@@ -892,11 +912,19 @@ describe('the report zone', () => {
     disk.realpathFails = { under: w.desktopDir, code: 'EACCES', hits: 0 }
     const target = join(w.desktopDir, REPORT_NAME)
     expect(await w.run([{ op: 'write', path: target, data: 'x', mode: 'create' }], { folderPath: null })).toEqual(
-      refusedWith({ reason: 'outside-allowed-area', path: target })
+      refusedWith({ reason: 'check-failed', path: target })
     )
     expect(disk.realpathFails.hits).toBeGreaterThan(0)
+    const elsewhere = join(w.desktopDir, 'notes.txt')
+    expect(await w.run([{ op: 'write', path: elsewhere, data: 'x', mode: 'create' }], { folderPath: null })).toEqual(
+      refusedWith({ reason: 'outside-allowed-area', path: elsewhere })
+    )
     expect(await w.run([{ op: 'mkdir', path: w.inData('journal') }], { folderPath: null })).toEqual({ status: 'done' })
+    disk.realpathFails = null
     w.paths.desktopDir = 'Desktop'
+    expect(await w.run([{ op: 'write', path: target, data: 'x', mode: 'create' }], { folderPath: null })).toEqual(
+      refusedWith({ reason: 'outside-allowed-area', path: target })
+    )
     expect(await w.run([{ op: 'mkdir', path: w.inData('state') }], { folderPath: null })).toEqual({ status: 'done' })
   })
 
@@ -1386,37 +1414,94 @@ describe('doing the ops', () => {
   })
 })
 
-describe('fail closed: an error while checking refuses', () => {
-  it('a real path that cannot be read refuses with link-escape', async () => {
+describe('fail closed: an error while checking refuses with check-failed', () => {
+  it('the source of a copy whose real place cannot be read', async () => {
     const w = await makeWorld()
     const from = w.inFolder(...MOD)
-    disk.realpathFails = { under: w.inFolder('Mods'), code: 'EACCES', hits: 0 }
-    const before = await snapshotTree(w.root)
-    expect(await w.run([{ op: 'move', from, to: w.inData('holding', 'x.package') }])).toEqual(
-      refusedWith({ reason: 'link-escape', path: from })
-    )
+    disk.realpathFails = { under: w.inFolder('Mods'), code: 'EIO', hits: 0 }
+    await expectRefusal(w, () => w.run([{ op: 'copy', from, to: w.inData('copies', 'x.package') }]), {
+      reason: 'check-failed',
+      path: from
+    })
     expect(disk.realpathFails.hits, 'the injected error was really hit').toBeGreaterThan(0)
-    expect(await snapshotTree(w.root)).toEqual(before)
   })
 
-  it('a Sims folder whose real path cannot be read refuses with not-a-sims-folder', async () => {
+  it('a Sims folder whose real path cannot be read', async () => {
     const w = await makeWorld()
     disk.realpathFails = { under: w.folder, code: 'EIO', hits: 0 }
     expect(await w.run([{ op: 'mkdir', path: w.inData('journal') }])).toEqual(
-      refusedWith({ reason: 'not-a-sims-folder', path: w.folder })
+      refusedWith({ reason: 'check-failed', path: w.folder })
     )
     expect(disk.realpathFails.hits).toBeGreaterThan(0)
+  })
+
+  it('a Sims folder that cannot be looked at: only a missing one is not-a-sims-folder', async () => {
+    const w = await makeWorld()
+    for (const file of [w.folder, w.inFolder('Options.ini')]) {
+      disk.statFails = { file, code: 'EACCES', hits: 0 }
+      await expectRefusal(w, () => w.run([{ op: 'mkdir', path: w.inData('journal') }]), {
+        reason: 'check-failed',
+        path: w.folder
+      })
+      expect(disk.statFails.hits, 'the injected error was really hit').toBe(1)
+      disk.statFails = { file, code: 'ENOENT', hits: 0 }
+      await expectRefusal(w, () => w.run([{ op: 'mkdir', path: w.inData('journal') }]), {
+        reason: 'not-a-sims-folder',
+        path: w.folder
+      })
+    }
+  })
+
+  it('a saves folder whose real path cannot be read, or that is a link to nowhere', async () => {
+    const w = await makeWorld()
+    const saves = w.inFolder('saves')
+    disk.realpathFails = { under: saves, code: 'EACCES', hits: 0 }
+    await expectRefusal(w, () => w.run([{ op: 'mkdir', path: w.inData('journal') }]), {
+      reason: 'check-failed',
+      path: saves
+    })
+    expect(disk.realpathFails.hits).toBeGreaterThan(0)
+    disk.realpathFails = null
+
+    // Saves moved to a drive that is not plugged in: where they are cannot be known, so nothing is touched.
+    const tray = w.inFolder('Tray')
+    await rm(tray, { recursive: true })
+    await linkFolder(join(w.root, 'unplugged', 'Tray'), tray)
+    await expectRefusal(w, () => w.run([{ op: 'mkdir', path: w.inFolder('Mods', 'New') }]), {
+      reason: 'check-failed',
+      path: tray
+    })
   })
 
   it('an app data folder whose real path cannot be read refuses everything', async () => {
     const w = await makeWorld()
     disk.realpathFails = { under: dirname(w.dataDir), code: 'EPERM', hits: 0 }
     expect(await w.run([{ op: 'mkdir', path: w.inData('journal') }], { folderPath: null })).toEqual(
-      refusedWith({ reason: 'outside-allowed-area', path: w.dataDir })
+      refusedWith({ reason: 'check-failed', path: w.dataDir })
     )
     expect(disk.realpathFails.hits).toBeGreaterThan(0)
   })
 
+  it('a OneDrive root whose real path cannot be read refuses everything', async () => {
+    const w = await makeWorld()
+    const cloud = join(w.root, 'pc', 'Users', 'Player', 'Cloud')
+    await mkdir(cloud, { recursive: true })
+    w.paths.oneDriveRoots = [cloud]
+    disk.realpathFails = { under: cloud, code: 'EACCES', hits: 0 }
+    await expectRefusal(w, () => w.run([{ op: 'mkdir', path: w.inData('journal') }], { folderPath: null }), {
+      reason: 'check-failed',
+      path: cloud
+    })
+    expect(disk.realpathFails.hits).toBeGreaterThan(0)
+  })
+
+  it('a gate with nothing to check against', async () => {
+    const result = await runGate(null as unknown as GateDeps, { reason: 'fix', folderPath: null, ops: [] })
+    expect(result).toEqual(refusedWith({ reason: 'check-failed', path: '' }))
+  })
+})
+
+describe('a request the gate cannot read', () => {
   it('a request the gate does not understand is refused', async () => {
     const w = await makeWorld()
     const good = w.inData('x')
@@ -1443,8 +1528,6 @@ describe('fail closed: an error while checking refuses', () => {
         refusal: { reason: 'outside-allowed-area' }
       })
     }
-    const result = await runGate(null as unknown as GateDeps, { reason: 'fix', folderPath: null, ops: [] })
-    expect(result).toMatchObject({ status: 'refused', refusal: { reason: 'outside-allowed-area' } })
     expect(await snapshotTree(w.root)).toEqual(before)
   })
 })
