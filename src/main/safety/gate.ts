@@ -391,13 +391,15 @@ async function checkGround(asked: Asked, glance: Glance): Promise<Ground | GateR
 
   // The Sims folder is the folder that holds Options.ini (stat follows a link), under any name: players move
   // it to another drive, and PR 3 hands over the real path. It is never saves or Tray, nor inside one,
-  // neither by the path that was given nor by where that path really leads.
+  // neither by the path that was given nor by where that path really leads. It is never a whole drive
+  // either, even one with Options.ini in its root: every path on that drive would sort into its zones.
+  // The given path is asked on its own, since Windows resolves a subst drive's root to the folder behind it.
   let realFolder: string | null = null
   const realForbidden: string[] = []
   if (folderPath !== null) {
     const notSims: GateRefusal = { reason: 'not-a-sims-folder', path: folderPath }
     if (!isWellFormed(nativePath, folderPath)) return notSims
-    if (hasForbiddenName(folderPath)) return notSims
+    if (hasForbiddenName(folderPath) || isDriveRoot(folderPath)) return notSims
     try {
       if (!(await statOrNull(folderPath))?.isDirectory()) return notSims
       if (!(await statOrNull(nativePath.join(folderPath, 'Options.ini')))?.isFile()) return notSims
@@ -405,8 +407,8 @@ async function checkGround(asked: Asked, glance: Glance): Promise<Ground | GateR
     } catch {
       return checkFailed(folderPath)
     }
+    if (hasForbiddenName(realFolder) || isDriveRoot(realFolder)) return notSims
     leads.push({ path: folderPath, real: realFolder })
-    if (hasForbiddenName(realFolder)) return notSims
     // saves or Tray may itself be a link to another drive. Where it leads is forbidden too, and when that
     // cannot be found out (the drive is not plugged in), nothing is touched.
     for (const name of ['saves', 'Tray']) {
@@ -553,6 +555,22 @@ async function checkAgain(approved: Approved): Promise<Approved | GateRefusal> {
   return moved === null ? again : linkEscape(moved)
 }
 
+/**
+ * A move's target alone, followed again with nothing remembered. True only when it still passes its check
+ * and leads where it led: then a removal at that path removes what the gate put there, and nothing else.
+ */
+async function targetHolds(approved: Approved, index: number): Promise<boolean> {
+  const op = approved.asked.ops[index]!
+  const was = approved.opLeads[index]![1]
+  if (op.op !== 'move' || was === undefined) return false
+  try {
+    const now = await checkWrite(approved.ground, newGlance(), 'move', op.to)
+    return !('reason' in now) && firstMoved([was], [now]) === null
+  } catch {
+    return false
+  }
+}
+
 /** One op's paths followed again, with nothing remembered. Null when they pass and lead where they led. */
 async function refusalNow(approved: Approved, index: number): Promise<GateRefusal | null> {
   const op = approved.asked.ops[index]!
@@ -635,7 +653,7 @@ async function takeTurn(deps: GateDeps, request: WriteRequest): Promise<GateResu
     }
     try {
       if (index > 0) await followAgain()
-      await carryOut(op, checked, followAgain)
+      await carryOut(op, checked, followAgain, () => targetHolds(checked, index))
     } catch (err) {
       return { status: 'failed', opsDone: index, detail: `${what}: ${explain(err)}` }
     }
@@ -654,7 +672,12 @@ function explain(err: unknown): string {
   return code === undefined ? 'an unexpected error' : `the disk said ${code}`
 }
 
-async function carryOut(op: WriteOp, approved: Approved, followAgain: () => Promise<void>): Promise<void> {
+async function carryOut(
+  op: WriteOp,
+  approved: Approved,
+  followAgain: () => Promise<void>,
+  targetStillHolds: () => Promise<boolean>
+): Promise<void> {
   const { roots } = approved.ground
   if (op.op === 'mkdir') {
     await mkdir(op.path, { recursive: true })
@@ -693,7 +716,15 @@ async function carryOut(op: WriteOp, approved: Approved, followAgain: () => Prom
     // Another drive: copy, check the copy, and only then remove the source. The copy took time, so the
     // paths are followed again first: a source whose folder was swapped meanwhile is not removed.
     await placeCopy(op.from, op.to, source, true)
-    await followAgain()
+    try {
+      await followAgain()
+    } catch (err) {
+      // The source stays, so the move did not run and its copy is taken back. When it cannot be, the
+      // disk is not as it was, and the answer says so.
+      const kept = await takeCopyBack(op.to, source, targetStillHolds)
+      if (kept === null) throw err
+      throw new OpFailure(`${explain(err)}, and the copy at the target was left in place: ${kept}`)
+    }
     try {
       await unlink(op.from)
     } catch (err) {
@@ -702,6 +733,28 @@ async function carryOut(op: WriteOp, approved: Approved, followAgain: () => Prom
       if (still?.isFile() && still.size === source.size) await unlink(op.to).catch(() => undefined)
       throw err
     }
+  }
+}
+
+/**
+ * Removes the copy a stopped cross-drive move placed. The target's folder is followed again first: had it
+ * been swapped for a link, the removal could reach a file somewhere else. Null when no copy is left,
+ * else why it was kept.
+ */
+async function takeCopyBack(
+  to: string,
+  source: Stats,
+  targetStillHolds: () => Promise<boolean>
+): Promise<string | null> {
+  if (!(await targetStillHolds())) return 'its path no longer passes its check'
+  try {
+    const copy = await lstatOrNull(to)
+    if (copy === null) return null
+    if (!copy.isFile() || copy.size !== source.size) return 'it is no longer the file that was copied'
+    await unlink(to)
+    return null
+  } catch (err) {
+    return explain(err)
   }
 }
 
