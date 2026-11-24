@@ -14,11 +14,15 @@ describe('locate is read-only', () => {
     expect(files.length).toBeGreaterThan(0)
     for (const file of files) {
       const source = await readFile(join(THIS_DIR, file), 'utf8')
-      for (const match of source.matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+'node:fs(?:\/promises)?'/g)) {
-        expect(match[1], `${file} imports an fs write function`).not.toMatch(WRITE_CALLS)
+      const fsImports = [...source.matchAll(/import\s+([^;]*?)\s+from\s+['"](?:node:)?fs(?:\/promises)?['"]/g)]
+      for (const [, clause] of fsImports) {
+        // Only named imports are allowed, so every fs function used here is listed and checked.
+        expect(clause, `${file} imports fs as a default or namespace`).toMatch(/^(type\s+)?\{[^}]*\}$/)
+        expect(clause, `${file} imports an fs write function`).not.toMatch(WRITE_CALLS)
       }
-      expect(source, `${file} imports fs as a namespace`).not.toMatch(/import\s+\*\s+as\s+\w+\s+from\s+'(node:)?fs/)
-      expect(source, `${file} imports bare 'fs'`).not.toMatch(/from\s+'fs(\/promises)?'/)
+      expect(source, `${file} loads fs with require or import()`).not.toMatch(
+        /(require|import)\s*\(\s*['"](?:node:)?fs/
+      )
     }
   })
 })

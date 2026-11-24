@@ -207,6 +207,27 @@ describe('locate', () => {
     expect(folders.map((f) => f.newestFileAt)).toEqual([fileTime])
   })
 
+  it('counts files reached through linked folders, and stops on a link back to the folder', async () => {
+    const root = join(workDir, 'linked-saves')
+    const docs = join(root, 'Documents')
+    const simsFolder = join(docs, 'Electronic Arts/The Sims 4')
+    const realSaves = join(root, 'elsewhere/saves')
+    await mkdir(simsFolder, { recursive: true })
+    await mkdir(realSaves, { recursive: true })
+    await writeFile(join(simsFolder, 'Options.ini'), '[options]\n')
+    await writeFile(join(realSaves, 'Slot_00000002.save'), 'save')
+    const oldTime = new Date('2026-09-01T12:00:00.000Z')
+    const saveTime = new Date('2026-11-22T20:00:00.000Z')
+    await utimes(join(simsFolder, 'Options.ini'), oldTime, oldTime)
+    await utimes(join(realSaves, 'Slot_00000002.save'), saveTime, saveTime)
+    const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+    await symlink(realSaves, join(simsFolder, 'saves'), linkType)
+    await symlink(simsFolder, join(simsFolder, 'loop'), linkType)
+
+    const folders = await findUserFolders({ documentsDir: docs, env: {} })
+    expect(folders.map((f) => f.newestFileAt)).toEqual([saveTime])
+  })
+
   it('reads version from PE first, then falls back to a messy binary-prefixed GameVersion.txt', async () => {
     const odRoot = fixtureDirs.get('onedrive')!
     const localStaleFolder = await realpath(join(odRoot, 'Users/Player/Documents/Electronic Arts/The Sims 4'))

@@ -74,8 +74,14 @@ async function hasOptionsIniFile(folderPath: string): Promise<boolean> {
 
 async function findNewestFileDate(rootDir: string): Promise<Date> {
   let newestMs = 0
+  // Real paths already walked, so a link back into the folder cannot loop.
+  const visited = new Set<string>()
 
   async function walk(currentDir: string): Promise<void> {
+    const key = normalizeForComparison(await resolveRealPath(currentDir))
+    if (visited.has(key)) return
+    visited.add(key)
+
     let entries
     try {
       entries = await readdir(currentDir, { withFileTypes: true })
@@ -83,25 +89,24 @@ async function findNewestFileDate(rootDir: string): Promise<Date> {
       return
     }
 
-    const subdirs: string[] = []
     for (const entry of entries) {
       const fullPath = join(currentDir, entry.name)
       if (entry.isDirectory()) {
-        subdirs.push(fullPath)
-      } else if (entry.isFile()) {
-        try {
-          const info = await stat(fullPath)
-          if (info.mtimeMs > newestMs) {
-            newestMs = info.mtimeMs
-          }
-        } catch {
-          // Ignore transient/unreadable files
-        }
+        await walk(fullPath)
+        continue
       }
-    }
-
-    for (const subdir of subdirs) {
-      await walk(subdir)
+      if (!entry.isFile() && !entry.isSymbolicLink()) continue
+      try {
+        // stat follows links: a linked folder is walked, a linked file is counted.
+        const info = await stat(fullPath)
+        if (info.isDirectory()) {
+          await walk(fullPath)
+        } else if (info.isFile() && info.mtimeMs > newestMs) {
+          newestMs = info.mtimeMs
+        }
+      } catch {
+        // Ignore transient/unreadable files and broken links
+      }
     }
   }
 
