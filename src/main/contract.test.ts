@@ -12,6 +12,7 @@ import type {
   BackupRefusal,
   DisabledGroup,
   FiftyDamaged,
+  FiftyStopPartWay,
   FixRefusal,
   GameRunState as ModelGameRunState,
   GateRefusal,
@@ -260,6 +261,23 @@ describe('50/50 contract requests from PR 11', () => {
     const answers: IpcInvoke['fifty:get']['res'][] = [sampleFiftyFifty(), null, { status: 'damaged' }]
     const damaged = answers.filter((a): a is FiftyDamaged => a !== null && 'status' in a)
     expect(damaged).toEqual([{ status: 'damaged' }])
+  })
+
+  it('lets fifty:stop end part way with no session, naming the groups not back yet', () => {
+    const partWay: FiftyStopPartWay = {
+      status: 'stopped-part-way',
+      state: null,
+      notBack: ['Wicked Wardrobe'],
+      detail: 'put-back stopped'
+    }
+    const res: IpcInvoke['fifty:stop']['res'] = partWay
+    const other: IpcInvoke['fifty:start']['res'] = { status: 'stopped-part-way', state: sampleFiftyFifty(), detail: 'x' }
+    expect([res.status, res.state, partWay.notBack, other.state?.id]).toEqual([
+      'stopped-part-way',
+      null,
+      ['Wicked Wardrobe'],
+      sampleFiftyFifty().id
+    ])
   })
 })
 

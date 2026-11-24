@@ -7,6 +7,7 @@ import type {
   FiftyAnswer,
   FiftyGet,
   FiftyResult,
+  FiftyStopResult,
   FixCall,
   FixOutcome,
   GameRunState,
@@ -43,7 +44,7 @@ export interface IpcInvoke {
   'fifty:start': { req: void; res: FiftyResult }
   'fifty:begin-round': { req: void; res: FiftyResult }
   'fifty:answer': { req: { answer: FiftyAnswer; round: number }; res: FiftyResult } // round: the round on her screen, so a late click cannot answer the next one
-  'fifty:stop': { req: void; res: FiftyResult }
+  'fifty:stop': { req: void; res: FiftyStopResult } // FiftyStopPartWay: a damaged-file stop that ended part way
   'fifty:finish': { req: { keep: 'keep-set-aside' | 'put-back' }; res: FiftyResult }
   // PR 12 owns this block
   'assist:status': { req: void; res: AssistStatus }

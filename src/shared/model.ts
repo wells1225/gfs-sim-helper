@@ -355,6 +355,21 @@ export type FiftyResult =
   | { status: 'refused'; refusal: FixRefusal }
   | { status: 'stopped-part-way'; state: FiftyFifty; detail: string }
 
+/**
+ * A stop on a damaged progress file that ended part way: there is no session to hand back, so `state` is null.
+ * notBack: the labels of the groups the 50/50 test set aside that are still out of Mods, in every folder it ran
+ * on. Groups she set aside herself (origin 'fix') are never listed. Stop can be tried again.
+ */
+export interface FiftyStopPartWay {
+  status: 'stopped-part-way'
+  state: null
+  notBack: string[]
+  detail: string
+}
+
+/** What `fifty:stop` answers: a FiftyResult, or FiftyStopPartWay when the damaged-file put-back ends part way. */
+export type FiftyStopResult = FiftyResult | FiftyStopPartWay
+
 // ── AI help (PR 12)
 export type KeyStatus = 'set' | 'not-set' | 'encryption-unavailable'
 /** What setKey answers: a KeyStatus, or 'not-saved' when the new key was refused and the old one is still stored. */
