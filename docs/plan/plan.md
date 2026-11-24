@@ -45,6 +45,12 @@ type FiftyFifty = { round: number; suspects: string[]; cleared: string[]; parked
 
 ## Landing order and dependencies
 
+For PRs 4 to 12, these files win over this one where they differ: [`contracts.md`](contracts.md) (types and
+functions), [`ownership.md`](ownership.md) (paths), [`merge-order.md`](merge-order.md) (merge order, with PR 8
+before PR 7) and [`briefs/`](briefs/). Builders: Opus builds PRs 6, 9, 11 and 12 (except `key-store.ts`), and
+Neon reviews them. Neon builds the contract commit and PRs 4, 5, 7 and 10, and Opus reviews them. Fable writes
+PR 8 and `key-store.ts`, and does the last check on every PR. PRs 10 and 11 merge only after G1.
+
 | PR | Change | Depends on | Builder | Files it may touch |
 |---|---|---|---|---|
 | 1 | Scaffold, Windows CI, installer wizard, dedication | none | Neon | everything at the root, `src/`, `.github/`, `build/`, `AGENTS.md` |
