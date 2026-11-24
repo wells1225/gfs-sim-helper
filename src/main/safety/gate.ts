@@ -2,7 +2,7 @@
 // It checks a whole request first, and only then does the ops itself. Any doubt while checking refuses.
 import { createHash, randomBytes } from 'node:crypto'
 import type { BigIntStats, Stats } from 'node:fs'
-import { link, lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink, utimes } from 'node:fs/promises'
+import { link, lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import nativePath from 'node:path'
 import type { PlatformPath } from 'node:path'
@@ -733,7 +733,8 @@ async function makeParent(target: string, roots: GateRoots): Promise<void> {
 
 /**
  * Fills a temp file beside the target, then gives it the target's name. Only `replace` may take the name from
- * a file that is there. The temp file never outlives a failure.
+ * a file that is there. The temp file never outlives a failure. `fill` returns once the disk has the file, and
+ * the folder is flushed after the name is given, so a file reported done is still there after a power loss.
  */
 async function viaTemp(target: string, replace: boolean, fill: (temp: string) => Promise<void>): Promise<void> {
   // Not .package or .ts4script: the game must never load a half-written file.
@@ -746,22 +747,36 @@ async function viaTemp(target: string, replace: boolean, fill: (temp: string) =>
     await unlink(temp).catch(() => undefined)
     throw err
   }
+  await flushFolder(nativePath.dirname(target))
+}
+
+/**
+ * Waits until the disk has a folder's list of names. Windows gives Node no way to open a folder, so there a
+ * new name rests on the disk's own journal: after a power loss the file is whole or missing, never half there.
+ */
+async function flushFolder(folder: string): Promise<void> {
+  if (process.platform === 'win32') return
+  const handle = await open(folder, 'r')
+  try {
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
 }
 
 async function placeCopy(from: string, to: string, source: Stats, verify: boolean): Promise<void> {
   await viaTemp(to, false, async (temp) => {
-    const copied = await copyBytes(from, temp, verify)
+    const copied = await copyBytes(from, temp, source)
     if (copied.bytes !== source.size) throw new OpFailure('the source changed while it was copied')
     if (verify) {
       const matches = (await stat(temp)).size === source.size && (await sha256File(temp)) === copied.sha256
       if (!matches) throw new OpFailure('the copy does not match the source')
     }
-    await utimes(temp, source.atimeMs / 1000, source.mtimeMs / 1000) // keeps the file date
   })
 }
 
-/** Streams a file into a new file, and returns what was read. `flush` waits until the disk has it. */
-async function copyBytes(from: string, to: string, flush: boolean): Promise<{ bytes: number; sha256: string }> {
+/** Streams a file into a new file with the source's date, waits until the disk has it, and returns what was read. */
+async function copyBytes(from: string, to: string, dated: Stats): Promise<{ bytes: number; sha256: string }> {
   const hash = createHash('sha256')
   let bytes = 0
   const source = await open(from, 'r')
@@ -777,7 +792,9 @@ async function copyBytes(from: string, to: string, flush: boolean): Promise<{ by
         await writeAll(target, part)
         bytes += bytesRead
       }
-      if (flush) await target.sync()
+      // The date is set through this handle, after its last write, so closing it does not move the date.
+      await target.utimes(dated.atimeMs / 1000, dated.mtimeMs / 1000)
+      await target.sync()
     } finally {
       await target.close()
     }
