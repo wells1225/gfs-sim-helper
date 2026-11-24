@@ -1,5 +1,7 @@
 import type { Handlers } from '../../shared/ipc.ts'
+import type { AssistPreview, KeyStatus } from '../../shared/model.ts'
 import type { AppContext } from '../ports.ts'
+import { ask, assistOffer, buildPreview } from './index.ts'
 
 export type AssistChannel =
   | 'assist:status'
@@ -8,22 +10,55 @@ export type AssistChannel =
   | 'assist:set-key'
   | 'assist:clear-key'
 
-export function assistHandlers(_ctx: AppContext): Handlers<AssistChannel> {
+// No handler here logs a request or passes on an error: `assist:set-key` carries the key.
+export function assistHandlers(ctx: AppContext): Handlers<AssistChannel> {
+  // The newest preview she was shown. `assist:send` sends only this text, so the renderer cannot change it.
+  let kept: AssistPreview | null = null
+
+  async function keyStatus(): Promise<KeyStatus> {
+    try {
+      return await ctx.keyStore.status()
+    } catch {
+      return 'not-set'
+    }
+  }
+
   return {
     async 'assist:status'() {
-      throw new Error('not implemented: assist:status')
+      const key = await keyStatus()
+      return { key, offer: assistOffer(ctx.session.scan, key) }
     },
+
     async 'assist:preview'() {
-      throw new Error('not implemented: assist:preview')
+      const scan = ctx.session.scan
+      kept = scan === null ? null : buildPreview(scan, ctx.redact, ctx.newId())
+      return kept
     },
-    async 'assist:send'() {
-      throw new Error('not implemented: assist:send')
+
+    async 'assist:send'(req) {
+      const previewId: unknown = req?.previewId
+      const preview = kept
+      if (preview === null || typeof previewId !== 'string' || previewId !== preview.id) {
+        return { status: 'no-answer', why: 'preview-expired' }
+      }
+      return ask(ctx.keyStore, preview)
     },
-    async 'assist:set-key'() {
-      throw new Error('not implemented: assist:set-key')
+
+    async 'assist:set-key'(req) {
+      const key: unknown = req?.key
+      try {
+        return await ctx.keyStore.set(typeof key === 'string' ? key : '')
+      } catch {
+        return keyStatus()
+      }
     },
+
     async 'assist:clear-key'() {
-      throw new Error('not implemented: assist:clear-key')
+      try {
+        return await ctx.keyStore.clear()
+      } catch {
+        return keyStatus()
+      }
     }
   }
 }
