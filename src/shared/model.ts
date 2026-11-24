@@ -237,6 +237,7 @@ export type GateRefusal =
   | { reason: 'game-running' }
   | { reason: 'game-state-unknown' }
   | { reason: 'no-verified-backup'; backup: 'none' | 'stale' | 'unknown' }
+  | { reason: 'check-failed'; path: string } // a check itself errored; fail closed
 
 export type BackupStatus =
   | { state: 'verified'; backupId: string; at: IsoTime }
@@ -260,6 +261,7 @@ export type BackupRefusal =
   | 'not-enough-space'
   | 'sims-folder-missing'
   | 'backup-already-running'
+  | 'backup-folder-in-sims-folder'
 
 export type BackupResult =
   | { status: 'verified'; record: BackupRecord }
