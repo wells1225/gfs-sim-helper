@@ -1,0 +1,130 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`finding words > match the reviewed snapshot 1`] = `
+{
+  "archive-in-mods: 1": {
+    "detail": "The game can't open .zip, .rar or .7z files, so whatever is inside it isn't loading. To use the mod inside, unzip it into your mods folder. Otherwise it is safe to set aside.",
+    "title": "A zipped file is in your mods folder",
+  },
+  "archive-in-mods: 2": {
+    "detail": "The game can't open .zip, .rar or .7z files, so whatever is inside them isn't loading. To use the mods inside, unzip them into your mods folder. Otherwise they are safe to set aside.",
+    "title": "2 zipped files are in your mods folder",
+  },
+  "broken-package: 1": {
+    "detail": "This file is damaged or didn't finish downloading, so the game can't read it. Broken CC and mods like this can make the game crash. Setting it aside is safe, and you can download a fresh copy from where you got it.",
+    "title": "A mod file is broken",
+  },
+  "broken-package: 3": {
+    "detail": "These files are damaged or didn't finish downloading, so the game can't read them. Broken CC and mods like this can make the game crash. Setting them aside is safe, and you can download a fresh copy from where you got them.",
+    "title": "3 mod files are broken",
+  },
+  "crash-without-cause: 1": {
+    "detail": "The crash log only says when the game closed, not why, so the game did not say which mod (if any) caused it. The 50/50 test can find it step by step, starting with script mods.",
+    "title": "The game crashed, but it didn't say which mod",
+  },
+  "crash-without-cause: 2": {
+    "detail": "The crash logs only say when the game closed, not why, so the game did not say which mod (if any) caused it. The 50/50 test can find it step by step, starting with script mods.",
+    "title": "The game crashed, but it didn't say which mod",
+  },
+  "duplicate-files: 1": {
+    "detail": "One file is an exact copy of another file in your mods folder. Two copies of the same mod can clash and cause errors. Setting the extra copy aside leaves one of each in place.",
+    "title": "A mod file is in your mods folder twice",
+  },
+  "duplicate-files: 2": {
+    "detail": "2 files are exact copies of another file in your mods folder. Two copies of the same mod can clash and cause errors. Setting the extra copies aside leaves one of each in place.",
+    "title": "2 mod files are extra copies",
+  },
+  "folder-in-onedrive": {
+    "detail": "OneDrive keeps syncing files while the game is using them, which can make mods go missing or the game crash. It is worth testing with OneDrive paused while you play.",
+    "title": "Your Sims folder is inside OneDrive",
+  },
+  "log-names-mod: CurseForge mod, last exception": {
+    "detail": "Your last exception log mentions a file from Wicked Wardrobe, so it may be part of the problem. That is a strong clue, not proof: one mod's error can show up while a different mod is the real cause. Setting it aside for a while is a safe way to test.",
+    "title": "Wicked Wardrobe may be causing errors",
+  },
+  "log-names-mod: MCCC log": {
+    "detail": "MCCC's error log mentions a file from MC Command Center, so it may be part of the problem. That is a strong clue, not proof: one mod's error can show up while a different mod is the real cause. Setting it aside for a while is a safe way to test.",
+    "title": "MC Command Center may be causing errors",
+  },
+  "log-names-mod: folder, Better Exceptions": {
+    "detail": "Your Better Exceptions report mentions a file from the mods in your “Gameplay” folder, so them may be part of the problem. That is a strong clue, not proof: one mod's error can show up while a different mod is the real cause. Setting them aside for a while is a safe way to test.",
+    "title": "The mods in your “Gameplay” folder may be causing errors",
+  },
+  "log-names-mod: loose file, UI exception": {
+    "detail": "Your UI exception log mentions a file from “outfit_picker”, so it may be part of the problem. That is a strong clue, not proof: one mod's error can show up while a different mod is the real cause. Setting it aside for a while is a safe way to test.",
+    "title": "“outfit_picker” may be causing errors",
+  },
+  "log-names-mod: several logs": {
+    "detail": "Your error logs mention a file from Wicked Wardrobe, so it may be part of the problem. That is a strong clue, not proof: one mod's error can show up while a different mod is the real cause. Setting it aside for a while is a safe way to test.",
+    "title": "Wicked Wardrobe may be causing errors",
+  },
+  "mods-off: both": {
+    "detail": "The game turns mods off after most updates, so this is common on patch day. Don't save your game until mods are back on: saving now may remove CC and mod items from your save.",
+    "title": "Your mods and script mods are turned off",
+  },
+  "mods-off: mods only": {
+    "detail": "The game's “Enable Custom Content and Mods” setting is off, so none of your mods are loading. Don't save your game until mods are back on: saving now may remove CC and mod items from your save.",
+    "title": "Your mods are turned off",
+  },
+  "mods-off: script mods only": {
+    "detail": "The game's “Script Mods Allowed” setting is off, so your script mods aren't running. Don't save your game until mods are back on: saving now may remove CC and mod items from your save.",
+    "title": "Script mods are turned off",
+  },
+  "package-too-deep: 1, depth 1": {
+    "detail": "On this PC the game only looks one folder down inside Mods. This package file sits deeper, so the game skips it. Moving it into a folder nearer the top of your mods folder lets the game find it.",
+    "title": "A CC file is too deep in folders to load",
+  },
+  "package-too-deep: 1, depth 5": {
+    "detail": "On this PC the game only looks 5 folders down inside Mods. This package file sits deeper, so the game skips it. Moving it into a folder nearer the top of your mods folder lets the game find it.",
+    "title": "A CC file is too deep in folders to load",
+  },
+  "package-too-deep: 2, depth 0": {
+    "detail": "On this PC the game only looks in the Mods folder itself, not in folders inside it. These package files sit deeper, so the game skips them. Moving them into a folder nearer the top of your mods folder lets the game find them.",
+    "title": "2 CC files are too deep in folders to load",
+  },
+  "package-too-deep: 2, depth 3": {
+    "detail": "On this PC the game only looks 3 folders down inside Mods. These package files sit deeper, so the game skips them. Moving them into a folder nearer the top of your mods folder lets the game find them.",
+    "title": "2 CC files are too deep in folders to load",
+  },
+  "script-older-than-update: 1": {
+    "detail": "Script mods made before a game update sometimes stop working until their creator updates them. This is only a hint, not proof: plenty of older script mods still work fine. If the game keeps crashing, check this one for an update first.",
+    "title": "A script mod is older than your last game update",
+  },
+  "script-older-than-update: 4": {
+    "detail": "Script mods made before a game update sometimes stop working until their creator updates them. This is only a hint, not proof: plenty of older script mods still work fine. If the game keeps crashing, check these for an update first.",
+    "title": "4 script mods are older than your last game update",
+  },
+  "script-too-deep: 1": {
+    "detail": "The game only runs script mods that sit right in the Mods folder or one folder down. Right now it is skipping this one. Moving it up a folder fixes that.",
+    "title": "A script mod is buried too deep in folders",
+  },
+  "script-too-deep: 3": {
+    "detail": "The game only runs script mods that sit right in the Mods folder or one folder down. Right now it is skipping these. Moving them up a folder fixes that.",
+    "title": "3 script mods are buried too deep in folders",
+  },
+  "stale-thumbnail-cache": {
+    "detail": "Clearing the cache after changing mods helps the game show them properly. The game rebuilds these files on its own, so nothing is lost.",
+    "title": "The thumbnail cache is older than your latest mod change",
+  },
+  "two-sims-folders: 2": {
+    "detail": "We found 2 Sims 4 folders. The game only uses one of them, so it is worth making sure we are checking the one your game really uses.",
+    "title": "There is more than one Sims 4 folder on this PC",
+  },
+  "wrong-game-package: 1, Sims 3": {
+    "detail": "This package file was made for The Sims 3. The Sims 4 can't use it, and files like this can mess up your game. Setting it aside is safe.",
+    "title": "A CC file is from a different Sims game",
+  },
+  "wrong-game-package: 1, unknown": {
+    "detail": "This package file was made for a different game, like The Sims 3. The Sims 4 can't use it, and files like this can mess up your game. Setting it aside is safe.",
+    "title": "A CC file is from a different Sims game",
+  },
+  "wrong-game-package: 2, Sims 2": {
+    "detail": "These package files were made for The Sims 2. The Sims 4 can't use them, and files like this can mess up your game. Setting them aside is safe.",
+    "title": "2 CC files are from a different Sims game",
+  },
+  "wrong-game-package: 2, mixed": {
+    "detail": "These package files were made for a different game, like The Sims 3. The Sims 4 can't use them, and files like this can mess up your game. Setting them aside is safe.",
+    "title": "2 CC files are from a different Sims game",
+  },
+}
+`;
