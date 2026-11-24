@@ -55,6 +55,11 @@ function cleanEnv(base: NodeJS.ProcessEnv, overrides: Record<string, string | un
   return result
 }
 
+/** The environment for a launched app: updates are off unless the caller's env says otherwise. */
+export function launchEnv(base: NodeJS.ProcessEnv, overrides: Record<string, string | undefined>): Record<string, string> {
+  return cleanEnv(base, { SIMS_HELPER_UPDATES: 'off', ...overrides })
+}
+
 export async function launchApp(options: LaunchAppOptions = {}): Promise<LaunchedApp> {
   let tempDir: string | null = null
   let fixtureRoot: string | null = null
@@ -110,7 +115,7 @@ export async function launchApp(options: LaunchAppOptions = {}): Promise<Launche
     throw new Error(`Installed executable not found at: ${installedExe}`)
   }
 
-  const env = cleanEnv(process.env, envOverrides)
+  const env = launchEnv(process.env, envOverrides)
   const launchOptions = installedExe
     ? { executablePath: installedExe, env }
     : { args: [resolve(process.cwd(), 'out/main/index.js')], env }
