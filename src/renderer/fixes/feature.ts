@@ -1,1 +1,1 @@
-export const FIXES_READY: boolean = false
+export const FIXES_READY: boolean = true
