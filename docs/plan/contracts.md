@@ -145,6 +145,7 @@ export type GateRefusal =
   | { reason: 'saves-or-tray'; path: string } | { reason: 'outside-allowed-area'; path: string }
   | { reason: 'link-escape'; path: string } | { reason: 'not-a-sims-folder'; path: string }
   | { reason: 'game-running' } | { reason: 'game-state-unknown' } | { reason: 'no-verified-backup'; backup: 'none' | 'stale' | 'unknown' }
+  | { reason: 'check-failed'; path: string } // a check itself errored; fail closed (added after PR 8)
 export type BackupStatus =
   | { state: 'verified'; backupId: string; at: IsoTime } | { state: 'stale'; backupId: string; at: IsoTime }
   | { state: 'none' } | { state: 'unknown'; detail: string }
@@ -371,6 +372,12 @@ The source of a `copy` is only read, so it may be anywhere inside the Sims folde
 - `folderPath` must be a real Sims folder (a localized folder name from PR 3, with `Options.ini` inside), or the
   request is refused with `not-a-sims-folder`. A path that sits in an allowed zone by name but resolves somewhere
   else is refused with `link-escape`. A `dataDir` inside a Sims folder or OneDrive refuses every request.
+- **Op semantics (as built in PR 8):** `mkdir` creates parents and succeeds if the folder exists. `copy`, `move` and
+  `write` create missing parent folders, in the mods and app-data zones only. `remove` of a missing path counts as
+  done. `replace` creates a missing file. `copy` and `move` take plain files only: a folder or a link as the source
+  fails, so a caller walks folders itself and skips links. Ops on the Mods folder or `dataDir` itself are refused,
+  except `mkdir`. An error inside a check refuses with `check-failed`. The game check is the last check before the
+  first op runs.
 - The lint test for the read and write rule in section 1 is `src/main/safety/gate-lint.test.ts`. The contract commit
   ships a first version, so every branch is checked from its first commit; PR 8 owns it from then on and hardens it.
 
