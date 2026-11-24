@@ -83,7 +83,7 @@ export function scriptTooDeepWords(input: { count: number }): FindingWords {
     title: one
       ? 'A script mod is buried too deep in folders'
       : `${input.count} script mods are buried too deep in folders`,
-    detail: `The game only runs script mods that sit right in the Mods folder or one folder down. Right now it is skipping ${one ? 'this one' : 'these'}. Moving ${itThem(input.count)} up a folder fixes that.`
+    detail: `The game only runs script mods that sit right in the Mods folder or one folder down. Right now it is skipping ${one ? 'this one' : 'these'}. Moving ${itThem(input.count)} nearer the top of your mods folder fixes that.`
   }
 }
 

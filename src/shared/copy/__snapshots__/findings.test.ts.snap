@@ -95,11 +95,11 @@ exports[`finding words > match the reviewed snapshot 1`] = `
     "title": "4 script mods are older than your last game update",
   },
   "script-too-deep: 1": {
-    "detail": "The game only runs script mods that sit right in the Mods folder or one folder down. Right now it is skipping this one. Moving it up a folder fixes that.",
+    "detail": "The game only runs script mods that sit right in the Mods folder or one folder down. Right now it is skipping this one. Moving it nearer the top of your mods folder fixes that.",
     "title": "A script mod is buried too deep in folders",
   },
   "script-too-deep: 3": {
-    "detail": "The game only runs script mods that sit right in the Mods folder or one folder down. Right now it is skipping these. Moving them up a folder fixes that.",
+    "detail": "The game only runs script mods that sit right in the Mods folder or one folder down. Right now it is skipping these. Moving them nearer the top of your mods folder fixes that.",
     "title": "3 script mods are buried too deep in folders",
   },
   "stale-thumbnail-cache": {
