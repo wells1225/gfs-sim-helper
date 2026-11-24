@@ -58,6 +58,18 @@ const NO_UPDATER: Updater = {
   install: () => ({ status: 'refused', why: 'not-ready' })
 }
 
+/**
+ * The folders an install folder must stay clear of, for createUpdater's keepOutOf. An update empties the install
+ * folder, so one that is inside or holds her Documents, a OneDrive root or this app's data folder (backups and
+ * set-aside mods) turns updates off.
+ */
+export function updaterKeepOutOf(
+  documentsDirs: readonly string[],
+  paths: Pick<AppPaths, 'dataDir' | 'oneDriveRoots'>
+): string[] {
+  return [...new Set([...documentsDirs, ...paths.oneDriveRoots, paths.dataDir])].filter((dir) => dir.trim() !== '')
+}
+
 function pad2(n: number): string {
   return String(n).padStart(2, '0')
 }

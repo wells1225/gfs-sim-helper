@@ -196,13 +196,13 @@ export interface ScanDeps {
 }
 
 export interface UpdaterInput {
-  // PR 13, src/main/update/updater.ts (Fable): createUpdater(input) gives the Updater
+  // PR 13, src/main/update/updater.ts (Fable): createUpdater(input, seams?) gives the Updater; seams.busy is ctx.busy
   isPackaged: boolean // app.isPackaged; updates are off when false
   version: string // app.getVersion()
   installDir: string // the folder of the running .exe
   argv: readonly string[] // '--updated' means the installer just restarted the app after an update
   env: Readonly<Record<string, string | undefined>> // SIMS_HELPER_UPDATES=off switches updates off; nothing here can point the feed elsewhere
-  keepOutOf: readonly string[] // Documents and the OneDrive roots: updates are off when installDir is inside or contains one
+  keepOutOf: readonly string[] // updaterKeepOutOf(): Documents, the OneDrive roots and paths.dataDir; off when installDir is inside or contains one
   platform: NodeJS.Platform // updates are off except on 'win32'
 }
 

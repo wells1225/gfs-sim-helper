@@ -28,7 +28,7 @@ import type { Host } from './locate/host.ts'
 import type { ActionPlan, AssistReply, KeyStore, PlanFixAt, PlannedStep, Updater } from './ports.ts'
 import type { GameRunState as LocateGameRunState } from './locate/process.ts'
 import { scanHandlers } from './scan/handlers.ts'
-import { createContext, type CreateContextInput } from './services.ts'
+import { createContext, updaterKeepOutOf, type CreateContextInput } from './services.ts'
 import { updateHandlers } from './update/handlers.ts'
 import { createUpdater } from './update/updater.ts'
 import { launchEnv, shoot } from '../../test/e2e/support/app.ts'
@@ -344,6 +344,18 @@ describe('auto-update contract (PR 13)', () => {
     expect(busy()).toBe(true)
     await call.catch(() => {})
     expect(busy()).toBe(false)
+  })
+
+  it('keeps updates out of Documents, OneDrive and the app data folder', () => {
+    const keepOutOf = updaterKeepOutOf(['C:\\Users\\Lila\\Documents', 'C:\\Users\\Lila\\Documents', ''], {
+      dataDir: 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper',
+      oneDriveRoots: ['C:\\Users\\Lila\\OneDrive']
+    })
+    expect(keepOutOf).toEqual([
+      'C:\\Users\\Lila\\Documents',
+      'C:\\Users\\Lila\\OneDrive',
+      'C:\\Users\\Lila\\AppData\\Local\\SimsHelper'
+    ])
   })
 
   it('the stub updater from update/updater.ts is always off', async () => {
