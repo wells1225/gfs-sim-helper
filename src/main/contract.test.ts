@@ -3,7 +3,9 @@ import { execFile } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { describe, expect, it } from 'vitest'
+import type { Page } from '@playwright/test'
+import { afterAll, describe, expect, it } from 'vitest'
+import { rm } from 'node:fs/promises'
 import { INVOKE_CHANNELS } from '../shared/ipc.ts'
 import type { GameRunState as ModelGameRunState } from '../shared/model.ts'
 import { appPaths } from './app-paths.ts'
@@ -15,6 +17,7 @@ import type { Host } from './locate/host.ts'
 import type { GameRunState as LocateGameRunState } from './locate/process.ts'
 import { scanHandlers } from './scan/handlers.ts'
 import { createContext } from './services.ts'
+import { shoot } from '../../test/e2e/support/app.ts'
 
 const execFileAsync = promisify(execFile)
 const THIS_DIR = dirname(fileURLToPath(import.meta.url))
@@ -88,5 +91,41 @@ describe('contract', () => {
 
   it('keeps GameRunState identical between shared/model.ts and locate/process.ts', () => {
     expect(GAME_RUN_STATE_MATCHES).toBe(true)
+  })
+})
+
+describe('e2e support shoot()', () => {
+  const slug = 'contract-shoot-unit'
+
+  afterAll(async () => {
+    await rm(join(process.cwd(), 'test-results', 'screens', slug), { recursive: true, force: true })
+  })
+
+  it('turns on reduced motion and waits a frame after each colour switch before a screenshot', async () => {
+    const events: string[] = []
+    const page = {
+      async setViewportSize() {},
+      async emulateMedia(media: { colorScheme?: string; reducedMotion?: string }) {
+        if (media.reducedMotion) events.push(`reducedMotion:${media.reducedMotion}`)
+        if (media.colorScheme) events.push(`colorScheme:${media.colorScheme}`)
+      },
+      async evaluate() {
+        events.push('frame')
+      },
+      async screenshot(options: { path: string }) {
+        events.push(`shot:${options.path.endsWith('-dark.png') ? 'dark' : 'light'}`)
+      }
+    } as unknown as Page
+
+    await shoot(page, slug, 'sample')
+
+    const firstShot = events.findIndex((e) => e.startsWith('shot:'))
+    expect(events.slice(0, firstShot)).toContain('reducedMotion:reduce')
+    for (const scheme of ['light', 'dark']) {
+      const shot = events.indexOf(`shot:${scheme}`)
+      const switched = events.lastIndexOf(`colorScheme:${scheme}`, shot)
+      expect(switched).toBeGreaterThanOrEqual(0)
+      expect(events.slice(switched + 1, shot)).toContain('frame')
+    }
   })
 })
