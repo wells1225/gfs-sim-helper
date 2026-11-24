@@ -8,7 +8,7 @@ import { useNav } from '../nav.tsx'
 import { useSession } from '../session.tsx'
 import { AnswerStep, CloseCurseForgeStep, Ended, FoundStep, Intro, ReadyStep, TestStep, type EndedHow } from './steps.tsx'
 import { StopDialog } from './StopDialog.tsx'
-import { CURSEFORGE_OPEN, PART_WAY, refusalWords } from './words.ts'
+import { CURSEFORGE_OPEN, groupLabel, PART_WAY, refusalWords } from './words.ts'
 
 type View = { kind: 'loading' } | { kind: 'session'; state: FiftyFifty | null } | { kind: 'ended'; how: EndedHow; label: string }
 
@@ -136,7 +136,7 @@ export function FiftyFiftyScreen() {
         <AnswerStep state={state} onAnswer={giveAnswer} locked={locked} />
       )
   } else {
-    const label = state.groups.find((g) => g.id === state.culprit)?.label ?? 'this mod group'
+    const label = groupLabel(state, state.culprit)
     body = <FoundStep state={state} label={label} onFinish={(keep) => finish(keep, label)} locked={locked} />
   }
 
