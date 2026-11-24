@@ -130,7 +130,8 @@ export const logNamesMod: Rule = (scan) => {
   return [...named]
     .map(([groupId, found]) => {
       const group = groups.get(groupId)
-      const mod = group ?? { label: groupId, source: 'loose' as const }
+      // Every file has a group (contracts.md). If one is ever missing, name the file, never the group id.
+      const mod = group ?? { label: fileNameOf([...found.owners.keys()][0]!), source: 'loose' as const }
       return finding('log-names-mod', words.logNamesModWords({ mod, logKinds: found.kinds }), {
         id: `log-names-mod:${groupId}`,
         evidence: [...new Set(found.evidence)],
@@ -143,6 +144,10 @@ export const logNamesMod: Rule = (scan) => {
       const byLabel = labelOf(groups, a).localeCompare(labelOf(groups, b), 'en', { sensitivity: 'base' })
       return byLabel !== 0 ? byLabel : a.id < b.id ? -1 : a.id > b.id ? 1 : 0
     })
+}
+
+function fileNameOf(relPath: RelPath): string {
+  return relPath.slice(relPath.lastIndexOf('/') + 1).replace(/\.[^.]*$/, '')
 }
 
 function labelOf(groups: ReadonlyMap<string, ModGroup>, f: Finding): string {
