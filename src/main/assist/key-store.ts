@@ -78,7 +78,8 @@ export async function setKey(deps: KeyStoreDeps, key: string): Promise<KeySetRes
     const trimmed = typeof key === 'string' ? key.trim() : null
     if (isUsableKey(trimmed)) {
       const data = seal(deps, trimmed)
-      if (data === null) return 'encryption-unavailable'
+      // Not encrypted, so not stored. A key stored before is still there and still works.
+      if (data === null) return (await readStoredKey(deps)) === null ? 'encryption-unavailable' : 'not-saved'
       wanted = trimmed
       await deps.gate.run({
         reason: 'key',
