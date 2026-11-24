@@ -3,7 +3,7 @@
 // in its text, so every error is dropped and the caller gets one of a fixed set of answers.
 import Anthropic from '@anthropic-ai/sdk'
 import { readFile } from 'node:fs/promises'
-import type { KeyStatus } from '../../shared/model.ts'
+import type { KeySetResult, KeyStatus } from '../../shared/model.ts'
 import type { AssistMessage, AssistReply, KeyStoreDeps } from '../ports.ts'
 
 type FailReason = Extract<AssistReply, { status: 'failed' }>['why']
@@ -71,13 +71,15 @@ export async function keyStatus(deps: KeyStoreDeps): Promise<KeyStatus> {
   }
 }
 
-export async function setKey(deps: KeyStoreDeps, key: string): Promise<KeyStatus> {
+export async function setKey(deps: KeyStoreDeps, key: string): Promise<KeySetResult> {
+  let wanted: string | null = null // the key this call tried to store, if it was usable at all
   try {
     if (!canEncrypt(deps)) return 'encryption-unavailable'
     const trimmed = typeof key === 'string' ? key.trim() : null
     if (isUsableKey(trimmed)) {
       const data = seal(deps, trimmed)
       if (data === null) return 'encryption-unavailable'
+      wanted = trimmed
       await deps.gate.run({
         reason: 'key',
         folderPath: null,
@@ -85,9 +87,24 @@ export async function setKey(deps: KeyStoreDeps, key: string): Promise<KeyStatus
       })
     }
   } catch {
-    // Whatever went wrong, the status below is read back from the disk.
+    // Whatever went wrong, the answer below is read back from the disk.
   }
-  return keyStatus(deps)
+  return storedAfterSet(deps, wanted)
+}
+
+/**
+ * What the disk holds after a try to store `wanted`. The gate's own answer is not trusted: 'set' is
+ * only said when the stored key is the one asked for, and 'not-saved' when another key is still there.
+ */
+async function storedAfterSet(deps: KeyStoreDeps, wanted: string | null): Promise<KeySetResult> {
+  try {
+    if (!canEncrypt(deps)) return 'encryption-unavailable'
+    const stored = await readStoredKey(deps)
+    if (stored === null) return 'not-set'
+    return stored === wanted ? 'set' : 'not-saved'
+  } catch {
+    return 'not-set'
+  }
 }
 
 export async function clearKey(deps: KeyStoreDeps): Promise<KeyStatus> {
