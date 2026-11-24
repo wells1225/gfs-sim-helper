@@ -188,12 +188,25 @@ export async function shoot(page: Page, prSlug: string, name: string): Promise<v
   const outDir = resolve(process.cwd(), 'test-results', 'screens', prSlug)
   await mkdir(outDir, { recursive: true })
   await page.setViewportSize({ width: 960, height: 700 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
 
   await page.emulateMedia({ colorScheme: 'light' })
+  await nextFrame(page)
   await page.screenshot({ path: join(outDir, `${name}-light.png`) })
 
   await page.emulateMedia({ colorScheme: 'dark' })
+  await nextFrame(page)
   await page.screenshot({ path: join(outDir, `${name}-dark.png`) })
 
   await page.emulateMedia({ colorScheme: 'light' })
+}
+
+async function nextFrame(page: Page): Promise<void> {
+  await page.evaluate(
+    () =>
+      new Promise<void>((done) => {
+        const g = globalThis as unknown as { requestAnimationFrame(cb: () => void): number }
+        g.requestAnimationFrame(() => g.requestAnimationFrame(() => done()))
+      })
+  )
 }

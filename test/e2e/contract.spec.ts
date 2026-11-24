@@ -1,17 +1,20 @@
 import { expect, test } from '@playwright/test'
+import { FIXES_READY } from '../../src/renderer/fixes/feature.ts'
 import type { SimsHelperApi } from '../../src/shared/ipc.ts'
 import { inOrder, launchApp, stubIpc } from './support/app.ts'
 
-test('launches against clean fixture and opens to About with an empty console', async () => {
+const FOOTER = 'Saves and Tray are never touched · A backup is made before any change'
+
+test('launches a first run against the clean fixture with the shell and an empty console', async () => {
   const running = await launchApp({ fixture: 'clean' })
   try {
     await expect(running.page).toHaveTitle('Sims Helper')
-    await expect(running.page.getByText('Built by Tyler, for Lila.')).toBeVisible()
-    await expect(
-      running.page.getByText('Saves and Tray are never touched · A backup is made before any change')
-    ).toBeVisible()
-    await expect(running.page.getByRole('button', { name: 'Your mods' })).toHaveCount(0)
-    await expect(running.page.getByRole('button', { name: 'History' })).toHaveCount(0)
+    await expect(running.page.getByText(FOOTER)).toBeVisible()
+    await expect(running.page.getByRole('navigation', { name: 'Primary' })).toBeVisible()
+    await expect(running.page.getByRole('button', { name: 'Check-up' })).toBeVisible()
+    await expect(running.page.getByRole('button', { name: 'About' })).toBeVisible()
+    await expect(running.page.getByRole('button', { name: 'Your mods' })).toHaveCount(FIXES_READY ? 1 : 0)
+    await expect(running.page.getByRole('button', { name: 'History' })).toHaveCount(FIXES_READY ? 1 : 0)
     expect(running.consoleErrors).toEqual([])
   } finally {
     await running.close()
@@ -22,7 +25,7 @@ test('the installed app ignores ELECTRON_RENDERER_URL and still opens its own pa
   test.skip(!process.env['SIMS_HELPER_EXE'], 'needs the installed app (Windows CI)')
   const running = await launchApp({ env: { ELECTRON_RENDERER_URL: 'http://127.0.0.1:9/' } })
   try {
-    await expect(running.page.getByText('Built by Tyler, for Lila.')).toBeVisible()
+    await expect(running.page.getByText(FOOTER)).toBeVisible()
     expect(running.page.url()).toMatch(/^file:/)
   } finally {
     await running.close()
