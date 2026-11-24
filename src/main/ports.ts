@@ -228,7 +228,8 @@ export interface AppContext {
   fixes: Fixes
   keyStore: KeyStore
   updater: Updater
-  busy(): boolean // true while a safety or fixes call runs; update:install refuses 'busy' then
+  busy(): boolean // true while a gate write, a safety or fixes call, or a changing IPC call runs; update:install refuses 'busy' then
+  holdBusy?(): () => void // keeps busy() true until the returned function is called; registerIpc holds it for each CHANGING_CHANNELS call
   session: { scan: Scan | null } // the last finished scan
   emit(progress: Progress): void // sends the 'progress' event to the window
   reveal(file: string): void // shows a file in Explorer

@@ -22,7 +22,8 @@ import type {
   Safety,
   SafetyDeps,
   ScanDeps,
-  Updater
+  Updater,
+  WriteRequest
 } from './ports.ts'
 import { makeRedactor } from './redact.ts'
 import { readFolderFacts, runRules } from './rules/index.ts'
@@ -90,9 +91,19 @@ export function createContext(input: CreateContextInput): AppContext {
   const newId = input.newId ?? (() => formatTimeId(clock.now()))
   const { host, paths, safeStorage, emit, reveal } = input
 
-  // busy() is true while any safety or fixes call runs, so a restart for an update never cuts a change in half.
+  // busy() is true while a gate write, a safety or fixes call, or a held IPC call runs, so a restart for an update
+  // never cuts a change in half.
   let inFlight = 0
   const busy = (): boolean => inFlight > 0
+  const holdBusy = (): (() => void) => {
+    inFlight += 1
+    let held = true
+    return () => {
+      if (!held) return
+      held = false
+      inFlight -= 1
+    }
+  }
   const counted =
     <A extends unknown[], R>(fn: (...args: A) => Promise<R>) =>
     async (...args: A): Promise<R> => {
@@ -114,7 +125,7 @@ export function createContext(input: CreateContextInput): AppContext {
   }
 
   const gate: Gate = {
-    run: (request) => runGate(gateDeps, request)
+    run: counted((request: WriteRequest) => runGate(gateDeps, request))
   }
 
   const safetyDeps: SafetyDeps = {
@@ -189,6 +200,7 @@ export function createContext(input: CreateContextInput): AppContext {
     keyStore,
     updater: typeof input.updater === 'function' ? input.updater({ busy }) : (input.updater ?? NO_UPDATER),
     busy,
+    holdBusy,
     session: { scan: null },
     emit,
     reveal

@@ -18,6 +18,7 @@
     "findings": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON src/main/rules/cli.ts",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "vitest run",
+    "test:electron-node": "node scripts/electron-node/run.ts",
     "test:e2e": "playwright test",
     "test:screens": "playwright test --project=screens",
     "test:live": "playwright test --project=live",
