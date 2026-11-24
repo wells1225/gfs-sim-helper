@@ -2132,6 +2132,22 @@ describe('doing the ops', () => {
     expect(await snapshotTree(w.folder)).toEqual(before)
   })
 
+  // With the source no longer surely there, the copy may be the only one left. It stays, and the answer says so.
+  it('move across drives: when the source cannot be removed and is then gone, the copy is kept and the detail says so', async () => {
+    const w = await makeWorld()
+    const from = w.inFolder(...MOD)
+    const to = w.inData('holding', 'e1', 'Mods', 'cozy_rug.package')
+    const hash = await sha256(from)
+    disk.crossDrive = { from, hits: 0 }
+    disk.unlinkFails = { file: from, hits: 0, meanwhile: async () => await rm(from) }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await sha256(to)).toBe(hash)
+    expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
+  })
+
   it('an empty request is done', async () => {
     const w = await makeWorld()
     expect(await w.run([])).toEqual({ status: 'done' })
