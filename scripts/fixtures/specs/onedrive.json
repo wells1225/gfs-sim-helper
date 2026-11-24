@@ -1,6 +1,6 @@
 {
   "name": "onedrive",
-  "description": "Active Sims 4 user folder synced inside OneDrive/Documents plus an older stale local Documents folder.",
+  "description": "Active Sims 4 user folder synced inside OneDrive/Documents plus an older stale local Documents folder (its GameVersion.txt has non-text bytes before the version: inferred, unverified layout) and a newer look-alike folder with a German name and no Options.ini.",
   "seed": 6006,
   "baseTime": "2026-11-22T15:00:00.000Z",
   "gameInstall": {
@@ -34,6 +34,7 @@
     {
       "relPath": "Users/Player/Documents/Electronic Arts/The Sims 4",
       "gameVersion": "1.125.12.1030",
+      "gameVersionBinaryPrefix": true,
       "gameVersionMtime": "2026-09-10T10:00:00.000Z",
       "folderMtime": "2026-09-10T10:00:00.000Z",
       "options": {
@@ -49,6 +50,25 @@
           "mtime": "2026-09-09T08:00:00.000Z",
           "keys": [
             { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0006000000000002" }
+          ]
+        }
+      ]
+    },
+    {
+      "relPath": "Users/Player/Documents/Electronic Arts/Die Sims 4",
+      "gameVersion": "1.129.39.1030",
+      "folderMtime": "2026-11-23T09:00:00.000Z",
+      "options": {
+        "modsdisabled": 0,
+        "scriptmodsenabled": 1,
+        "showmodliststartup": 1
+      },
+      "omitOptionsIni": true,
+      "packages": [
+        {
+          "relPath": "CAS/misplaced_hat.package",
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0006000000000003" }
           ]
         }
       ]

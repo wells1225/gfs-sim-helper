@@ -50,6 +50,19 @@ export function renderGameVersion(version: string): string {
   return `${version}${CRLF}`
 }
 
+/**
+ * INFERRED AND UNVERIFIED: the research (section 5) says only that GameVersion.txt "may not be
+ * plain text only". This layout (a 4-byte little-endian length, then the version, no line end)
+ * is a stand-in for "bytes around the version", not a claim about the real file. Readers must
+ * find the version with a pattern, never by trimming the whole file.
+ */
+export function renderGameVersionWithBinaryPrefix(version: string): Buffer {
+  const text = Buffer.from(version, 'ascii')
+  const prefix = Buffer.alloc(4)
+  prefix.writeUInt32LE(text.length, 0)
+  return Buffer.concat([prefix, text])
+}
+
 export function renderConfigLog(version: string): string {
   return [
     '=== Application info ===',

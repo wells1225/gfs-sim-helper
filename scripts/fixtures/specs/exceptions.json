@@ -65,7 +65,7 @@
                 "createTime": "2026-11-20 19:42:07",
                 "buildSignature": "Local.Unknown.Unknown.1.129.39.1030-1.200.000.999.Release",
                 "categoryId": "tunable.py:2138",
-                "message": "[cjiang] Caught exception loading reference. RefName: 136725 Manager: InstanceManager_interaction. TunableReference is set to a value that is not allowed by its class restriction. (ValueError: TunableReference is set to a value that is not allowed by its class restriction.)",
+                "message": "[maxisdev] Caught exception loading reference. RefName: 136725 Manager: InstanceManager_interaction. TunableReference is set to a value that is not allowed by its class restriction. (ValueError: TunableReference is set to a value that is not allowed by its class restriction.)",
                 "tracebackLines": [
                   "  File \"T:\\InGame\\Gameplay\\Scripts\\Core\\sims4\\tuning\\instance_manager.py\", line 433, in load_data_into_class_instances",
                   "  File \"T:\\InGame\\Gameplay\\Scripts\\Core\\sims4\\tuning\\tunable.py\", line 2138, in load_etree_node",
@@ -77,7 +77,7 @@
                 "createTime": "2026-11-20 19:42:08",
                 "buildSignature": "Local.Unknown.Unknown.1.129.39.1030-1.200.000.999.Release",
                 "categoryId": "tunable.py:2138",
-                "message": "[cjiang] Caught exception loading reference. RefName: 136725 Manager: InstanceManager_interaction. (ValueError: duplicate report in same category)",
+                "message": "[maxisdev] Caught exception loading reference. RefName: 136725 Manager: InstanceManager_interaction. (ValueError: duplicate report in same category)",
                 "tracebackLines": [
                   "  File \"T:\\InGame\\Gameplay\\Scripts\\Core\\sims4\\tuning\\instance_manager.py\", line 433, in load_data_into_class_instances",
                   "  File \"T:\\InGame\\Gameplay\\Scripts\\Core\\sims4\\tuning\\tunable.py\", line 2138, in load_etree_node",

@@ -522,6 +522,63 @@ describe('fixture generator', () => {
     expect(cfParsed[0]!.installedAddons.length).toBeGreaterThanOrEqual(2)
   })
 
+  it('gives the folder finder a look-alike folder with no Options.ini and a non-text GameVersion.txt', async () => {
+    const odSpec = await loadSpec(join(SPECS_DIR, 'onedrive.json'))
+    const odDir = join(workDir, 'verify-onedrive-finder')
+    await generateFixture(odSpec, odDir)
+
+    // A localized folder name under the local Documents root that the game never started in:
+    // it has mods and the newest dates of the three, but no Options.ini.
+    const lookAlike = join(odDir, 'Users/Player/Documents/Electronic Arts/Die Sims 4')
+    const lookAlikeEntries = await readdir(lookAlike)
+    expect(lookAlikeEntries).toContain('Mods')
+    expect(lookAlikeEntries).not.toContain('Options.ini')
+    const active = join(odDir, 'Users/Player/OneDrive/Documents/Electronic Arts/The Sims 4')
+    const newestActive = Math.max(
+      ...(await Promise.all((await listFilesRecursive(active)).map(async (f) => (await stat(f)).mtimeMs)))
+    )
+    const lookAlikeTimes = await Promise.all(
+      (await listFilesRecursive(lookAlike)).map(async (f) => (await stat(f)).mtimeMs)
+    )
+    expect(Math.max(...lookAlikeTimes)).toBeGreaterThan(newestActive)
+
+    // The stale folder's GameVersion.txt is not plain text, and the version pattern still finds it.
+    const staleVersion = await readFile(
+      join(odDir, 'Users/Player/Documents/Electronic Arts/The Sims 4/GameVersion.txt')
+    )
+    expect(staleVersion.some((byte) => byte < 0x09)).toBe(true)
+    expect(staleVersion.toString('latin1').match(/\d+\.\d+\.\d+\.\d+/)?.[0]).toBe('1.125.12.1030')
+  })
+
+  it('names no real mod creator or developer in generated paths and logs', async () => {
+    const bigSpec = await loadSpec(join(SPECS_DIR, 'big.json'))
+    const bigDir = join(workDir, 'verify-big-names')
+    await generateFixture(bigSpec, bigDir)
+    const bigMods = join(bigDir, bigSpec.userFolders[0]!.relPath, 'Mods')
+    const scriptFolders = new Set(
+      (await listFilesRecursive(bigMods))
+        .filter((p) => p.endsWith('.ts4script'))
+        .map((p) => relative(bigMods, p).split(/[/\\]/))
+        .filter((parts) => parts.length > 1)
+        .map((parts) => parts[0] as string)
+    )
+    // Scripts 0 and 5 of every 10 sit at the Mods root, so 8 of the 10 folder names are used.
+    expect(scriptFolders.size).toBe(8)
+    for (const folder of scriptFolders) {
+      expect(folder).toMatch(/^Creator\d{2}$/)
+    }
+
+    const exSpec = await loadSpec(join(SPECS_DIR, 'exceptions.json'))
+    const exDir = join(workDir, 'verify-exceptions-names')
+    await generateFixture(exSpec, exDir)
+    const gameOnlyLe = await readFile(
+      join(exDir, exSpec.userFolders[0]!.relPath, 'lastException_63887256771.txt'),
+      'utf8'
+    )
+    // The bracketed tag at the start of a game message is a developer's name in real logs.
+    expect(gameOnlyLe).toContain('<desyncdata>[maxisdev] Caught exception')
+  })
+
   it('builds big with 5,000 valid packages and 300 valid script mods', async () => {
     const spec = await loadSpec(join(SPECS_DIR, 'big.json'))
     const bigDir = join(workDir, 'verify-big')

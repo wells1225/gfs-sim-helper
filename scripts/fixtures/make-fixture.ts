@@ -10,6 +10,7 @@ import {
   renderConfigLog,
   renderCurseForgeAddonGameInstance,
   renderGameVersion,
+  renderGameVersionWithBinaryPrefix,
   renderLastCrash,
   renderLastException,
   renderLastUiException,
@@ -49,17 +50,18 @@ const BULK_PACKAGE_CATEGORIES = [
   'Gameplay/Careers/Overrides'
 ] as const
 
+// Made-up folder names: the repo is public, so no real creator is named here.
 const BULK_SCRIPT_CREATORS = [
-  'Deaderpool',
-  'TwistedMexi',
-  'LittleMsSam',
-  'Lumpinou',
-  'Kuttoe',
-  'Lot51',
-  'Adeepindigo',
-  'Pandasama',
-  'Ravash',
-  'Basemental'
+  'Creator01',
+  'Creator02',
+  'Creator03',
+  'Creator04',
+  'Creator05',
+  'Creator06',
+  'Creator07',
+  'Creator08',
+  'Creator09',
+  'Creator10'
 ] as const
 
 const BULK_RESOURCE_TYPES = [
@@ -149,14 +151,18 @@ function planUserFolder(
   const rng = createRng((specSeed ^ ((folderIndex + 1) * 0x9e3779b1)) >>> 0)
 
   // Core user files
-  files.push({
-    relPath: joinPosix(root, 'Options.ini'),
-    data: Buffer.from(renderOptionsIni(folder.options), 'utf8'),
-    mtime: optionsDate
-  })
+  if (!folder.omitOptionsIni) {
+    files.push({
+      relPath: joinPosix(root, 'Options.ini'),
+      data: Buffer.from(renderOptionsIni(folder.options), 'utf8'),
+      mtime: optionsDate
+    })
+  }
   files.push({
     relPath: joinPosix(root, 'GameVersion.txt'),
-    data: Buffer.from(renderGameVersion(folder.gameVersion), 'utf8'),
+    data: folder.gameVersionBinaryPrefix
+      ? renderGameVersionWithBinaryPrefix(folder.gameVersion)
+      : Buffer.from(renderGameVersion(folder.gameVersion), 'utf8'),
     mtime: versionDate
   })
   files.push({

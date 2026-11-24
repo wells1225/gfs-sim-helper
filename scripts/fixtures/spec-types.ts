@@ -128,7 +128,14 @@ export interface UserFolderSpec {
   relPath: string
   gameVersion: string
   gameVersionMtime?: string
+  /**
+   * If true, GameVersion.txt has non-text bytes before the version (inferred and unverified
+   * layout; see renderGameVersionWithBinaryPrefix).
+   */
+  gameVersionBinaryPrefix?: boolean
   options: OptionsIniSpec
+  /** If true, no Options.ini is written: a look-alike folder the game never started in. */
+  omitOptionsIni?: boolean
   optionsMtime?: string
   /** Number of subfolder levels allowed in Resource.cfg (default 5). */
   resourceCfgDepth?: number
