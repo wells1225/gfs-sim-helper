@@ -778,3 +778,25 @@ describe('last check: Your mods keeps focus after Try again', () => {
     await waitFor(() => expect(document.activeElement).toBe(sw))
   })
 })
+
+describe('last check: Your mods keeps the list that did load', () => {
+  it('still lists the mods set aside when only the History half of the load fails', async () => {
+    const api = fakeApi({
+      'groups:disabled': [
+        { groupId: 'cf:901234', label: 'Wicked Wardrobe', entryId: 'e-1', at: '2026-11-24T12:00:00.000Z' }
+      ],
+      'journal:list': () => {
+        throw new Error('boom')
+      }
+    })
+
+    render(
+      <Harness api={api} initialScan={null} initialRoute={{ screen: 'mods' }}>
+        <ModsScreen />
+      </Harness>
+    )
+
+    expect(await screen.findByText("Couldn't load this right now")).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Turn Wicked Wardrobe back on' })).toBeInTheDocument()
+  })
+})

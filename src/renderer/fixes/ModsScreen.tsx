@@ -77,24 +77,23 @@ export function ModsScreen() {
       return
     }
     try {
-      const [list, journal] = await Promise.all([api.invoke('groups:disabled'), api.invoke('journal:list')])
-      if (mountedRef.current) {
-        setDisabled(list)
+      // Each half is kept on its own: a failed load must never look like an empty list, or hide the half that loaded.
+      const [list, journal] = await Promise.allSettled([api.invoke('groups:disabled'), api.invoke('journal:list')])
+      if (!mountedRef.current) return
+      if (list.status === 'fulfilled') {
+        setDisabled(list.value)
+      }
+      if (journal.status === 'fulfilled') {
         setStuck(
-          journal.filter(
+          journal.value.filter(
             (e) =>
               e.action === 'disable-group' &&
               e.groupId !== null &&
               (e.status === 'needs-attention' || e.status === 'in-progress')
           )
         )
-        setLoadFailed(false)
       }
-    } catch {
-      // Keep what is on screen: a failed load must never look like an empty list.
-      if (mountedRef.current) {
-        setLoadFailed(true)
-      }
+      setLoadFailed(list.status === 'rejected' || journal.status === 'rejected')
     } finally {
       if (mountedRef.current) {
         setLoading(false)
