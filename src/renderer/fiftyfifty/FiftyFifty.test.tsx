@@ -216,6 +216,27 @@ describe('FiftyFiftyScreen', () => {
     expect(await screen.findByRole('heading', { name: 'The 50/50 test is stopped' })).toBeInTheDocument()
     expect(screen.getByText('All your mods are back in place.')).toBeInTheDocument()
   })
+
+  it('a refused stop closes the question and says why', async () => {
+    const { user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': round(),
+      'fifty:stop': { status: 'refused', refusal: { why: 'gate', refusal: { reason: 'game-running' } } }
+    })
+    await user.click(await screen.findByRole('button', { name: 'Stop the test' }))
+    await user.click(screen.getByRole('button', { name: 'Put everything back and stop' }))
+    expect(await screen.findByText(/The Sims 4 is still open/)).toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled()
+  })
+
+  it('with one group, the found screen does not talk about rounds', async () => {
+    setup(<FiftyFiftyScreen />, {
+      'fifty:get': round({ phase: 'found', culprit: 'dir:hair', parked: ['dir:hair'], inMods: [], history: [] })
+    })
+    expect(await screen.findByRole('heading', { name: 'We found the most likely cause' })).toBeInTheDocument()
+    expect(screen.queryByText(/It took/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/still set aside from the last round/)).not.toBeInTheDocument()
+  })
 })
 
 describe('ResumeBanner', () => {

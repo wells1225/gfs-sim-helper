@@ -336,6 +336,26 @@ describe('a full session', () => {
     await stop(deps)
     expect(fixes.asideIds()).toEqual(['dir:old'])
   })
+  it('leaves out a scanned group that is already set aside, so the test never puts it back', async () => {
+    const groups = makeGroups(5)
+    fixes.aside.set('dir:g2', { groupId: 'dir:g2', label: 'Group 002', entryId: 'e0', at: '2026-11-01T00:00:00.000Z' })
+    const deps = makeDeps()
+    const state = stateOf(await start(deps, scanWith(groups)))
+    expect(state.groups.map((g) => g.id)).not.toContain('dir:g2')
+    expect(state.suspects).toHaveLength(4)
+    await beginRound(deps)
+    expect(fixes.aside.has('dir:g2')).toBe(true)
+    await stop(deps)
+    expect(fixes.asideIds()).toEqual(['dir:g2'])
+  })
+
+  it('refuses when every scanned group is already set aside', async () => {
+    fixes.aside.set('dir:g0', { groupId: 'dir:g0', label: 'Group 000', entryId: 'e0', at: '2026-11-01T00:00:00.000Z' })
+    expect(await start(makeDeps(), scanWith(makeGroups(1)))).toEqual({
+      status: 'refused',
+      refusal: { why: 'out-of-date', detail: 'nothing-to-do' }
+    })
+  })
 })
 
 describe('restart and repeat', () => {
