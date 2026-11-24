@@ -35,7 +35,8 @@ const disk = vi.hoisted(() => ({
   foldersRead: [] as string[],
   unlinkFails: null as null | { file: string; hits: number },
   writeFileQuotesItsData: null as null | { hits: number },
-  whenTempOpens: null as null | (() => Promise<void>)
+  whenTempOpens: null as null | (() => Promise<void>),
+  whenCopyIsDated: null as null | (() => Promise<void>)
 }))
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -66,6 +67,15 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       }
       return await real.readdir(folder, options as undefined)
     }) as unknown as typeof real.readdir,
+    utimes: (async (file, atime, mtime) => {
+      await real.utimes(file, atime, mtime)
+      // The last step of a copy before it gets its name. Every file handle is closed by now.
+      if (disk.whenCopyIsDated) {
+        const meanwhile = disk.whenCopyIsDated
+        disk.whenCopyIsDated = null
+        await meanwhile()
+      }
+    }) as typeof real.utimes,
     stat: (async (target: string, options?: object) => {
       if (disk.statFails && String(target) === disk.statFails.file) {
         disk.statFails.hits += 1
@@ -193,6 +203,7 @@ afterEach(async () => {
   disk.unlinkFails = null
   disk.writeFileQuotesItsData = null
   disk.whenTempOpens = null
+  disk.whenCopyIsDated = null
   for (const root of worlds.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
@@ -1061,6 +1072,14 @@ describe('where the app data folder may be', () => {
     await expectEverythingRefused(w)
   })
 
+  it('under a OneDrive root spelled in other letter case, beyond A to Z: every request is refused', async () => {
+    const w = await makeWorld()
+    // Neither folder exists, so only the names can be compared. To forbid, they are compared widely.
+    await moveDataDir(w, join(w.root, 'pc', 'Users', 'Jos\u00e9', 'Cloud', 'AppData'))
+    w.paths.oneDriveRoots = [join(w.root, 'pc', 'Users', 'JOS\u00c9', 'CLOUD')]
+    await expectEverythingRefused(w)
+  })
+
   it('under a folder whose name starts with OneDrive: every request is refused', async () => {
     const w = await makeWorld()
     await moveDataDir(w, join(w.root, 'pc', 'Users', 'Player', 'onedrive - Personal', 'AppData'))
@@ -1275,6 +1294,114 @@ describe('links', () => {
       expect(result.status).not.toBe('done')
       expect(await snapshotTree(w.inFolder('saves'))).toEqual(savesBefore)
     }
+  })
+
+  it('TOCTOU: a folder swapped for a link that stays inside Mods is refused too, and nothing moves', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    const other = w.inFolder('Mods', 'Other')
+    for (const folder of [sub, other]) {
+      await mkdir(folder, { recursive: true })
+      await writeFile(join(folder, 'same_name.package'), `the one in ${basename(folder)}`)
+    }
+    const from = join(sub, 'same_name.package')
+    const realGame = w.deps.gameState
+    w.deps.gameState = async () => {
+      await rm(sub, { recursive: true })
+      await linkFolder(other, sub)
+      return await realGame()
+    }
+    const before = await snapshotTree(other)
+    expect(await w.run([{ op: 'move', from, to: w.inData('holding', 'same_name.package') }])).toEqual(
+      refusedWith({ reason: 'link-escape', path: from })
+    )
+    expect(await snapshotTree(other)).toEqual(before)
+    expect(await exists(w.inData('holding', 'same_name.package'))).toBe(false)
+    expect(w.asked).toEqual([`backup ${w.folder}`, 'game'])
+  })
+
+  it('TOCTOU: a Sims folder link pointed at another folder while the game is asked refuses the request', async () => {
+    const w = await makeWorld()
+    const places = ['First', 'Second'].map((name) => join(w.root, 'pc', 'OtherDrive', name))
+    for (const place of places) {
+      await mkdir(join(place, 'Mods'), { recursive: true })
+      await writeFile(join(place, 'Options.ini'), 'modsdisabled = 0\n')
+    }
+    await mkdir(join(w.root, 'pc', 'Alias'), { recursive: true })
+    const simsLink = join(w.root, 'pc', 'Alias', 'The Sims 4')
+    await linkFolder(places[0]!, simsLink)
+    const realGame = w.deps.gameState
+    w.deps.gameState = async () => {
+      await rm(simsLink, { recursive: true })
+      await linkFolder(places[1]!, simsLink)
+      return await realGame()
+    }
+    const result = await w.run([{ op: 'mkdir', path: join(simsLink, 'Mods', 'New') }], { folderPath: simsLink })
+    expect(result).toEqual(refusedWith({ reason: 'link-escape', path: simsLink }))
+    for (const place of places) expect(await readdir(join(place, 'Mods'))).toEqual([])
+  })
+
+  it('TOCTOU: a folder swapped while an earlier op runs stops the request before the op that would go through it', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    await mkdir(sub, { recursive: true })
+    const decoy = join(sub, 'Slot_00000002.save')
+    await writeFile(decoy, 'decoy mod')
+    const savesBefore = await snapshotTree(w.inFolder('saves'))
+    let swapped = false
+    disk.whenTempOpens = async () => {
+      await rm(sub, { recursive: true })
+      await linkFolder(w.inFolder('saves'), sub)
+      swapped = true
+    }
+    const note = w.inData('journal', 'e1.json')
+    const result = await w.run([
+      { op: 'write', path: note, data: '{}', mode: 'create' },
+      { op: 'move', from: decoy, to: w.inData('holding', 'taken.save') },
+      { op: 'mkdir', path: w.inData('never') }
+    ])
+    expect(swapped, 'the folder was really swapped during the first op').toBe(true)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 1 })
+    expect(result.status === 'failed' ? result.detail : '').toContain('saves-or-tray')
+    expect(await readFile(note, 'utf8')).toBe('{}')
+    expect(await snapshotTree(w.inFolder('saves'))).toEqual(savesBefore)
+    expect(await exists(w.inData('holding', 'taken.save'))).toBe(false)
+    expect(await exists(w.inData('never'))).toBe(false)
+  })
+
+  it('TOCTOU: a move across drives does not remove a save when the source folder is swapped during the copy', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    await mkdir(sub, { recursive: true })
+    const decoy = join(sub, 'Slot_00000002.save')
+    await writeFile(decoy, 'decoy mod')
+    const savesBefore = await snapshotTree(w.inFolder('saves'))
+    disk.crossDrive = { from: decoy, hits: 0 }
+    let swapped = false
+    disk.whenCopyIsDated = async () => {
+      await rm(sub, { recursive: true })
+      await linkFolder(w.inFolder('saves'), sub)
+      swapped = true
+    }
+    const result = await w.run([{ op: 'move', from: decoy, to: w.inData('holding', 'taken.save') }])
+    expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
+    expect(swapped, 'the folder was really swapped during the copy').toBe(true)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await snapshotTree(w.inFolder('saves'))).toEqual(savesBefore)
+  })
+
+  it('an earlier op may make the folder that later ops go into', async () => {
+    const w = await makeWorld()
+    const to = w.inData('holding', 'e1', 'cozy_rug.package')
+    expect(
+      await w.run([
+        { op: 'mkdir', path: w.inData('holding', 'e1') },
+        { op: 'move', from: w.inFolder(...MOD), to },
+        { op: 'write', path: w.inData('holding', 'e1', 'note.json'), data: '{}', mode: 'create' },
+        { op: 'remove', path: w.inData('holding', 'e1', 'note.json') }
+      ])
+    ).toEqual({ status: 'done' })
+    expect(await readdir(dirname(to))).toEqual(['cozy_rug.package'])
   })
 })
 

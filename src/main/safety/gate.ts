@@ -248,16 +248,51 @@ function makeResolver(): (target: string) => Promise<string> {
   return resolveReal
 }
 
-interface Approved {
+/** A path the gate checked, and where it really led when it was checked. */
+interface Lead {
+  path: string
+  real: string
+}
+
+/** The gate's own copy of what was asked, so nothing a caller does later can change a request that was checked. */
+interface Asked {
   folderPath: string | null
   secret: boolean
   ops: WriteOp[]
+  dataDir: string
+  desktopDir: string
+  oneDriveRoots: string[]
+}
+
+/** The folders a request stands on, as one check found them. */
+interface Ground {
   roots: GateRoots
+  realRoots: GateRoots
+  /** Where saves and Tray really are. */
+  realForbidden: string[]
+  leads: Lead[]
+}
+
+interface Approved {
+  asked: Asked
+  ground: Ground
+  /** For each op, its paths in order. */
+  opLeads: Lead[][]
   guarded: boolean
 }
 
+/** What one check has learned from the disk. Never kept for a later check. */
+interface Glance {
+  real(target: string): Promise<string>
+  forbiddenIds: Promise<Set<string>> | null
+}
+
+const newGlance = (): Glance => ({ real: makeResolver(), forbiddenIds: null })
+
 const shown = (value: unknown): string => (typeof value === 'string' ? value : '')
 const outside = (path: unknown): GateRefusal => ({ reason: 'outside-allowed-area', path: shown(path) })
+const savesOrTray = (path: string): GateRefusal => ({ reason: 'saves-or-tray', path })
+const linkEscape = (path: string): GateRefusal => ({ reason: 'link-escape', path })
 // The gate could not find out. It never guesses, and it never blames the path for it.
 const checkFailed = (path: unknown): GateRefusal => ({ reason: 'check-failed', path: shown(path) })
 
@@ -280,40 +315,52 @@ function readOp(op: unknown): WriteOp | null {
   return null
 }
 
-/** Checks the whole request. Nothing here changes the disk, and anything it throws refuses. */
-async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Approved | GateRefusal> {
+function readRequest(deps: GateDeps, request: WriteRequest): Asked | GateRefusal {
   if (typeof request !== 'object' || request === null) return outside('')
   const { folderPath } = request
   if (!Array.isArray(request.ops) || (folderPath !== null && typeof folderPath !== 'string')) return outside('')
   const ops: WriteOp[] = []
   for (const given of request.ops) {
-    // The gate works on its own copy, so nothing a caller does later can change an op that was checked.
     const op = readOp(given)
     if (op === null) return outside((given as { path?: unknown } | null)?.path)
     ops.push(op)
   }
+  const { dataDir, desktopDir, oneDriveRoots } = deps.paths
+  return { folderPath, secret: request.reason === 'key', ops, dataDir, desktopDir, oneDriveRoots: [...oneDriveRoots] }
+}
 
-  const { paths } = deps
-  const { dataDir } = paths
-  const resolveReal = makeResolver()
+/** Each path of an op, with what the op does there. */
+function pathUses(op: WriteOp): [string, WriteUse | 'read'][] {
+  if (op.op === 'copy') return [[op.from, 'read'], [op.to, 'copy-to']] // prettier-ignore
+  if (op.op === 'move') return [[op.from, 'move'], [op.to, 'move']] // prettier-ignore
+  return [[op.path, op.op === 'write' ? `write-${op.mode}` : op.op]]
+}
+
+/** Checks the folders a request stands on. Nothing here changes the disk. */
+async function checkGround(asked: Asked, glance: Glance): Promise<Ground | GateRefusal> {
+  const { folderPath, dataDir } = asked
+  const leads: Lead[] = []
 
   // The app data folder holds the backups. Inside a Sims folder or OneDrive it refuses every request.
   // So does a whole drive: every path on it would count as the helper's own.
   if (!isWellFormed(nativePath, dataDir) || isDriveRoot(dataDir)) return outside(dataDir)
   let realData: string
   try {
-    realData = await resolveReal(dataDir)
+    realData = await glance.real(dataDir)
   } catch (err) {
     return err instanceof LinkToNowhere ? outside(dataDir) : checkFailed(dataDir)
   }
+  leads.push({ path: dataDir, real: realData })
   const cloudRoots: string[] = []
-  for (const given of paths.oneDriveRoots) {
+  for (const given of asked.oneDriveRoots) {
     // An environment variable may end in a separator. It is the same folder, and its links are followed too.
     const root = withoutTrailingSeparators(given)
     cloudRoots.push(root)
     if (!isWellFormed(nativePath, root)) continue
     try {
-      cloudRoots.push(await resolveReal(root))
+      const realRoot = await glance.real(root)
+      cloudRoots.push(realRoot)
+      leads.push({ path: root, real: realRoot })
     } catch {
       return checkFailed(root)
     }
@@ -338,10 +385,11 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
     try {
       if (!(await statOrNull(folderPath))?.isDirectory()) return notSims
       if (!(await statOrNull(nativePath.join(folderPath, 'Options.ini')))?.isFile()) return notSims
-      realFolder = await resolveReal(folderPath)
+      realFolder = await glance.real(folderPath)
     } catch {
       return checkFailed(folderPath)
     }
+    leads.push({ path: folderPath, real: realFolder })
     const realNames = (looseParts(nativePath, realFolder) ?? []).slice(1)
     if (realNames.some((name) => FORBIDDEN_NAMES.has(looseFold(name)))) return notSims
     // saves or Tray may itself be a link to another drive. Where it leads is forbidden too, and when that
@@ -349,7 +397,9 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
     for (const name of ['saves', 'Tray']) {
       const forbidden = nativePath.join(folderPath, name)
       try {
-        realForbidden.push(await resolveReal(forbidden))
+        const real = await glance.real(forbidden)
+        realForbidden.push(real)
+        leads.push({ path: forbidden, real })
       } catch {
         return checkFailed(forbidden)
       }
@@ -362,85 +412,143 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
   // A Desktop the gate cannot make sense of means no report zone. It does not hold up anything else.
   let desktopDir: string | null = null
   let realDesktop: string | null = null
-  if (isWellFormed(nativePath, paths.desktopDir)) {
-    desktopDir = paths.desktopDir
+  if (isWellFormed(nativePath, asked.desktopDir)) {
+    desktopDir = asked.desktopDir
     try {
-      realDesktop = await resolveReal(desktopDir)
+      realDesktop = await glance.real(desktopDir)
+      leads.push({ path: desktopDir, real: realDesktop })
     } catch {
       // Only a report is refused, as a check that failed.
     }
   }
-  const roots: GateRoots = { folderPath, dataDir, desktopDir }
-  const realRoots: GateRoots = { folderPath: realFolder, dataDir: realData, desktopDir: realDesktop }
+  return {
+    roots: { folderPath, dataDir, desktopDir },
+    realRoots: { folderPath: realFolder, dataDir: realData, desktopDir: realDesktop },
+    realForbidden,
+    leads
+  }
+}
 
-  /** Sorts where the path really leads. Null when it leads into saves or Tray. */
-  async function sortReal(target: string): Promise<SortedPath | null> {
-    const real = await resolveReal(target)
-    if (realForbidden.some((root) => isInside(nativePath, real, root))) return null
-    const sorted = sortPath(nativePath, realRoots, real)
-    return sorted.zone === 'forbidden' ? null : sorted
-  }
+/** Sorts where a path really leads. Null when it leads into saves or Tray. */
+function sortReal(ground: Ground, real: string): SortedPath | null {
+  if (ground.realForbidden.some((root) => isInside(nativePath, real, root))) return null
+  const sorted = sortPath(nativePath, ground.realRoots, real)
+  return sorted.zone === 'forbidden' ? null : sorted
+}
 
-  // A file in Mods or app data may be one file with a save, under a second name. A file with one name costs
-  // nothing here: saves and Tray are read only when a path in the request has a second name, and then once.
-  let forbiddenIds: Promise<Set<string>> | null = null
-  async function isAlsoInForbidden(target: string): Promise<boolean> {
-    let found: BigIntStats
-    try {
-      found = await lstat(target, { bigint: true })
-    } catch (err) {
-      if (isMissing(err)) return false
-      throw err
-    }
-    if (!found.isFile() || found.nlink <= 1n) return false
-    forbiddenIds ??= manyNamedFilesUnder(realForbidden)
-    return (await forbiddenIds).has(fileId(found))
+/**
+ * A file in Mods or app data may be one file with a save, under a second name. A file with one name costs
+ * nothing here: saves and Tray are read only when a path has a second name, and then once per check.
+ */
+async function isAlsoInForbidden(ground: Ground, glance: Glance, target: string): Promise<boolean> {
+  let found: BigIntStats
+  try {
+    found = await lstat(target, { bigint: true })
+  } catch (err) {
+    if (isMissing(err)) return false
+    throw err
   }
+  if (!found.isFile() || found.nlink <= 1n) return false
+  glance.forbiddenIds ??= manyNamedFilesUnder(ground.realForbidden)
+  return (await glance.forbiddenIds).has(fileId(found))
+}
 
-  let guarded = false
-  async function refusalForWrite(use: WriteUse, target: string): Promise<GateRefusal | null> {
-    const named = sortPath(nativePath, roots, target)
-    if (named.zone === 'forbidden') return { reason: 'saves-or-tray', path: target }
-    if (!named.wellFormed || !mayWrite(use, named)) return outside(target)
-    if (named.zone === 'report' && realDesktop === null) return checkFailed(target)
-    let real: SortedPath | null
-    try {
-      real = await sortReal(target)
-    } catch (err) {
-      return err instanceof LinkToNowhere ? { reason: 'link-escape', path: target } : checkFailed(target)
-    }
-    if (real === null) return { reason: 'saves-or-tray', path: target }
-    if (real.zone !== named.zone || !mayWrite(use, real)) return { reason: 'link-escape', path: target }
-    try {
-      if (await isAlsoInForbidden(target)) return { reason: 'saves-or-tray', path: target }
-    } catch {
-      return checkFailed(target)
-    }
-    if (GUARDED_ZONES.includes(named.zone)) guarded = true
-    return null
+async function checkWrite(ground: Ground, glance: Glance, use: WriteUse, target: string): Promise<Lead | GateRefusal> {
+  const named = sortPath(nativePath, ground.roots, target)
+  if (named.zone === 'forbidden') return savesOrTray(target)
+  if (!named.wellFormed || !mayWrite(use, named)) return outside(target)
+  if (named.zone === 'report' && ground.realRoots.desktopDir === null) return checkFailed(target)
+  try {
+    const real = await glance.real(target)
+    const sorted = sortReal(ground, real)
+    if (sorted === null) return savesOrTray(target)
+    if (sorted.zone !== named.zone || !mayWrite(use, sorted)) return linkEscape(target)
+    if (await isAlsoInForbidden(ground, glance, target)) return savesOrTray(target)
+    return { path: target, real }
+  } catch (err) {
+    return err instanceof LinkToNowhere ? linkEscape(target) : checkFailed(target)
   }
-  async function refusalForRead(target: string): Promise<GateRefusal | null> {
-    const named = sortPath(nativePath, roots, target)
-    if (!named.wellFormed || !READ_ZONES.includes(named.zone)) return outside(target)
-    try {
-      const real = await sortReal(target)
-      if (real !== null && !READ_ZONES.includes(real.zone)) return { reason: 'link-escape', path: target }
-    } catch (err) {
-      return err instanceof LinkToNowhere ? { reason: 'link-escape', path: target } : checkFailed(target)
-    }
-    return null
-  }
+}
 
-  for (const op of ops) {
-    let refusal: GateRefusal | null
-    if (op.op === 'mkdir') refusal = await refusalForWrite('mkdir', op.path)
-    else if (op.op === 'remove') refusal = await refusalForWrite('remove', op.path)
-    else if (op.op === 'write') refusal = await refusalForWrite(`write-${op.mode}`, op.path)
-    else if (op.op === 'copy') refusal = (await refusalForRead(op.from)) ?? (await refusalForWrite('copy-to', op.to))
-    else refusal = (await refusalForWrite('move', op.from)) ?? (await refusalForWrite('move', op.to))
-    if (refusal !== null) return refusal
+async function checkRead(ground: Ground, glance: Glance, target: string): Promise<Lead | GateRefusal> {
+  const named = sortPath(nativePath, ground.roots, target)
+  if (!named.wellFormed || !READ_ZONES.includes(named.zone)) return outside(target)
+  try {
+    const real = await glance.real(target)
+    const sorted = sortReal(ground, real)
+    if (sorted !== null && !READ_ZONES.includes(sorted.zone)) return linkEscape(target)
+    return { path: target, real }
+  } catch (err) {
+    return err instanceof LinkToNowhere ? linkEscape(target) : checkFailed(target)
   }
-  return { folderPath, secret: request.reason === 'key', ops, roots, guarded }
+}
+
+/** Checks every path of one op, and says where each really leads. */
+async function checkOp(ground: Ground, glance: Glance, op: WriteOp): Promise<Lead[] | GateRefusal> {
+  const leads: Lead[] = []
+  for (const [path, use] of pathUses(op)) {
+    const answer = use === 'read' ? await checkRead(ground, glance, path) : await checkWrite(ground, glance, use, path)
+    if ('reason' in answer) return answer
+    leads.push(answer)
+  }
+  return leads
+}
+
+/** Checks the whole request. Nothing here changes the disk, and anything it throws refuses. */
+async function checkRequest(asked: Asked): Promise<Approved | GateRefusal> {
+  const glance = newGlance()
+  const ground = await checkGround(asked, glance)
+  if ('reason' in ground) return ground
+  const opLeads: Lead[][] = []
+  for (const op of asked.ops) {
+    const leads = await checkOp(ground, glance, op)
+    if (!Array.isArray(leads)) return leads
+    opLeads.push(leads)
+  }
+  const zoneOf = (path: string): Zone => sortPath(nativePath, ground.roots, path).zone
+  const guarded = asked.ops.some((op) =>
+    pathUses(op).some(([path, use]) => use !== 'read' && GUARDED_ZONES.includes(zoneOf(path)))
+  )
+  return { asked, ground, opLeads, guarded }
+}
+
+/**
+ * The first path that no longer leads where it led, or null. Letter case is left out of it: once an earlier
+ * op has made a folder, Windows answers with the folder's own spelling.
+ */
+function firstMoved(before: Lead[], after: Lead[]): string | null {
+  for (const [index, was] of before.entries()) {
+    const now = after[index]
+    if (now === undefined || now.path !== was.path || looseFold(now.real) !== looseFold(was.real)) return was.path
+  }
+  return after[before.length]?.path ?? null
+}
+
+/** The whole check once more. Every path must pass again, and lead exactly where it led the first time. */
+async function checkAgain(approved: Approved): Promise<Approved | GateRefusal> {
+  let again: Approved | GateRefusal
+  try {
+    again = await checkRequest(approved.asked)
+  } catch {
+    return checkFailed('')
+  }
+  if ('reason' in again) return again
+  let moved = firstMoved(approved.ground.leads, again.ground.leads)
+  for (const [index, leads] of approved.opLeads.entries()) moved ??= firstMoved(leads, again.opLeads[index] ?? [])
+  return moved === null ? again : linkEscape(moved)
+}
+
+/** One op's paths followed again, with nothing remembered. Null when they pass and lead where they led. */
+async function refusalNow(approved: Approved, index: number): Promise<GateRefusal | null> {
+  const op = approved.asked.ops[index]!
+  try {
+    const now = await checkOp(approved.ground, newGlance(), op)
+    if (!Array.isArray(now)) return now
+    const moved = firstMoved(approved.opLeads[index]!, now)
+    return moved === null ? null : linkEscape(moved)
+  } catch {
+    return checkFailed('path' in op ? op.path : op.from)
+  }
 }
 
 async function askGame(deps: GateDeps): Promise<GameRunState> {
@@ -462,28 +570,42 @@ async function askBackup(deps: GateDeps, folderPath: string): Promise<'verified'
 }
 
 export async function runGate(deps: GateDeps, request: WriteRequest): Promise<GateResult> {
+  const refused = (refusal: GateRefusal): GateResult => ({ status: 'refused', refusal })
   let approved: Approved | GateRefusal
   try {
-    approved = await checkRequest(deps, request)
+    const asked = readRequest(deps, request)
+    approved = 'reason' in asked ? asked : await checkRequest(asked)
   } catch {
     approved = checkFailed('')
   }
-  if ('reason' in approved) return { status: 'refused', refusal: approved }
+  if ('reason' in approved) return refused(approved)
 
   if (approved.guarded) {
-    const backup = approved.folderPath === null ? 'unknown' : await askBackup(deps, approved.folderPath)
-    // The game is asked last, so nothing waits between its answer and the first change.
+    const { folderPath } = approved.asked
+    const backup = folderPath === null ? 'unknown' : await askBackup(deps, folderPath)
+    // The game is asked last, so only the second look at the paths stands between its answer and the first change.
     const game = await askGame(deps)
-    if (game === 'running') return { status: 'refused', refusal: { reason: 'game-running' } }
-    if (game !== 'not-running') return { status: 'refused', refusal: { reason: 'game-state-unknown' } }
-    if (backup !== 'verified') return { status: 'refused', refusal: { reason: 'no-verified-backup', backup } }
+    if (game === 'running') return refused({ reason: 'game-running' })
+    if (game !== 'not-running') return refused({ reason: 'game-state-unknown' })
+    if (backup !== 'verified') return refused({ reason: 'no-verified-backup', backup })
+    // Those answers took time, and a folder can be swapped for a link in that time.
+    approved = await checkAgain(approved)
+    if ('reason' in approved) return refused(approved)
   }
 
-  for (const [index, op] of approved.ops.entries()) {
+  const checked = approved
+  for (const [index, op] of checked.asked.ops.entries()) {
+    const what = 'path' in op ? `${op.op} ${op.path}` : `${op.op} ${op.from} -> ${op.to}`
+    // Node cannot hold a folder open and work inside it. So each op's paths are followed once more right
+    // before it, and an op whose path has changed does not run.
+    const followAgain = async (): Promise<void> => {
+      const refusal = await refusalNow(checked, index)
+      if (refusal !== null) throw new OpFailure(`the path no longer passes its check (${refusal.reason})`)
+    }
     try {
-      await carryOut(op, approved)
+      await followAgain()
+      await carryOut(op, checked, followAgain)
     } catch (err) {
-      const what = 'path' in op ? `${op.op} ${op.path}` : `${op.op} ${op.from} -> ${op.to}`
       return { status: 'failed', opsDone: index, detail: `${what}: ${explain(err)}` }
     }
   }
@@ -501,16 +623,17 @@ function explain(err: unknown): string {
   return code === undefined ? 'an unexpected error' : `the disk said ${code}`
 }
 
-async function carryOut(op: WriteOp, approved: Approved): Promise<void> {
+async function carryOut(op: WriteOp, approved: Approved, followAgain: () => Promise<void>): Promise<void> {
+  const { roots } = approved.ground
   if (op.op === 'mkdir') {
     await mkdir(op.path, { recursive: true })
   } else if (op.op === 'remove') {
-    await removeEntry(op.path, sortPath(nativePath, approved.roots, op.path).zone)
+    await removeEntry(op.path, sortPath(nativePath, roots, op.path).zone)
   } else if (op.op === 'write') {
     if (op.mode === 'create') await mustBeMissing(op.path)
-    await makeParent(op.path, approved.roots)
+    await makeParent(op.path, roots)
     await viaTemp(op.path, async (temp) => {
-      const handle = await open(temp, 'wx', approved.secret ? 0o600 : 0o666)
+      const handle = await open(temp, 'wx', approved.asked.secret ? 0o600 : 0o666)
       try {
         await handle.writeFile(op.data)
         await handle.sync()
@@ -526,7 +649,7 @@ async function carryOut(op: WriteOp, approved: Approved): Promise<void> {
     if (source === null) throw new OpFailure('the source is missing')
     if (!source.isFile()) throw new OpFailure('the source is not a plain file')
     await mustBeMissing(op.to)
-    await makeParent(op.to, approved.roots)
+    await makeParent(op.to, roots)
     if (op.op === 'copy') {
       await placeCopy(op.from, op.to, source, false)
       return
@@ -537,8 +660,10 @@ async function carryOut(op: WriteOp, approved: Approved): Promise<void> {
     } catch (err) {
       if (errorCode(err) !== 'EXDEV') throw err
     }
-    // Another drive: copy, check the copy, and only then remove the source.
+    // Another drive: copy, check the copy, and only then remove the source. The copy took time, so the
+    // paths are followed again first: a source whose folder was swapped meanwhile is not removed.
     await placeCopy(op.from, op.to, source, true)
+    await followAgain()
     try {
       await unlink(op.from)
     } catch (err) {
