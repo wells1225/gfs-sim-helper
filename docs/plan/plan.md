@@ -27,7 +27,7 @@ tools and the stack. Sol covered crash causes and rules. Grok covered posts on X
 PR 3 defines these types in `src/shared/model.ts`. Every later PR builds on them.
 
 ```ts
-type SimsFolder = { path: string; inOneDrive: boolean; hasOptionsIni: boolean; newestFileAt: Date }
+type SimsFolder = { path: string; inOneDrive: boolean; newestFileAt: Date }   // only folders holding Options.ini; date from game-written files, not Mods
 type GameInstall = { path: string; version: string; packs: PackCode[] }   // PackCode: "EP01", "GP02", "SP18"
 type ModFile = { relPath: string; kind: "package" | "script" | "archive" | "other"; bytes: number; sha256: string;
 	depth: number; dbpf?: { major: number; minor: number; keys: ResourceKey[] } | { error: string } }
