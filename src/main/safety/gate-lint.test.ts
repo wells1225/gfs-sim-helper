@@ -63,7 +63,7 @@ const FORBIDDEN_TEXT: [RegExp, string][] = [
   [/\brequire\b/, 'uses require'],
   [/\b(binding|_linkedBinding|dlopen|getBuiltinModule|createRequire|mainModule)\b/, 'reaches a built-in module without an import'],
   [/\b(writeReport|writeHeapSnapshot)\b/, 'writes a diagnostic file'],
-  [/\beval\b|\bFunction\s*\(/, 'runs made-up code'],
+  [/\beval\b|\bFunction\b/, 'runs made-up code'],
   [/\bimport\s*\(\s*(?!(?:'[^'`"\\]*'|"[^'`"\\]*")\s*\))/, 'loads a module whose name is not one plain string']
 ]
 // A module name that can write or start a program may not appear as a string anywhere but in a read import.
@@ -74,6 +74,84 @@ const DANGEROUS_NAME =
 const PLAIN_FILE = /\.(css|html|json|svg|png|ico|woff2|md|txt|snap)$/
 const CODE_FILE = /\.(ts|tsx)$/
 const isTestFile = (rel: string): boolean => /\.test\.tsx?$/.test(rel) || rel === 'renderer/test-setup.ts'
+
+/** Replaces comments with spaces (preserving newlines and character offsets), while respecting strings and templates. */
+function stripComments(source: string): string {
+  const out: string[] = []
+  let quote: "'" | '"' | null = null
+  const templateDepths: number[] = []
+  let braceDepth = 0
+  let i = 0
+  while (i < source.length) {
+    const ch = source[i]!
+    const next = source[i + 1]
+    const inTemplateText = templateDepths.length > 0 && templateDepths[templateDepths.length - 1] === braceDepth
+    if (quote !== null) {
+      out.push(ch)
+      if (ch === '\\' && next !== undefined) {
+        out.push(next)
+        i += 2
+        continue
+      }
+      if (ch === quote || ch === '\n') quote = null
+      i += 1
+      continue
+    }
+    if (inTemplateText) {
+      out.push(ch)
+      if (ch === '\\' && next !== undefined) {
+        out.push(next)
+        i += 2
+        continue
+      }
+      if (ch === '`') {
+        templateDepths.pop()
+      } else if (ch === '$' && next === '{') {
+        out.push(next)
+        braceDepth += 1
+        i += 2
+        continue
+      }
+      i += 1
+      continue
+    }
+    if (ch === '/' && next === '/') {
+      out.push(' ', ' ')
+      i += 2
+      while (i < source.length && source[i] !== '\n') {
+        out.push(' ')
+        i += 1
+      }
+      continue
+    }
+    if (ch === '/' && next === '*') {
+      out.push(' ', ' ')
+      i += 2
+      while (i < source.length) {
+        if (source[i] === '*' && source[i + 1] === '/') {
+          out.push(' ', ' ')
+          i += 2
+          break
+        }
+        out.push(source[i] === '\n' ? '\n' : ' ')
+        i += 1
+      }
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch
+    } else if (ch === '`') {
+      templateDepths.push(braceDepth)
+    } else if (ch === '{') {
+      braceDepth += 1
+    } else if (ch === '}' && braceDepth > 0) {
+      braceDepth -= 1
+    }
+    out.push(ch)
+    i += 1
+  }
+  return out.join('')
+}
 
 export interface ModuleUse {
   specifier: string
@@ -117,6 +195,8 @@ function resolveInSrc(relFile: string, specifier: string): string | null {
   return target.startsWith('..') || posix.isAbsolute(target) ? null : target
 }
 
+const NAMED_FS_ITEM = /^(?:type\s+)?([A-Za-z_$][\w$]*)(?:\s+as\s+[A-Za-z_$][\w$]*)?$/
+
 /** Returns why a file under src/ may not load a module this way, or undefined when it may. */
 export function moduleUseProblem(relFile: string, use: ModuleUse, files: ReadonlySet<string>): string | undefined {
   const file = relFile.replaceAll('\\', '/')
@@ -140,11 +220,12 @@ export function moduleUseProblem(relFile: string, use: ModuleUse, files: Readonl
     for (const part of named[1]!.split(',')) {
       const trimmed = part.trim()
       if (trimmed === '') continue
-      const segments = trimmed.split(/\s+as\s+/)
-      const name = segments[0]!.replace(/^type\s+/, '')
+      const parsed = trimmed.match(NAMED_FS_ITEM)
+      if (!parsed) return `${file} has an unreadable fs import specifier: ${trimmed}`
+      const name = parsed[1]!
       if (READ_ONLY_FS_NAMES.has(name)) continue
       if (file === 'main/fs-read.ts' && FS_READ_EXTRA_NAMES.has(name)) {
-        if (segments.length > 1) return `${file} must not rename ${name}`
+        if (/\bas\b/.test(trimmed)) return `${file} must not rename ${name}`
         continue
       }
       return `${file} imports the fs function ${name}, which is not on the read-only list`
@@ -232,8 +313,9 @@ export function fsReadProblems(source: string): string[] {
 /** Every reason a shipped file breaks the read and write rule. `files` is every file under src/. */
 export function sourceProblems(relFile: string, source: string, files: ReadonlySet<string>): string[] {
   const file = relFile.replaceAll('\\', '/')
+  const clean = stripComments(source)
   const problems: string[] = []
-  const uses = findModuleUses(source)
+  const uses = findModuleUses(clean)
   for (const use of uses) {
     const problem = moduleUseProblem(file, use, files)
     if (problem !== undefined) problems.push(problem)
@@ -245,17 +327,20 @@ export function sourceProblems(relFile: string, source: string, files: ReadonlyS
   for (const match of source.matchAll(DANGEROUS_NAME)) {
     if (!importedAt.has(match.index)) problems.push(`${file} names the module ${match[0]} outside an import`)
   }
-  if (file === 'main/fs-read.ts') problems.push(...fsReadProblems(source))
+  if (file === 'main/fs-read.ts') problems.push(...fsReadProblems(clean))
   return problems
 }
 
 /** gate.ts may export runGate, the pure path check and types. Anything else could hand a write to another file. */
 export function gateExportProblems(source: string): string[] {
+  const clean = stripComments(source)
   const problems: string[] = []
   const allowed = /^export (async function runGate\b|function sortPath\b|(interface|type) \w+)/
-  for (const match of source.matchAll(/\bexport\b[^\n]*/g)) {
-    const atLineStart = match.index === 0 || source[match.index - 1] === '\n'
-    if (!atLineStart || !allowed.test(match[0])) problems.push(`gate.ts may not export: ${match[0].trim()}`)
+  for (const match of clean.matchAll(/\bexport\b/g)) {
+    const lineEnd = clean.indexOf('\n', match.index)
+    const rest = clean.slice(match.index, lineEnd === -1 ? clean.length : lineEnd)
+    const atLineStart = match.index === 0 || clean[match.index - 1] === '\n'
+    if (!atLineStart || !allowed.test(rest)) problems.push(`gate.ts may not export: ${rest.trim()}`)
   }
   return problems
 }
@@ -360,7 +445,9 @@ describe('read and write gate lint', () => {
       'export const save = writeFile',
       'export async function writeAnything(file: string): Promise<void> {}',
       'export default runGate',
-      'const a = 1; export { rename }'
+      'const a = 1; export { rename }',
+      "export type Zone = string; export { rm } from 'node:fs/promises'",
+      'export function sortPath() {}; export const leak = rename'
     ]) {
       expect(gateExportProblems(`export async function runGate() {}\n${line}\n`), line).not.toEqual([])
     }
@@ -419,6 +506,8 @@ describe('read and write gate lint', () => {
       ['main/inventory/index.ts', "import fs, { readFile } from 'node:fs'"],
       ['main/inventory/index.ts', "import 'node:fs'"],
       ['main/inventory/index.ts', "import /* ' */ { writeFile } /* ' */ from 'node:fs/promises'"],
+      ['main/inventory/index.ts', "import { writeFile /*\nimport { readFile as */ } from 'node:fs/promises'"],
+      ['main/fs-read.ts', "import { open } from 'node:fs/promises'\nconst h = await open(file, /* 'r' */ 'w')"],
       // open and createReadStream belong to fs-read.ts alone, and only with read-only flags
       ['main/inventory/index.ts', "import { open } from 'node:fs/promises'"],
       ['main/inventory/index.ts', "import { createReadStream } from 'node:fs'"],
@@ -461,6 +550,7 @@ describe('read and write gate lint', () => {
       ['main/inventory/index.ts', 'process.report.writeReport(file)'],
       ['main/inventory/index.ts', "eval('1')"],
       ['main/inventory/index.ts', "const run = new Function('return 1')"],
+      ['main/inventory/index.ts', "const run = globalThis['Function']('return 1')"],
       // built-in modules that can write, load code or start a program
       ['main/inventory/index.ts', "import { createRequire } from 'node:module'"],
       ['main/inventory/index.ts', "import { Worker } from 'node:worker_threads'"],
