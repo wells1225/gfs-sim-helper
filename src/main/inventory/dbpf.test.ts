@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { writeDbpf } from '../../../scripts/fixtures/dbpf.ts'
 import { loadSpec } from '../../../scripts/fixtures/make-fixture.ts'
+import { readDbpfSummary } from './dbpf.ts'
 import { readDbpfIndex } from './index.ts'
 
 const THIS_DIR = dirname(fileURLToPath(import.meta.url))
@@ -208,6 +209,33 @@ describe('readDbpfIndex', () => {
           { type: '0x03B33DDF', group: '0x00000001', instance: '0xAAAA000000000002' }
         ]
       })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects headers that lie about the index place or count, in both the full read and the scan summary', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'sims-dbpf-lies-'))
+    try {
+      const lies = {
+        // offset + size wraps past 2^64 if added as a 64-bit integer
+        'offset-near-2-64': makeHeader({ entryCount: 1, indexSize: 36, longOffset: 0xffffffffffffff00n }),
+        // a short-form offset that points past the end
+        'short-offset-past-end': makeHeader({ entryCount: 1, indexSize: 36, shortOffset: 4096 }),
+        // four billion entries claimed, with a 36-byte index that fits in the file
+        'huge-count': Buffer.concat([
+          makeHeader({ entryCount: 0xffffffff, indexSize: 36, longOffset: 96n }),
+          Buffer.alloc(36)
+        ]),
+        // index offset 0 in both forms
+        'no-offset': Buffer.concat([makeHeader({ entryCount: 1, indexSize: 36 }), Buffer.alloc(36)])
+      }
+      for (const [name, bytes] of Object.entries(lies)) {
+        const file = join(dir, `${name}.package`)
+        await writeFile(file, bytes)
+        expect(await readDbpfIndex(file), name).toMatchObject({ status: 'broken', problem: 'bad-index' })
+        expect(await readDbpfSummary(file), name).toMatchObject({ status: 'broken', problem: 'bad-index' })
+      }
     } finally {
       await rm(dir, { recursive: true, force: true })
     }
