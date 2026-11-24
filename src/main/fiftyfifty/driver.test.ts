@@ -486,6 +486,21 @@ describe('restart and repeat', () => {
     expect(gate.stateWrites()).toBe(writes)
     expect(fixes.moves()).toBe(moves)
   })
+
+  it('an answer does not count when the files are not arranged the way the round says', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    await beginRound(deps)
+    // A stop that put every mod back but was cut off before the state file was removed leaves this behind.
+    fixes.aside.clear()
+    const again = stateOf(await giveAnswer(deps, 'worked'))
+    expect(again).toMatchObject({ round: 0, phase: 'ready-to-test', history: [] })
+    expect(await loadState(deps)).toEqual(again)
+    expect(fixes.moves()).toBe(1)
+    const ready = stateOf(await beginRound(deps))
+    expect(ready).toMatchObject({ round: 0, phase: 'awaiting-answer' })
+    expect(fixes.asideIds()).toEqual([...ready.parked].sort())
+  })
 })
 
 describe('CurseForge', () => {

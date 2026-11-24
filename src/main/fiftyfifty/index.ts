@@ -35,16 +35,27 @@ async function curseForgeOpen(deps: FiftyDeps): Promise<boolean> {
   }
 }
 
+/** Which of this session's groups fixes reports as set aside right now. */
+async function sessionAside(deps: FiftyDeps, state: FiftyFifty): Promise<Set<string>> {
+  const ours = new Set(state.groups.map((g) => g.id))
+  const off = await deps.fixes.disabledGroups(state.folderPath)
+  return new Set(off.map((d) => d.groupId).filter((id) => ours.has(id)))
+}
+
+/** A group with no files is never moved, so it cannot tell us anything. */
+async function arrangedAsSaved(deps: FiftyDeps, state: FiftyFifty): Promise<boolean> {
+  const aside = await sessionAside(deps, state)
+  const parked = new Set(state.parked)
+  return state.groups.every((g) => g.files.length === 0 || aside.has(g.id) === parked.has(g.id))
+}
+
 /**
  * Makes the disk match the wish: exactly `want` of this session's groups set aside, the rest in Mods.
  * It compares with what fixes reports as set aside, so running it twice moves nothing the second time.
  * Groups set aside before the test started are not in `state.groups` and are never touched.
  */
 async function arrange(deps: FiftyDeps, state: FiftyFifty, want: string[]): Promise<Problem | null> {
-  const ours = new Set(state.groups.map((g) => g.id))
-  const aside = new Set(
-    (await deps.fixes.disabledGroups(state.folderPath)).map((d) => d.groupId).filter((id) => ours.has(id))
-  )
+  const aside = await sessionAside(deps, state)
   const wanted = new Set(want)
 
   const toPutBack = [...aside].filter((id) => !wanted.has(id))
@@ -129,6 +140,12 @@ export async function giveAnswer(
   if (expectedRound !== undefined && state.round !== expectedRound) return { status: 'ok', state }
 
   const next = answer(state, given)
+  // An answer only means something for the files as the round set them up. A stop cut off after it put the
+  // mods back, or an undo from History, leaves them otherwise: set the round up again instead of counting it.
+  // The answer that ends the test is left out: it only puts mods back, and a half-done put-back is retried here.
+  if (next.phase !== 'stopped' && !(await arrangedAsSaved(deps, state))) {
+    return saveOrProblem(deps, { ...state, phase: 'ready-to-test' })
+  }
   if (next.phase === 'stopped') {
     const moved = await arrange(deps, state, [])
     if (moved) return withState(moved, state)
