@@ -11,7 +11,6 @@ import {
   rm,
   stat,
   symlink,
-  utimes,
   writeFile
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -29,7 +28,9 @@ import type { GateRoots } from './gate.ts'
 const disk = vi.hoisted(() => ({
   crossDrive: null as null | { from: string; hits: number },
   corruptNewFiles: null as null | { hits: number },
-  realpathFails: null as null | { under: string; code: string; hits: number }
+  realpathFails: null as null | { under: string; code: string; hits: number },
+  unlinkFails: null as null | { file: string; hits: number },
+  writeFileQuotesItsData: null as null | { hits: number }
 }))
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -52,8 +53,23 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       }
       return await real.realpath(target)
     }) as unknown as typeof real.realpath,
+    unlink: (async (file) => {
+      if (disk.unlinkFails && String(file) === disk.unlinkFails.file) {
+        disk.unlinkFails.hits += 1
+        throw errno('EBUSY', 'unlink')
+      }
+      await real.unlink(file)
+    }) as typeof real.unlink,
     open: (async (file, flags, mode) => {
       const handle = await real.open(file, flags, mode)
+      if (disk.writeFileQuotesItsData && flags === 'wx') {
+        const faults = disk.writeFileQuotesItsData
+        handle.writeFile = (async (data: unknown) => {
+          faults.hits += 1
+          // Node words a bad argument like this, with the start of the value in the message.
+          throw new TypeError(`The "data" argument must be of type string. Received type string ('${String(data)}')`)
+        }) as unknown as typeof handle.writeFile
+      }
       if (disk.corruptNewFiles && flags === 'wx') {
         const faults = disk.corruptNewFiles
         const write = handle.write.bind(handle) as unknown as (...args: unknown[]) => Promise<unknown>
@@ -146,6 +162,8 @@ afterEach(async () => {
   disk.crossDrive = null
   disk.corruptNewFiles = null
   disk.realpathFails = null
+  disk.unlinkFails = null
+  disk.writeFileQuotesItsData = null
   for (const root of worlds.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
@@ -792,6 +810,19 @@ describe('the report zone', () => {
     }
   })
 
+  it('a Desktop that cannot be resolved means no report zone, and holds up nothing else', async () => {
+    const w = await makeWorld()
+    disk.realpathFails = { under: w.desktopDir, code: 'EACCES', hits: 0 }
+    const target = join(w.desktopDir, REPORT_NAME)
+    expect(await w.run([{ op: 'write', path: target, data: 'x', mode: 'create' }], { folderPath: null })).toEqual(
+      refusedWith({ reason: 'outside-allowed-area', path: target })
+    )
+    expect(disk.realpathFails.hits).toBeGreaterThan(0)
+    expect(await w.run([{ op: 'mkdir', path: w.inData('journal') }], { folderPath: null })).toEqual({ status: 'done' })
+    w.paths.desktopDir = 'Desktop'
+    expect(await w.run([{ op: 'mkdir', path: w.inData('state') }], { folderPath: null })).toEqual({ status: 'done' })
+  })
+
   it('never overwrites a report that is already there', async () => {
     const w = await makeWorld()
     const target = join(w.desktopDir, REPORT_NAME)
@@ -1086,6 +1117,38 @@ describe('doing the ops', () => {
       expect(detail).not.toContain('0123456789')
     }
     expect((await readdir(dirname(target))).sort()).toEqual(['blocked.bin', 'key.bin'])
+
+    // Node can quote an argument in its own error message. The gate never passes that message on.
+    disk.writeFileQuotesItsData = { hits: 0 }
+    const fresh = w.inData('assist', 'fresh.bin')
+    const quoted = await w.run([{ op: 'write', path: fresh, data: secret, mode: 'create' }], { reason: 'key' })
+    expect(disk.writeFileQuotesItsData.hits, 'the quoting error was really thrown').toBe(1)
+    expect(quoted).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(JSON.stringify(quoted)).not.toContain('sk-ant')
+    expect(JSON.stringify(quoted)).toContain(fresh.replaceAll('\\', '\\\\'))
+    expect((await readdir(dirname(target))).sort()).toEqual(['blocked.bin', 'key.bin'])
+  })
+
+  it.skipIf(ON_WINDOWS)('the key file is readable by her account only', async () => {
+    const w = await makeWorld()
+    const target = w.inData('assist', 'key.bin')
+    expect(await w.run([{ op: 'write', path: target, data: 'x', mode: 'create' }], { reason: 'key' })).toEqual({
+      status: 'done'
+    })
+    expect((await stat(target)).mode & 0o077).toBe(0)
+  })
+
+  it('makes missing folders above a new file in Mods and app data, and nowhere else', async () => {
+    const w = await makeWorld()
+    await rm(w.desktopDir, { recursive: true })
+    const report = join(w.desktopDir, REPORT_NAME)
+    expect(
+      await w.run([{ op: 'write', path: report, data: 'x', mode: 'create' }], { folderPath: null })
+    ).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await exists(w.desktopDir)).toBe(false)
+    const deep = w.inFolder('Mods', 'A', 'B', 'cozy_rug.package')
+    expect(await w.run([{ op: 'move', from: w.inFolder(...MOD), to: deep }])).toEqual({ status: 'done' })
+    expect(await exists(deep)).toBe(true)
   })
 
   it('move across drives: the target has the same hash and date, and the source is gone', async () => {
@@ -1113,6 +1176,20 @@ describe('doing the ops', () => {
     const result = await w.run([{ op: 'move', from, to }])
     expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
     expect(disk.corruptNewFiles.hits, 'the copy was really damaged').toBe(1)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await snapshotTree(w.folder)).toEqual(before)
+    expect(await readdir(dirname(to))).toEqual([])
+  })
+
+  it('move across drives: when the source cannot be removed, the copy is taken back', async () => {
+    const w = await makeWorld()
+    const from = w.inFolder(...MOD)
+    const to = w.inData('holding', 'e1', 'Mods', 'cozy_rug.package')
+    const before = await snapshotTree(w.folder)
+    disk.crossDrive = { from, hits: 0 }
+    disk.unlinkFails = { file: from, hits: 0 }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
     expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
     expect(await snapshotTree(w.folder)).toEqual(before)
     expect(await readdir(dirname(to))).toEqual([])

@@ -1,130 +1,218 @@
 // @vitest-environment node
-import { readdir, readFile } from 'node:fs/promises'
-import { dirname, join, relative } from 'node:path'
+// The read and write rule (contracts.md, section 1): no shipped file under src/ except gate.ts can reach a write.
+// An allow-list, like PR 3's guard: a module nobody listed is refused, so a new way to write fails here first.
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { dirname, join, posix } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
 const THIS_DIR = dirname(fileURLToPath(import.meta.url))
 const SRC_ROOT = join(THIS_DIR, '../..')
 
-// Read-only fs functions allowed outside gate.ts and fs-read.ts (contracts.md, section 1).
-const ALLOWED_FS_NAMES = new Set(['readdir', 'readFile', 'realpath', 'stat', 'lstat', 'readlink', 'statfs'])
-const FS_READ_EXTRA_NAMES = new Set(['open', 'createReadStream'])
+const GATE = 'main/safety/gate.ts'
 const FS_MODULE = /^(node:)?fs(\/promises)?$/
-const CHILD_PROCESS_MODULE = /^(node:)?child_process$/
-const FORBIDDEN_FS_PACKAGES = new Set(['fs-extra', 'graceful-fs', 'rimraf', 'mkdirp', 'mv', 'trash', 'del'])
+// The fs functions that only read. gate.ts may use any; fs-read.ts also gets the two below it.
+const READ_ONLY_FS_NAMES = new Set(['readdir', 'readFile', 'realpath', 'stat', 'lstat', 'readlink', 'statfs'])
+const FS_READ_EXTRA_NAMES = new Set(['open', 'createReadStream'])
 
-const ELECTRON_ALLOWED_FILES = new Set([
-  'main/index.ts',
-  'main/app-host.ts',
-  'main/ipc.ts',
-  'preload/index.ts'
+// Built-in modules that cannot change the disk, load code or start a program. With or without 'node:'.
+const HARMLESS_BUILTINS = new Set([
+  'assert',
+  'assert/strict',
+  'buffer',
+  'crypto',
+  'events',
+  'os',
+  'path',
+  'perf_hooks',
+  'process',
+  'readline',
+  'stream',
+  'stream/promises',
+  'string_decoder',
+  'timers',
+  'timers/promises',
+  'url',
+  'util',
+  'util/types',
+  'zlib'
 ])
+// The bundled packages (ownership.md), and the files that may load them. A sub-path of a listed package counts.
+const ALLOWED_PACKAGES: Record<string, 'any' | readonly string[]> = {
+  react: 'any',
+  'react-dom': 'any',
+  'radix-ui': 'any',
+  'class-variance-authority': 'any',
+  clsx: 'any',
+  'tailwind-merge': 'any',
+  'lucide-react': 'any',
+  sonner: 'any',
+  'tw-animate-css': 'any',
+  '@fontsource-variable/plus-jakarta-sans': 'any',
+  fflate: 'any',
+  '@anthropic-ai/sdk': ['main/assist/key-store.ts'],
+  electron: ['main/index.ts', 'main/app-host.ts', 'main/ipc.ts', 'preload/index.ts', 'main/locate/host.ts']
+}
+const BUILTINS_FOR_ONE_FILE: Record<string, readonly string[]> = {
+  child_process: ['main/locate/host.ts']
+}
+
+// Text that reaches a built-in module, or runs made-up code, without an import the check can read.
+const FORBIDDEN_TEXT: [RegExp, string][] = [
+  [/\brequire\b/, 'uses require'],
+  [/\b(binding|_linkedBinding|dlopen|getBuiltinModule|createRequire|mainModule)\b/, 'reaches a built-in module without an import'],
+  [/\b(writeReport|writeHeapSnapshot)\b/, 'writes a diagnostic file'],
+  [/\beval\b|\bFunction\s*\(/, 'runs made-up code'],
+  [/\bimport\s*\(\s*(?!(?:'[^'`"\\]*'|"[^'`"\\]*")\s*\))/, 'loads a module whose name is not one plain string']
+]
+// A module name that can write or start a program may not appear as a string anywhere but in a read import.
+const DANGEROUS_NAME =
+  /(['"`])(?:node:)?(?:fs|fs\/promises|original-fs|child_process|module|vm|worker_threads|v8|sqlite|inspector|cluster|repl|wasi)\1/g
+
+// Files under src/ that are not code and are never loaded as code.
+const PLAIN_FILE = /\.(css|html|json|svg|png|ico|woff2|md|txt|snap)$/
+const CODE_FILE = /\.(ts|tsx)$/
+const isTestFile = (rel: string): boolean => /\.test\.tsx?$/.test(rel) || rel === 'renderer/test-setup.ts'
 
 export interface ModuleUse {
   specifier: string
-  /** The text between `import`/`export` and `from`, or undefined for import(), require() and bare imports. */
+  /** The text between `import`/`export` and `from`. Undefined for import(), a bare import, or a clause the check cannot read. */
   clause: string | undefined
+  /** Where the specifier's opening quote sits in the source. */
+  at: number
 }
 
 export function findModuleUses(source: string): ModuleUse[] {
   const uses: ModuleUse[] = []
-  for (const match of source.matchAll(/\b(?:import|export)\s+([^'";]*?)\s*from\s*['"]([^'"]+)['"]/g)) {
-    uses.push({ specifier: match[2]!, clause: `${match[0].startsWith('export') ? 'export ' : ''}${match[1]!}` })
+  const seen = new Set<number>()
+  const add = (specifier: string, clause: string | undefined, at: number): void => {
+    if (seen.has(at)) return
+    seen.add(at)
+    uses.push({ specifier, clause, at })
   }
-  for (const match of source.matchAll(/\b(?:import|require)\s*\(\s*['"]([^'"]+)['"]/g)) {
-    uses.push({ specifier: match[1]!, clause: undefined })
+  // import <clause> from '<x>' and export <clause> from '<x>'. The clause holds no quote and no second keyword.
+  const withClause = /\b(import|export)\b\s*((?:(?!\b(?:import|export)\b)[^'"`;])*?)\s*\bfrom\s*(['"])([^'"`]*)\3/g
+  for (const match of source.matchAll(withClause)) {
+    const at = match.index + match[0].lastIndexOf(match[3]! + match[4]! + match[3]!)
+    add(match[4]!, `${match[1] === 'export' ? 'export ' : ''}${match[2]!}`, at)
   }
-  for (const match of source.matchAll(/\bimport\s*['"]([^'"]+)['"]/g)) {
-    uses.push({ specifier: match[1]!, clause: undefined })
+  // Any other `from '<x>'`: an import whose clause the pattern above could not read (a comment with a quote in it).
+  for (const match of source.matchAll(/\bfrom\s*(['"])([^'"`]*)\1/g)) {
+    add(match[2]!, undefined, match.index + match[0].indexOf(match[1]!))
+  }
+  for (const match of source.matchAll(/\bimport\s*\(\s*(['"])([^'"`]*)\1/g)) {
+    add(match[2]!, undefined, match.index + match[0].indexOf(match[1]!))
+  }
+  for (const match of source.matchAll(/\bimport\s*(['"])([^'"`]*)\1/g)) {
+    add(match[2]!, undefined, match.index + match[0].indexOf(match[1]!))
   }
   return uses
 }
 
+/** Where a relative or '@/' specifier points, as a path under src/. Null when it leaves src/. */
+function resolveInSrc(relFile: string, specifier: string): string | null {
+  const bare = specifier.replace(/[?#].*$/, '')
+  const target = bare.startsWith('@/') ? posix.join('renderer', bare.slice(2)) : posix.join(posix.dirname(relFile), bare)
+  return target.startsWith('..') || posix.isAbsolute(target) ? null : target
+}
+
 /** Returns why a file under src/ may not load a module this way, or undefined when it may. */
-export function moduleUseProblem(relFile: string, use: ModuleUse): string | undefined {
+export function moduleUseProblem(relFile: string, use: ModuleUse, files: ReadonlySet<string>): string | undefined {
   const file = relFile.replaceAll('\\', '/')
+  const { specifier } = use
 
-  if (CHILD_PROCESS_MODULE.test(use.specifier)) {
-    return `${file} may not load ${use.specifier} (stays in src/main/locate/host.ts)`
+  if (specifier.startsWith('.') || specifier.startsWith('@/')) {
+    const target = resolveInSrc(file, specifier)
+    if (target === null) return `${file} loads ${specifier}, which is outside src/`
+    const found = [target, `${target}.ts`, `${target}.tsx`, `${target}/index.ts`, `${target}/index.tsx`].find((name) =>
+      files.has(name)
+    )
+    if (found === undefined) return `${file} loads ${specifier}, which is not a file under src/`
+    if (isTestFile(found)) return `${file} loads the test file ${found}`
+    return undefined
   }
 
-  if (FORBIDDEN_FS_PACKAGES.has(use.specifier)) {
-    return `${file} may not load ${use.specifier}`
-  }
-
-  if (use.specifier === 'electron' && !ELECTRON_ALLOWED_FILES.has(file)) {
-    return `${file} may not load electron`
-  }
-
-  if (FS_MODULE.test(use.specifier)) {
-    if (file === 'main/safety/gate.ts') return undefined
-
+  if (FS_MODULE.test(specifier)) {
+    if (file === GATE) return undefined
     const named = use.clause?.match(/^(?:type\s+)?\{([^}]*)\}$/)
-    if (!named) return `${file} must load ${use.specifier} with named imports only`
-
+    if (!named) return `${file} must load ${specifier} with named imports only`
     for (const part of named[1]!.split(',')) {
       const name = part.trim().split(/\s+as\s+/)[0]!.replace(/^type\s+/, '')
       if (name === '') continue
-      if (ALLOWED_FS_NAMES.has(name)) continue
+      if (READ_ONLY_FS_NAMES.has(name)) continue
       if (file === 'main/fs-read.ts' && FS_READ_EXTRA_NAMES.has(name)) continue
-      return `${file} imports forbidden fs function ${name}`
+      return `${file} imports the fs function ${name}, which is not on the read-only list`
     }
     return undefined
   }
 
-  return undefined
+  const builtin = specifier.replace(/^node:/, '')
+  if (HARMLESS_BUILTINS.has(builtin)) return undefined
+  if (BUILTINS_FOR_ONE_FILE[builtin]?.includes(file)) return undefined
+
+  const packageName = Object.keys(ALLOWED_PACKAGES).find((name) => specifier === name || specifier.startsWith(`${name}/`))
+  const allowed = packageName === undefined ? undefined : ALLOWED_PACKAGES[packageName]
+  if (allowed === 'any' || allowed?.includes(file)) return undefined
+  return `${file} may not load ${specifier}`
 }
 
-async function collectCheckedFiles(dir: string): Promise<string[]> {
+/** Every reason a shipped file breaks the read and write rule. `files` is every file under src/. */
+export function sourceProblems(relFile: string, source: string, files: ReadonlySet<string>): string[] {
+  const file = relFile.replaceAll('\\', '/')
+  const problems: string[] = []
+  const uses = findModuleUses(source)
+  for (const use of uses) {
+    const problem = moduleUseProblem(file, use, files)
+    if (problem !== undefined) problems.push(problem)
+  }
+  for (const [pattern, what] of FORBIDDEN_TEXT) {
+    if (pattern.test(source)) problems.push(`${file} ${what}`)
+  }
+  const importedAt = new Set(uses.map((use) => use.at))
+  for (const match of source.matchAll(DANGEROUS_NAME)) {
+    if (!importedAt.has(match.index)) problems.push(`${file} names the module ${match[0]} outside an import`)
+  }
+  return problems
+}
+
+/** gate.ts may export runGate, the pure path check and types. Anything else could hand a write to another file. */
+export function gateExportProblems(source: string): string[] {
+  const problems: string[] = []
+  const allowed = /^export (async function runGate\b|function sortPath\b|(interface|type) \w+)/
+  for (const match of source.matchAll(/\bexport\b[^\n]*/g)) {
+    const atLineStart = match.index === 0 || source[match.index - 1] === '\n'
+    if (!atLineStart || !allowed.test(match[0])) problems.push(`gate.ts may not export: ${match[0].trim()}`)
+  }
+  return problems
+}
+
+async function listFiles(root: string, rel = ''): Promise<string[]> {
   const found: string[] = []
-  for (const entry of await readdir(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name)
-    const rel = relative(SRC_ROOT, full).replaceAll('\\', '/')
-    if (entry.isDirectory()) {
-      if (rel === 'main/locate' || rel === 'shared/testing' || rel === 'renderer/testing') {
-        continue
-      }
-      found.push(...(await collectCheckedFiles(full)))
-      continue
-    }
-    if (!/\.(ts|tsx)$/.test(entry.name)) continue
-    if (/\.test\.(ts|tsx)$/.test(entry.name)) continue
-    if (rel === 'renderer/test-setup.ts') continue
-    found.push(rel)
+  for (const entry of await readdir(join(root, rel), { withFileTypes: true })) {
+    const relPath = rel === '' ? entry.name : `${rel}/${entry.name}`
+    if (entry.isDirectory()) found.push(...(await listFiles(root, relPath)))
+    else found.push(relPath)
   }
   return found.sort()
 }
 
-/** Red step only: the first version's checks behind the new entry point. */
-export function sourceProblems(relFile: string, source: string, _files: ReadonlySet<string>): string[] {
-  const problems: string[] = []
-  for (const use of findModuleUses(source)) {
-    const problem = moduleUseProblem(relFile, use)
-    if (problem !== undefined) problems.push(problem)
-  }
-  if (/process\.binding|getBuiltinModule|\beval\s*\(|new\s+Function\s*\(/.test(source)) {
-    problems.push(`${relFile} reaches a built-in module without an import`)
-  }
-  return problems
-}
-
-export function gateExportProblems(_source: string): string[] {
-  return []
-}
-
+/** Checks every file under a src/ folder. No folder is skipped; only test files are. */
 export async function lintTree(srcRoot: string): Promise<string[]> {
   const problems: string[] = []
-  const files = await collectCheckedFilesUnder(srcRoot)
-  const known = new Set(files)
-  for (const rel of files) {
-    problems.push(...sourceProblems(rel, await readFile(join(srcRoot, rel), 'utf8'), known))
+  const all = await listFiles(srcRoot)
+  const files = new Set(all)
+  for (const rel of all) {
+    if (PLAIN_FILE.test(rel) || isTestFile(rel)) continue
+    if (!CODE_FILE.test(rel)) {
+      problems.push(`${rel} is a kind of file this check does not know`)
+      continue
+    }
+    const source = await readFile(join(srcRoot, rel), 'utf8')
+    problems.push(...sourceProblems(rel, source, files))
+    if (rel === GATE) problems.push(...gateExportProblems(source))
   }
   return problems
-}
-
-async function collectCheckedFilesUnder(_srcRoot: string): Promise<string[]> {
-  return await collectCheckedFiles(SRC_ROOT)
 }
 
 // A small made-up tree for the cases below.
@@ -151,6 +239,44 @@ const SAMPLE_FILES: ReadonlySet<string> = new Set([
 describe('read and write gate lint', () => {
   it('shipped files under src/ obey the read and write rule', async () => {
     expect(await lintTree(SRC_ROOT)).toEqual([])
+  })
+
+  it('checks every folder under src/: a planted write is found wherever it hides', async () => {
+    const planted: Record<string, string> = {
+      'main/safety/gate.ts': "import { rm } from 'node:fs/promises'\nexport async function runGate() {}\nexport const remove = rm\n",
+      'main/inventory/index.ts': "import { readFile } from 'node:fs/promises'\nexport const read = readFile\n",
+      'main/inventory/index.test.ts': "import { writeFile } from 'node:fs/promises'\n",
+      'main/inventory/deep/down/save.ts': "import { writeFile } from 'node:fs/promises'\n",
+      'main/locate/extra/run.ts': "import { execFile } from 'node:child_process'\n",
+      'shared/testing/helper.ts': "import { rm } from 'node:fs/promises'\n",
+      'renderer/testing/helper.ts': "import { helper } from '../../main/inventory/index.test.ts'\n",
+      'renderer/test-setup.ts': "import { rm } from 'node:fs/promises'\n",
+      'renderer/styles.css': 'body { color: red }\n',
+      'main/tool.js': "require('fs').rmSync('x')\n",
+      'main/addon.node': 'binary',
+      'preload/run.cjs': "require('fs')\n"
+    }
+    const root = await mkdtemp(join(tmpdir(), 'sims-helper-gate-lint-test-'))
+    try {
+      for (const [rel, text] of Object.entries(planted)) {
+        await mkdir(dirname(join(root, rel)), { recursive: true })
+        await writeFile(join(root, rel), text)
+      }
+      const problems = await lintTree(root)
+      const flagged = [...new Set(problems.map((problem) => problem.split(' ')[0]))].sort()
+      expect(flagged, problems.join('\n')).toEqual([
+        'gate.ts', // the extra export
+        'main/addon.node',
+        'main/inventory/deep/down/save.ts',
+        'main/locate/extra/run.ts',
+        'main/tool.js',
+        'preload/run.cjs',
+        'renderer/testing/helper.ts',
+        'shared/testing/helper.ts'
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('gate.ts exports runGate, the pure path check and types, and nothing else', async () => {
