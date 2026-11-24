@@ -430,8 +430,10 @@ The source of a `copy` is only read, so it may be anywhere inside the Sims folde
   `write` create missing parent folders, in the mods and app-data zones only. `remove` of a missing path counts as
   done. `replace` creates a missing file. `copy` and `move` take plain files only: a folder or a link as the source
   fails, so a caller walks folders itself and skips links. Ops on the Mods folder or `dataDir` itself are refused,
-  except `mkdir`. An error inside a check refuses with `check-failed`. The game check is the last check before the
-  first op runs.
+  except `mkdir`. An error inside a check refuses with `check-failed`. The game check runs after the path checks; every path is then
+  re-checked right before its own op. `runGate` handles one request at a time, so never call it from inside a gate
+  call. `refused` means no op ran (a re-check that fails before the first op is also `refused`). The Sims folder may
+  have any name once resolved, as long as it holds `Options.ini` and is not inside a `saves` or `Tray` folder.
 - The lint test for the read and write rule in section 1 is `src/main/safety/gate-lint.test.ts`. The contract commit
   ships a first version, so every branch is checked from its first commit; PR 8 owns it from then on and hardens it.
 
