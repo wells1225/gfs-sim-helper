@@ -61,6 +61,8 @@ describe.runIf(process.env.SIMS_HELPER_PROBE === 'backup')('backup probe on the 
       origin: { by: 'fix' },
       folderPath: ws.simsFolder,
       groupId: `dir:${top.toLowerCase()}`,
+      groupLabel: top,
+      hasScript: false,
       steps: files.slice(0, 20).map((name) => ({
         kind: 'move' as const,
         from: join(ws.mods, top, name),

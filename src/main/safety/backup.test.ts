@@ -377,6 +377,8 @@ describe('backupStatus', () => {
       origin: { by: 'fix' },
       folderPath: ws.simsFolder,
       groupId: null,
+      groupLabel: null,
+      hasScript: false,
       steps: [{ kind: 'move', from, to }]
     })
 
@@ -425,6 +427,8 @@ describe('backupStatus', () => {
       origin: { by: 'fix' },
       folderPath: ws.simsFolder,
       groupId: null,
+      groupLabel: null,
+      hasScript: false,
       steps: [{ kind: 'move', from, to }]
     })
     if (moved.status !== 'done') throw new Error(moved.status)
