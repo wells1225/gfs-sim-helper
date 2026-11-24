@@ -668,3 +668,43 @@ describe('setAside, putBack, clearCaches and disabledGroups', () => {
     void vi
   })
 })
+
+describe('review: Options.ini is never rewritten from a guess', () => {
+  it('planFix refuses turn-mods-on when it is not given the current Options.ini text', () => {
+    const scan = sampleScan()
+    const result = planFix(scan, { fix: 'turn-mods-on' }, { holdingDir: '/data/holding', entryId: 'e1' })
+    expect(result.status).toBe('refused')
+  })
+
+  it('applyFix refuses turn-mods-on when Options.ini is not plain UTF-8, so no byte outside the two keys changes', async () => {
+    const dir = await makeTempDir('sims-fixes-latin1-')
+    const bytes = Buffer.concat([
+      Buffer.from('[options]\r\nmodsdisabled=1\r\nlastuser=', 'ascii'),
+      Buffer.from([0xe9]), // a Latin-1 'é', not valid UTF-8
+      Buffer.from('\r\n', 'ascii')
+    ])
+    await writeFile(join(dir, 'Options.ini'), bytes)
+    const scan = sampleScan({
+      folder: { path: dir, inOneDrive: false, newestFileAt: new Date('2026-11-24T12:00:00.000Z') }
+    })
+    const safety = makeFakeSafety()
+
+    const res = await applyFix(makeDeps(safety, dir), scan, { fix: 'turn-mods-on' })
+    expect(res.status).toBe('refused')
+    expect(safety.ranPlans).toHaveLength(0)
+  })
+
+  it('applyFix keeps a UTF-8 byte order mark at the start of Options.ini', async () => {
+    const dir = await makeTempDir('sims-fixes-bom-')
+    await writeFile(join(dir, 'Options.ini'), '﻿[options]\r\nmodsdisabled=1\r\nscriptmodsenabled=0\r\n', 'utf8')
+    const scan = sampleScan({
+      folder: { path: dir, inOneDrive: false, newestFileAt: new Date('2026-11-24T12:00:00.000Z') }
+    })
+    const safety = makeFakeSafety()
+
+    const res = await applyFix(makeDeps(safety, dir), scan, { fix: 'turn-mods-on' })
+    expect(res.status).toBe('done')
+    const step = safety.ranPlans[0]!.steps[0]!
+    expect(step.kind === 'edit' && step.newText).toBe('﻿[options]\r\nmodsdisabled=0\r\nscriptmodsenabled=1\r\n')
+  })
+})

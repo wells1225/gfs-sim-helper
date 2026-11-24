@@ -29,7 +29,6 @@ export interface PlanFixAt {
   optionsText?: string
   existingCaches?: readonly string[]
   existingModPaths?: readonly RelPath[]
-  origin?: JournalOrigin
 }
 
 function normRelPath(relPath: string): string {
@@ -123,26 +122,19 @@ export function planFix(
   request: FixRequest,
   at: PlanFixAt
 ): { status: 'planned'; plan: ActionPlan } | { status: 'refused'; refusal: FixRefusal } {
-  const origin: JournalOrigin = at.origin ?? { by: 'fix' }
+  const origin: JournalOrigin = { by: 'fix' }
   const folderPath = scan.folder.path
   const modsDir = scan.inventory.modsDir
 
   switch (request.fix) {
     case 'turn-mods-on': {
-      let newText: string
-      if (at.optionsText !== undefined) {
-        newText = editOptionsIni(at.optionsText)
-        if (newText === at.optionsText) {
-          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
-        }
-      } else {
-        if (scan.facts.options.status !== 'ok') {
-          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
-        }
-        if (scan.facts.options.mods === 'on' && scan.facts.options.scriptMods === 'on') {
-          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
-        }
-        newText = editOptionsIni('')
+      // The edit is built only from the text read from disk: without it there is nothing safe to write.
+      if (at.optionsText === undefined) {
+        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
+      }
+      const newText = editOptionsIni(at.optionsText)
+      if (newText === at.optionsText) {
+        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
       }
 
       return {
@@ -392,11 +384,18 @@ export async function applyFix(
   }
 
   if (request.fix === 'turn-mods-on') {
+    let bytes: Buffer
     try {
-      at.optionsText = await readFile(join(scan.folder.path, 'Options.ini'), 'utf8')
+      bytes = await readFile(join(scan.folder.path, 'Options.ini'))
     } catch {
       return { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
     }
+    const text = bytes.toString('utf8')
+    // Bytes that are not UTF-8 would not survive the round trip, so leave the file alone.
+    if (!Buffer.from(text, 'utf8').equals(bytes)) {
+      return { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
+    }
+    at.optionsText = text
   } else if (request.fix === 'clear-caches') {
     at.existingCaches = await findExistingCaches(scan.folder.path)
   } else if (request.fix === 'move-script-up') {
