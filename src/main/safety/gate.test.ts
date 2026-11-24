@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { createHash } from 'node:crypto'
 import {
+  link,
   lstat,
   mkdir,
   mkdtemp,
@@ -380,6 +381,16 @@ describe('saves and Tray are never written', () => {
     await expectRefusal(w, () => w.run([{ op: 'move', from: link, to: w.inData('holding', 'x.package') }]), {
       reason: 'saves-or-tray',
       path: link
+    })
+  })
+
+  it('refuses a hard link in Mods that shares a file with saves', async () => {
+    const w = await makeWorld()
+    const hardLink = w.inFolder('Mods', 'hardlinked.package')
+    await link(w.inFolder(...SAVE), hardLink)
+    await expectRefusal(w, () => w.run([{ op: 'move', from: hardLink, to: w.inData('holding', 'hardlinked.package') }]), {
+      reason: 'saves-or-tray',
+      path: hardLink
     })
   })
 
