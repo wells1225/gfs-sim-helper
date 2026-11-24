@@ -7,7 +7,7 @@ import type { Page } from '@playwright/test'
 import { afterAll, describe, expect, it } from 'vitest'
 import { readFile, rm } from 'node:fs/promises'
 import { INVOKE_CHANNELS } from '../shared/ipc.ts'
-import type { GameRunState as ModelGameRunState } from '../shared/model.ts'
+import type { GateRefusal, GameRunState as ModelGameRunState } from '../shared/model.ts'
 import { appPaths } from './app-paths.ts'
 import { assistHandlers } from './assist/handlers.ts'
 import { fiftyHandlers } from './fiftyfifty/handlers.ts'
@@ -139,5 +139,12 @@ describe('renderer index.html', () => {
         "font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'; " +
         "form-action 'none'"
     )
+  })
+})
+
+describe('GateRefusal', () => {
+  it('has a check-failed reason so an error inside a gate check fails closed', () => {
+    const refusal: GateRefusal = { reason: 'check-failed', path: 'C:\\Sims\\Mods\\a.package' }
+    expect(refusal.reason).toBe('check-failed')
   })
 })
