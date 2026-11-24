@@ -287,6 +287,8 @@ export interface JournalEntry {
   origin: JournalOrigin
   folderPath: string
   groupId: string | null
+  groupLabel: string | null // the group's label when the entry is about one group, copied from ActionPlan
+  hasScript: boolean // the group has a .ts4script; false when groupId is null
   backupId: string
   steps: JournalStep[]
   status: 'in-progress' | 'done' | 'undone' | 'needs-attention'
@@ -305,6 +307,7 @@ export type FixRefusal =
   | { why: 'backup'; reason: BackupRefusal | 'backup-failed' }
   | { why: 'out-of-date'; detail: 'no-scan' | 'unknown-finding' | 'unknown-group' | 'file-changed' | 'nothing-to-do' }
   | { why: 'fifty-fifty-running' }
+  | { why: 'not-started' } // the action failed before anything changed (for example the journal could not be written)
 
 export type FixOutcome =
   | { status: 'done'; entry: JournalEntry }
@@ -316,6 +319,7 @@ export interface DisabledGroup {
   label: string
   entryId: string
   at: IsoTime
+  origin: JournalOrigin['by'] // 'fix' or 'fifty-fifty': who set the group aside
 }
 
 // ── 50/50 (PR 11)
@@ -327,8 +331,8 @@ export interface FiftyFifty {
   startedAt: IsoTime
   folderPath: string
   phase: FiftyPhase
-  round: number
-  roundsAtMost: number // rounds start at 1; roundsAtMost is ceil(log2(groups at the start))
+  round: number // 0 is the control round: every group set aside. The halving rounds follow from 1
+  roundsAtMost: number // ceil(log2(groups at the start)) + 1, the control round included
   groups: ModGroup[] // as scanned when the test started
   suspects: string[] // group ids that may still be the cause; script groups first, then by label
   parked: string[]
@@ -345,6 +349,8 @@ export type FiftyResult =
 
 // ── AI help (PR 12)
 export type KeyStatus = 'set' | 'not-set' | 'encryption-unavailable'
+/** What setKey answers: a KeyStatus, or 'not-saved' when the new key was refused and the old one is still stored. */
+export type KeySetResult = KeyStatus | 'not-saved'
 
 export interface AssistStatus {
   key: KeyStatus
@@ -358,4 +364,16 @@ export interface AssistPreview {
 
 export type AssistAnswer =
   | { status: 'answered'; text: string }
-  | { status: 'no-answer'; why: 'no-key' | 'declined' | 'offline' | 'limit-reached' | 'preview-expired' | 'error' }
+  | { status: 'no-answer'; why: 'no-key' | 'key-rejected' | 'declined' | 'offline' | 'limit-reached' | 'preview-expired' | 'error' } // key-rejected: HTTP 401
+
+// ── Updates (PR 13)
+export type UpdateState =
+  | { state: 'off'; why: 'not-installed-app' | 'switched-off' | 'unsafe-install-folder' }
+  | { state: 'idle'; current: string; checkedAt: IsoTime | null; justUpdated: boolean }
+  | { state: 'checking'; current: string }
+  | { state: 'available'; current: string; next: string }
+  | { state: 'downloading'; current: string; next: string; percent: number }
+  | { state: 'ready'; current: string; next: string } // downloaded, checksum passed, waits for her click
+  | { state: 'failed'; current: string; step: 'check' | 'download'; why: 'offline' | 'bad-file' | 'error' }
+
+export type UpdateInstall = { status: 'restarting' } | { status: 'refused'; why: 'busy' | 'not-ready' }
