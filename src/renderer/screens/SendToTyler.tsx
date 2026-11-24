@@ -55,8 +55,8 @@ export function SendToTyler() {
             <CardTitle className="text-xl">Send a report to Tyler</CardTitle>
           </div>
           <p className="text-[0.9375rem] leading-relaxed text-foreground/90">
-            This zip includes your crash logs and mod list — never your saves or Tray files, and your Windows user
-            name is removed.
+            This zip holds your crash logs and mod list, never your saves or Tray files. Your Windows user name is
+            removed.
           </p>
         </CardHeader>
 
@@ -102,8 +102,8 @@ export function SendToTyler() {
                   <AlertDescription className="space-y-1">
                     <p className="font-mono text-xs font-semibold">{result.fileName}</p>
                     <p className="tabular-nums">
-                      Packed {result.entries.length} {result.entries.length === 1 ? 'file' : 'files'} — ready to share
-                      with Tyler.
+                      Packed {result.entries.length} {result.entries.length === 1 ? 'file' : 'files'}, ready to send to
+                      Tyler.
                     </p>
                   </AlertDescription>
                 </div>

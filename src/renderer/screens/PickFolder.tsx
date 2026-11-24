@@ -61,7 +61,7 @@ export function PickFolder() {
       setScan(null)
       go({ screen: 'what-happened' })
     } catch {
-      setError('That folder could not be saved right now. Try clicking Look again.')
+      setError('That folder could not be saved right now. Please try again.')
     } finally {
       setBusyPath(null)
     }
@@ -124,7 +124,7 @@ export function PickFolder() {
         <h1 className="text-2xl font-bold tracking-tight text-foreground">Which Sims 4 folder do you play in?</h1>
         <p className="text-muted-foreground">
           {folders.length > 1
-            ? 'We found more than one The Sims 4 folder on this PC. Pick the one with your current saves and mods.'
+            ? 'We found more than one Sims 4 folder on this PC. Pick the one with your current saves and mods.'
             : 'Here is the Sims 4 folder we found on this PC.'}
         </p>
       </div>

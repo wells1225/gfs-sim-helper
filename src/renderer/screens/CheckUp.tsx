@@ -104,7 +104,7 @@ function verdictSummary(findings: Finding[]): {
       variant: 'warn',
       icon: AlertTriangle,
       headline: warnCount === 1 ? 'Found 1 thing worth fixing' : `Found ${warnCount} things worth fixing`,
-      subtext: 'These are the likeliest reasons your game has been acting up.'
+      subtext: 'These could be why your game has been acting up. Start with the first one.'
     }
   }
 
@@ -120,7 +120,7 @@ function verdictSummary(findings: Finding[]): {
   return {
     variant: 'ok',
     icon: CheckCircle2,
-    headline: "Your mods folder looks healthy — we didn't spot any obvious problems.",
+    headline: "Your mods folder looks healthy. We didn't spot any obvious problems.",
     subtext:
       'If your game is still crashing, you can try the 50/50 test or send a report to Tyler so he can take a closer look.'
   }
@@ -229,7 +229,10 @@ export function CheckUp() {
     const pct = progressValue(progress)
 
     return (
-      <main className="mx-auto flex max-w-xl flex-col gap-4 py-6" aria-live="polite">
+      <main className="mx-auto flex max-w-xl flex-col gap-4 py-6">
+        <p role="status" className="sr-only">
+          {SCAN_STAGES[activeStage]?.label}
+        </p>
         <Card className="gap-5 p-6">
           <CardHeader className="items-center gap-3 text-center">
             <div className="flex size-12 items-center justify-center rounded-xl bg-accent text-accent-foreground">
@@ -274,7 +277,7 @@ export function CheckUp() {
             </ol>
 
             <p className="text-center text-sm text-muted-foreground">
-              Reading files only — nothing in your game folder is being changed.
+              Reading files only. Nothing in your game folder is being changed.
             </p>
           </CardContent>
         </Card>
@@ -296,7 +299,7 @@ export function CheckUp() {
           <div className="flex items-start gap-2.5">
             <Gamepad2 className="mt-0.5 size-5 shrink-0" strokeWidth={1.75} />
             <div className="flex flex-col gap-0.5">
-              <AlertTitle>The Sims 4 is open right now — looking is completely safe</AlertTitle>
+              <AlertTitle>The Sims 4 is open right now. Looking is completely safe.</AlertTitle>
               <AlertDescription>
                 This check-up only reads files and changes nothing. If you want to fix anything later, we&apos;ll ask
                 you to close the game first.

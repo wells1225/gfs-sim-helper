@@ -41,6 +41,7 @@ describe('SendToTyler', () => {
     await user.click(screen.getByRole('button', { name: /create report zip/i }))
 
     expect(await screen.findByText('Sims Helper report 20261124-120000.zip')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('—')
     const showBtn = screen.getByRole('button', { name: /show on desktop/i })
     await user.click(showBtn)
 

@@ -40,6 +40,7 @@ describe('WhatHappened', () => {
     expect(screen.getByRole('button', { name: /won't open or load/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /one save or lot/i })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /not sure/i })).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('—')
 
     await user.click(screen.getByRole('button', { name: /freezes or gets stuck/i }))
 

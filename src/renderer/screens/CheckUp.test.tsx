@@ -60,6 +60,10 @@ describe('CheckUp', () => {
     })
 
     expect(screen.getByText('Checking mod 1,420 of 5,300')).toBeInTheDocument()
+    // Screen readers hear the stage, not every file count
+    const stageStatus = screen.getByText('Checking your mods', { selector: 'p[role="status"]' })
+    expect(stageStatus).not.toHaveTextContent('1,420')
+    expect(document.body.textContent).not.toContain('—')
 
     act(() => {
       resolveScan({ status: 'done', scan })
@@ -108,7 +112,8 @@ describe('CheckUp', () => {
 
     renderCheckUp({ scan })
 
-    expect(screen.getByText(/looking is completely safe/i)).toBeInTheDocument()
+    expect(screen.getByText('The Sims 4 is open right now. Looking is completely safe.')).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('—')
 
     const headings = screen.getAllByRole('heading', { level: 2 }).map((el) => el.textContent)
     expect(headings).toEqual(['Do this first', 'Worth fixing', 'Good to know'])
@@ -136,5 +141,27 @@ describe('CheckUp', () => {
     expect(screen.getByText(/mods folder looks healthy/i)).toBeInTheDocument()
     expect(screen.queryByText('Do this first')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /send to tyler/i })).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('—')
+  })
+
+  it('does not call a hint from a log the likeliest reason', () => {
+    const scan = sampleScan({
+      findings: [
+        sampleFinding({
+          id: 'log-names-mod:g1',
+          rule: 'log-names-mod',
+          severity: 'warn',
+          certainty: 'likely',
+          title: 'Your last exception mentions one mod',
+          detail: 'This could be a clue.',
+          evidence: [],
+          files: []
+        })
+      ]
+    })
+    renderCheckUp({ scan })
+
+    expect(screen.getByText('Found 1 thing worth fixing')).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/likeliest|the reason/i)
   })
 })

@@ -47,7 +47,7 @@ const SYMPTOM_OPTIONS: readonly SymptomOption[] = [
   },
   {
     id: 'not-sure',
-    title: "I'm not sure — just check everything",
+    title: "I'm not sure, just check everything",
     description: 'Look through my mods folder, script mods, package files, and crash logs.',
     icon: HelpCircle
   }

@@ -61,6 +61,38 @@ describe('PickFolder', () => {
     expect(api.calls.find((c) => c.channel === 'settings:update')?.req).toEqual({ folderPath: newest })
   })
 
+  it('says plainly when a folder could not be saved, without pointing at a missing button', async () => {
+    const user = userEvent.setup()
+    const api = fakeApi({
+      'locate:run': {
+        folders: [
+          { path: 'C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4', inOneDrive: false, newestFileAt: new Date('2026-11-23T22:15:00.000Z') },
+          { path: 'C:\\Users\\Lila\\OneDrive\\Documents\\Electronic Arts\\The Sims 4', inOneDrive: true, newestFileAt: new Date('2026-09-12T12:00:00.000Z') }
+        ],
+        game: null,
+        gameRunning: 'not-running'
+      },
+      'settings:update': () => Promise.reject(new Error('refused'))
+    })
+
+    render(
+      <ApiProvider value={api}>
+        <SessionProvider>
+          <NavProvider initial={{ screen: 'pick-folder' }}>
+            <Harness />
+          </NavProvider>
+        </SessionProvider>
+      </ApiProvider>
+    )
+
+    expect(await screen.findByText(/more than one Sims 4 folder/)).toBeInTheDocument()
+    await user.click(screen.getAllByRole('button', { name: /use this folder/i })[0]!)
+
+    expect(await screen.findByText(/couldn't pick that folder/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /look again/i })).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/look again/i)
+  })
+
   it('shows a plain message and guidance when no Sims folder is found', async () => {
     const api = fakeApi({
       'locate:run': {
