@@ -325,12 +325,12 @@ export interface ScanDeps { // the real functions of PRs 4, 5 and 6, or fakes
   runRules: typeof import('./rules/index.ts').runRules
   clock: Clock; newId(): string; paths: AppPaths
 }
-export interface UpdaterInput { // PR 13: createUpdater(input) in src/main/update/updater.ts gives the Updater
+export interface UpdaterInput { // PR 13: createUpdater(input, seams?) in src/main/update/updater.ts gives the Updater
   isPackaged: boolean; version: string // app.isPackaged, app.getVersion()
   installDir: string // the folder of the running .exe
   argv: readonly string[] // '--updated': the installer just restarted the app after an update
   env: Readonly<Record<string, string | undefined>> // SIMS_HELPER_UPDATES=off switches updates off; nothing can point the feed elsewhere
-  keepOutOf: readonly string[] // Documents and the OneDrive roots: off when installDir is inside or contains one
+  keepOutOf: readonly string[] // updaterKeepOutOf(): Documents, the OneDrive roots and paths.dataDir; off when installDir is inside or contains one
   platform: NodeJS.Platform // off except on 'win32'
 }
 export interface Updater { // PR 13. The feed is only the installed app's app-update.yml
@@ -345,7 +345,7 @@ export interface AppContext {
   redact(text: string): string // src/main/redact.ts: her Windows user name becomes <user>
   gameState(): Promise<GameRunState>
   scan: ScanDeps; gate: Gate; safety: Safety; fixes: Fixes; keyStore: KeyStore
-  updater: Updater // createContext's optional `updater`; without one, always 'off'
+  updater: Updater // createContext's optional `updater`: an Updater, or (seams) => Updater called once with this busy(); without one, always 'off'
   busy(): boolean // true while a safety or fixes call runs (services.ts counts them); update:install refuses 'busy'
   session: { scan: Scan | null } // the last finished scan
   emit(progress: Progress): void // sends the 'progress' event to the window
@@ -398,7 +398,9 @@ buildPreview(scan: Scan, redact: (text: string) => string, id: string): AssistPr
 ask(keyStore: KeyStore, preview: AssistPreview): Promise<AssistAnswer>
 ASSIST_MODEL = 'claude-haiku-5-5'
 // PR 13  src/main/update/updater.ts (Fable), src/main/update/handlers.ts
-createUpdater(input: UpdaterInput): Updater // the stub is always { state: 'off', why: 'switched-off' }
+createUpdater(input: UpdaterInput, seams?: UpdaterSeams): Updater // seams: { engine?, busy?, now? }; index.ts passes busy = ctx.busy
+// the stub takes (input, seams?: { busy?: () => boolean }) and is always { state: 'off', why: 'switched-off' }
+// services.ts: updaterKeepOutOf(documentsDirs, paths) = Documents dirs + paths.oneDriveRoots + paths.dataDir, deduped
 ```
 
 ## 5. The write gate (PR 8, written by Fable)
