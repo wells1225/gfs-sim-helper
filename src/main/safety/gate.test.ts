@@ -10,6 +10,7 @@ import {
   readFile,
   readlink,
   realpath,
+  rename,
   rm,
   stat,
   symlink,
@@ -2063,6 +2064,35 @@ describe('doing the ops', () => {
     expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
     expect(await snapshotTree(w.inFolder('saves'))).toEqual(savesBefore)
     expect(await readdir(dirname(to))).toEqual([])
+  })
+
+  // The copy is taken back only from where the gate put it. A target folder that was swapped as well could
+  // lead the removal to a file somewhere else, so the copy stays and the answer says so.
+  it('move across drives: when the target folder was swapped as well, the copy is kept and the detail says so', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    await mkdir(sub, { recursive: true })
+    const from = join(sub, 'Slot_00000002.save')
+    await writeFile(from, 'decoy mod')
+    const to = w.inData('holding', 'e1', 'Mods', 'Slot_00000002.save')
+    const elsewhere = w.inData('holding', 'elsewhere')
+    const savesBefore = await snapshotTree(w.inFolder('saves'))
+    disk.crossDrive = { from, hits: 0 }
+    let swapped = false
+    disk.atTheLastMoment = async () => {
+      await rm(sub, { recursive: true })
+      await linkFolder(w.inFolder('saves'), sub)
+      await rename(dirname(to), elsewhere)
+      await linkFolder(elsewhere, dirname(to))
+      swapped = true
+    }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
+    expect(swapped, 'both folders were really swapped during the copy').toBe(true)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
+    expect(await readFile(join(elsewhere, 'Slot_00000002.save'), 'utf8')).toBe('decoy mod')
+    expect(await snapshotTree(w.inFolder('saves'))).toEqual(savesBefore)
   })
 
   it('an empty request is done', async () => {
