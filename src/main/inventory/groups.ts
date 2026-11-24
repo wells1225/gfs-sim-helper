@@ -117,16 +117,23 @@ export function assignGroups(
         if (file.kind === 'script') group.hasScript = true
       } else {
         groupId = `file:${lowerRel}`
-        const group: ModGroup = {
-          id: groupId,
-          label: stripExtension(file.relPath),
-          source: 'loose',
-          files: [file.relPath],
-          bytes: file.bytes,
-          hasScript: file.kind === 'script',
-          curseForge: null
+        // Names that differ only in letter case share an id, so they share the group.
+        let group = groupMap.get(groupId)
+        if (!group) {
+          group = {
+            id: groupId,
+            label: stripExtension(file.relPath),
+            source: 'loose',
+            files: [],
+            bytes: 0,
+            hasScript: false,
+            curseForge: null
+          }
+          groupMap.set(groupId, group)
         }
-        groupMap.set(groupId, group)
+        group.files.push(file.relPath)
+        group.bytes += file.bytes
+        if (file.kind === 'script') group.hasScript = true
       }
     }
 
