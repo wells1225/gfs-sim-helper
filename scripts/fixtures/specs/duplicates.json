@@ -10,7 +10,7 @@
   },
   "userFolders": [
     {
-      "relPath": "Users/Lila/Documents/Electronic Arts/The Sims 4",
+      "relPath": "Users/Player/Documents/Electronic Arts/The Sims 4",
       "gameVersion": "1.129.39.1030",
       "gameVersionMtime": "2026-11-10T18:00:00.000Z",
       "options": {
@@ -22,7 +22,7 @@
       "thumbCacheMtime": "2026-11-01T10:00:00.000Z",
       "packages": [
         {
-          "relPath": "CAS/Hair/lila_hair_01.package",
+          "relPath": "CAS/Hair/sample_hair_01.package",
           "mtime": "2026-11-18T14:00:00.000Z",
           "payloadSeed": 7701,
           "keys": [
@@ -31,7 +31,7 @@
           ]
         },
         {
-          "relPath": "CurseForge/lila_hair_01.package",
+          "relPath": "CurseForge/sample_hair_01.package",
           "mtime": "2026-11-18T14:05:00.000Z",
           "payloadSeed": 7701,
           "keys": [

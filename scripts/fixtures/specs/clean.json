@@ -11,7 +11,7 @@
   },
   "userFolders": [
     {
-      "relPath": "Users/Lila/Documents/Electronic Arts/The Sims 4",
+      "relPath": "Users/Player/Documents/Electronic Arts/The Sims 4",
       "gameVersion": "1.129.39.1030",
       "gameVersionMtime": "2026-11-10T18:00:00.000Z",
       "options": {
@@ -31,7 +31,7 @@
           ]
         },
         {
-          "relPath": "CAS/Hair/lila_waves.package",
+          "relPath": "CAS/Hair/sample_waves.package",
           "mtime": "2026-11-15T12:05:00.000Z",
           "keys": [
             { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x8000000100002001" }

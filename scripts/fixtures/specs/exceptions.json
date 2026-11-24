@@ -10,7 +10,7 @@
   },
   "userFolders": [
     {
-      "relPath": "Users/Lila/Documents/Electronic Arts/The Sims 4",
+      "relPath": "Users/Player/Documents/Electronic Arts/The Sims 4",
       "gameVersion": "1.129.39.1030",
       "gameVersionMtime": "2026-11-10T18:00:00.000Z",
       "options": {
@@ -22,7 +22,7 @@
       "thumbCacheMtime": "2026-11-20T20:00:00.000Z",
       "packages": [
         {
-          "relPath": "lila_cozy_sofa.package",
+          "relPath": "sample_cozy_sofa.package",
           "mtime": "2026-11-15T12:00:00.000Z",
           "keys": [
             { "type": "0x319E4F1D", "group": "0x00000000", "instance": "0x0007000000000001" }
@@ -170,7 +170,7 @@
               ]
             },
             "modList": [
-              "lila_cozy_sofa.package*11/15/2026",
+              "sample_cozy_sofa.package*11/15/2026",
               "WickedWardrobe\\wicked_wardrobe.ts4script*11/15/2026"
             ]
           }
@@ -192,20 +192,20 @@
     }
   ],
   "curseForge": {
-    "relPath": "Users/Lila/AppData/Roaming/CurseForge/agent/GameInstances/AddonGameInstance.json",
+    "relPath": "Users/Player/AppData/Roaming/CurseForge/agent/GameInstances/AddonGameInstance.json",
     "gameInstanceGuid": "b1c2d3e4-f5a6-47b8-9c0d-1e2f3a4b5c6d",
-    "installPath": "C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4",
+    "installPath": "C:\\Users\\Player\\Documents\\Electronic Arts\\The Sims 4",
     "installedAddons": [
       {
         "addonID": 900101,
         "fileId": 5500101,
-        "displayName": "Lila Cozy Sofa CC",
-        "fileNameOnDisk": "lila_cozy_sofa.package",
+        "displayName": "Sample Cozy Sofa CC",
+        "fileNameOnDisk": "sample_cozy_sofa.package",
         "fileDate": "2026-11-15T12:00:00Z",
         "releaseType": 1,
-        "downloadUrl": "https://edge.forgecdn.net/files/5500/101/lila_cozy_sofa.package",
+        "downloadUrl": "https://edge.forgecdn.net/files/5500/101/sample_cozy_sofa.package",
         "modules": [
-          { "name": "lila_cozy_sofa.package", "fingerprint": 2841923411 }
+          { "name": "sample_cozy_sofa.package", "fingerprint": 2841923411 }
         ]
       },
       {

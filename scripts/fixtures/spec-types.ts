@@ -124,7 +124,7 @@ export interface UserFolderLogsSpec {
 }
 
 export interface UserFolderSpec {
-  /** Relative path under the fixture root, e.g. Users/Lila/Documents/Electronic Arts/The Sims 4 */
+  /** Relative path under the fixture root, e.g. Users/Player/Documents/Electronic Arts/The Sims 4 */
   relPath: string
   gameVersion: string
   gameVersionMtime?: string
@@ -166,7 +166,7 @@ export interface CurseForgeAddonSpec {
 }
 
 export interface CurseForgeSpec {
-  /** Relative path under fixture root, e.g. Users/Lila/AppData/Roaming/CurseForge/agent/GameInstances/AddonGameInstance.json */
+  /** Relative path under fixture root, e.g. Users/Player/AppData/Roaming/CurseForge/agent/GameInstances/AddonGameInstance.json */
   relPath: string
   gameInstanceGuid: string
   installPath: string

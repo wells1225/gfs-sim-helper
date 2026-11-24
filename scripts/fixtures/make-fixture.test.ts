@@ -444,7 +444,7 @@ describe('fixture generator', () => {
     const nestedSpec = await loadSpec(join(SPECS_DIR, 'nested-scripts.json'))
     const nestedDir = join(workDir, 'verify-nested-scripts')
     await generateFixture(nestedSpec, nestedDir)
-    const eaEntries = await readdir(join(nestedDir, 'Users/Lila/Documents/Electronic Arts'))
+    const eaEntries = await readdir(join(nestedDir, 'Users/Player/Documents/Electronic Arts'))
     expect(eaEntries).toEqual(['Les\u00A0Sims\u00A04'])
 
     // duplicates: byte-identical files in two places
@@ -452,8 +452,8 @@ describe('fixture generator', () => {
     const dupDir = join(workDir, 'verify-duplicates')
     await generateFixture(dupSpec, dupDir)
     const dupMods = join(dupDir, dupSpec.userFolders[0]!.relPath, 'Mods')
-    const hairA = await readFile(join(dupMods, 'CAS/Hair/lila_hair_01.package'))
-    const hairB = await readFile(join(dupMods, 'CurseForge/lila_hair_01.package'))
+    const hairA = await readFile(join(dupMods, 'CAS/Hair/sample_hair_01.package'))
+    const hairB = await readFile(join(dupMods, 'CurseForge/sample_hair_01.package'))
     expect(hairA.equals(hairB)).toBe(true)
     const scriptA = await readFile(join(dupMods, 'HelperMod/helper_mod.ts4script'))
     const scriptB = await readFile(join(dupMods, 'BackupCopy/helper_mod.ts4script'))
@@ -466,14 +466,14 @@ describe('fixture generator', () => {
     const odSpec = await loadSpec(join(SPECS_DIR, 'onedrive.json'))
     const odDir = join(workDir, 'verify-onedrive')
     await generateFixture(odSpec, odDir)
-    const odActive = await stat(join(odDir, 'Users/Lila/OneDrive/Documents/Electronic Arts/The Sims 4/Options.ini'))
-    const odStale = await stat(join(odDir, 'Users/Lila/Documents/Electronic Arts/The Sims 4/Options.ini'))
+    const odActive = await stat(join(odDir, 'Users/Player/OneDrive/Documents/Electronic Arts/The Sims 4/Options.ini'))
+    const odStale = await stat(join(odDir, 'Users/Player/Documents/Electronic Arts/The Sims 4/Options.ini'))
     expect(odActive.mtimeMs).toBeGreaterThan(odStale.mtimeMs)
     // Folders inside the stale user folder are as old as the folder itself, so a scan of
     // the stale tree never finds an entry newer than the active folder.
     const staleFolderMs = Date.parse('2026-09-10T10:00:00.000Z')
     for (const dir of ['', 'Mods', 'Mods/CAS', 'saves', 'Tray', 'cache']) {
-      const info = await stat(join(odDir, 'Users/Lila/Documents/Electronic Arts/The Sims 4', dir))
+      const info = await stat(join(odDir, 'Users/Player/Documents/Electronic Arts/The Sims 4', dir))
       expect(info.mtimeMs, `stale dir ${dir || '.'}`).toBe(staleFolderMs)
     }
 
@@ -511,7 +511,7 @@ describe('fixture generator', () => {
     expect(beHtml).toContain('&lt;report&gt;')
 
     const cfRaw = await readFile(
-      join(exDir, 'Users/Lila/AppData/Roaming/CurseForge/agent/GameInstances/AddonGameInstance.json'),
+      join(exDir, 'Users/Player/AppData/Roaming/CurseForge/agent/GameInstances/AddonGameInstance.json'),
       'utf8'
     )
     const cfParsed = JSON.parse(cfRaw) as Array<{ _comment: string; gameID: number; installedAddons: unknown[] }>
