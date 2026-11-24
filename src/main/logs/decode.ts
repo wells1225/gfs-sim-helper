@@ -54,7 +54,8 @@ const BLOCK_TAGS = new Set([
   'ul'
 ])
 
-const VERSION_PATTERN = /\d+\.\d+\.\d+\.\d+/
+// A match may only start at the head of a digit run, so a long run of digits is scanned a bounded number of times.
+const VERSION_PATTERN = /(?<!\d)\d+\.\d+\.\d+\.\d+/
 const PYTHON_FRAME_PATTERN = /\bFile\s+"([^"\r\n]+)",\s*line\s+(\d+)/
 // The name starts with a non-space so `\s+` and the name cannot trade characters (that backtracks quadratically).
 const UI_FRAME_PATTERN = /^\s*at\s+([^\s()][^\r\n()]*)\(\)/

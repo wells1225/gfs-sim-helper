@@ -448,6 +448,12 @@ describe('log parsers and readLogs', () => {
           () => parseBetterExceptions(`<div ${'beRawLEData '.repeat(HOSTILE_BYTES / 12)}>`, 'BE.html', mtime)
         ],
         [
+          'buildsignature digits',
+          () =>
+            parseGameLog(`<report><buildsignature>${'1'.repeat(HOSTILE_BYTES)}</buildsignature></report>`, 'lastException.txt', mtime)
+        ],
+        ['MCCC Game Version digits', () => parseMccc(`Game Version: ${'1'.repeat(HOSTILE_BYTES)}`, 'mc.html', mtime)],
+        [
           'UI at + spaces',
           () =>
             parseGameLog(`<report><desyncdata>at${' '.repeat(HOSTILE_BYTES)}x</desyncdata></report>`, 'lastUIException.txt', mtime)
