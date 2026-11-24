@@ -1,7 +1,10 @@
 appId: com.tyler.sims-helper
 productName: Sims Helper
 forceCodeSigning: false
-publish: null
+publish:
+  provider: github
+  owner: wells1225
+  repo: gfs-sim-helper
 
 directories:
   buildResources: build

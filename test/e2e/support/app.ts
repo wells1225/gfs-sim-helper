@@ -55,6 +55,11 @@ function cleanEnv(base: NodeJS.ProcessEnv, overrides: Record<string, string | un
   return result
 }
 
+/** The environment for a launched app: updates are off unless the caller's env says otherwise. */
+export function launchEnv(base: NodeJS.ProcessEnv, overrides: Record<string, string | undefined>): Record<string, string> {
+  return cleanEnv(base, { SIMS_HELPER_UPDATES: 'off', ...overrides })
+}
+
 export async function launchApp(options: LaunchAppOptions = {}): Promise<LaunchedApp> {
   let tempDir: string | null = null
   let fixtureRoot: string | null = null
@@ -110,7 +115,7 @@ export async function launchApp(options: LaunchAppOptions = {}): Promise<Launche
     throw new Error(`Installed executable not found at: ${installedExe}`)
   }
 
-  const env = cleanEnv(process.env, envOverrides)
+  const env = launchEnv(process.env, envOverrides)
   const launchOptions = installedExe
     ? { executablePath: installedExe, env }
     : { args: [resolve(process.cwd(), 'out/main/index.js')], env }
@@ -190,15 +195,18 @@ export async function shoot(page: Page, prSlug: string, name: string): Promise<v
   await page.setViewportSize({ width: 960, height: 700 })
   await page.emulateMedia({ reducedMotion: 'reduce' })
 
-  await page.emulateMedia({ colorScheme: 'light' })
-  await nextFrame(page)
+  await setColorScheme(page, 'light')
   await page.screenshot({ path: join(outDir, `${name}-light.png`) })
 
-  await page.emulateMedia({ colorScheme: 'dark' })
-  await nextFrame(page)
+  await setColorScheme(page, 'dark')
   await page.screenshot({ path: join(outDir, `${name}-dark.png`) })
 
   await page.emulateMedia({ colorScheme: 'light' })
+}
+
+export async function setColorScheme(page: Page, colorScheme: 'light' | 'dark'): Promise<void> {
+  await page.emulateMedia({ colorScheme })
+  await nextFrame(page)
 }
 
 async function nextFrame(page: Page): Promise<void> {
