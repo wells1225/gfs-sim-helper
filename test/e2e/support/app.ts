@@ -195,15 +195,18 @@ export async function shoot(page: Page, prSlug: string, name: string): Promise<v
   await page.setViewportSize({ width: 960, height: 700 })
   await page.emulateMedia({ reducedMotion: 'reduce' })
 
-  await page.emulateMedia({ colorScheme: 'light' })
-  await nextFrame(page)
+  await setColorScheme(page, 'light')
   await page.screenshot({ path: join(outDir, `${name}-light.png`) })
 
-  await page.emulateMedia({ colorScheme: 'dark' })
-  await nextFrame(page)
+  await setColorScheme(page, 'dark')
   await page.screenshot({ path: join(outDir, `${name}-dark.png`) })
 
   await page.emulateMedia({ colorScheme: 'light' })
+}
+
+export async function setColorScheme(page: Page, colorScheme: 'light' | 'dark'): Promise<void> {
+  await page.emulateMedia({ colorScheme })
+  await nextFrame(page)
 }
 
 async function nextFrame(page: Page): Promise<void> {
