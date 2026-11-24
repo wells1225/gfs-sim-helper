@@ -36,6 +36,8 @@ const disk = vi.hoisted(() => ({
   unlinkFails: null as null | { file: string; hits: number },
   writeFileQuotesItsData: null as null | { hits: number },
   whenTempOpens: null as null | (() => Promise<void>),
+  noHardLinks: null as null | { code: string; hits: number },
+  atTheLastMoment: null as null | (() => Promise<void>),
   whenCopyIsDated: null as null | (() => Promise<void>)
 }))
 
@@ -43,6 +45,12 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:fs/promises')>()
   const errno = (code: string, syscall: string): Error =>
     Object.assign(new Error(`${code}: injected fault, ${syscall}`), { code, syscall })
+  // Runs once, right before the call that gives a file its final name.
+  const lastMoment = async (): Promise<void> => {
+    const meanwhile = disk.atTheLastMoment
+    disk.atTheLastMoment = null
+    if (meanwhile) await meanwhile()
+  }
   const mocked = {
     ...real,
     rename: (async (from, to) => {
@@ -50,8 +58,21 @@ vi.mock('node:fs/promises', async (importOriginal) => {
         disk.crossDrive.hits += 1
         throw errno('EXDEV', 'rename')
       }
+      await lastMoment()
       await real.rename(from, to)
     }) as typeof real.rename,
+    link: (async (existing, added) => {
+      if (disk.noHardLinks) {
+        disk.noHardLinks.hits += 1
+        throw errno(disk.noHardLinks.code, 'link')
+      }
+      if (disk.crossDrive && String(existing) === disk.crossDrive.from) {
+        disk.crossDrive.hits += 1
+        throw errno('EXDEV', 'link')
+      }
+      await lastMoment()
+      await real.link(existing, added)
+    }) as typeof real.link,
     realpath: (async (target: string) => {
       if (disk.realpathFails && target.startsWith(disk.realpathFails.under)) {
         disk.realpathFails.hits += 1
@@ -204,6 +225,8 @@ afterEach(async () => {
   disk.writeFileQuotesItsData = null
   disk.whenTempOpens = null
   disk.whenCopyIsDated = null
+  disk.noHardLinks = null
+  disk.atTheLastMoment = null
   for (const root of worlds.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
@@ -1464,6 +1487,133 @@ describe('doing the ops', () => {
       expect(await readdir(dirname(target)), op.op).toEqual(['late.package'])
       expect(await exists(from), op.op).toBe(true)
     }
+  })
+
+  it('never overwrites a target that appears at the very last moment, on one drive or across two', async () => {
+    const w = await makeWorld()
+    const target = w.inData('holding', 'late.package')
+    const from = w.inFolder(...MOD)
+    const cases: [string, WriteOp, boolean][] = [
+      ['write', { op: 'write', path: target, data: 'ours', mode: 'create' }, false],
+      ['copy', { op: 'copy', from, to: target }, false],
+      ['move on one drive', { op: 'move', from, to: target }, false],
+      ['move across drives', { op: 'move', from, to: target }, true]
+    ]
+    for (const [name, op, crossDrive] of cases) {
+      await rm(target, { force: true })
+      disk.crossDrive = crossDrive ? { from, hits: 0 } : null
+      let appeared = false
+      disk.atTheLastMoment = async () => {
+        await writeFile(target, 'someone else was first')
+        appeared = true
+      }
+      expect(await w.run([op]), name).toMatchObject({ status: 'failed', opsDone: 0 })
+      expect(appeared, `${name}: the other file really appeared`).toBe(true)
+      expect(await readFile(target, 'utf8'), name).toBe('someone else was first')
+      expect(await readdir(dirname(target)), name).toEqual(['late.package'])
+      expect(await exists(from), name).toBe(true)
+    }
+  })
+
+  it('a move on one drive whose source cannot be removed takes the new name back', async () => {
+    const w = await makeWorld()
+    const from = w.inFolder(...MOD)
+    const to = w.inData('holding', 'e1', 'Mods', 'cozy_rug.package')
+    const before = await snapshotTree(w.folder)
+    disk.unlinkFails = { file: from, hits: 0 }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await snapshotTree(w.folder)).toEqual(before)
+    expect(await readdir(dirname(to))).toEqual([])
+  })
+
+  it('on a disk with no hard links it looks first and then renames, and still never overwrites', async () => {
+    for (const code of ['EPERM', 'ENOSYS', 'EISDIR']) {
+      const w = await makeWorld()
+      const from = w.inFolder(...MOD)
+      const hash = await sha256(from)
+      const moved = w.inData('holding', 'moved.package')
+      const copied = w.inData('holding', 'copied.package')
+      const written = w.inData('holding', 'written.json')
+      disk.noHardLinks = { code, hits: 0 }
+      expect(
+        await w.run([
+          { op: 'copy', from, to: copied },
+          { op: 'write', path: written, data: '{}', mode: 'create' },
+          { op: 'move', from, to: moved }
+        ]),
+        code
+      ).toEqual({ status: 'done' })
+      expect(disk.noHardLinks.hits, `${code}: a hard link was tried for each`).toBe(3)
+      expect(await sha256(moved)).toBe(hash)
+      expect(await sha256(copied)).toBe(hash)
+      expect(await exists(from)).toBe(false)
+      expect((await readdir(dirname(moved))).sort()).toEqual(['copied.package', 'moved.package', 'written.json'])
+
+      const before = await snapshotTree(w.root)
+      for (const op of [
+        { op: 'copy', from: moved, to: copied },
+        { op: 'write', path: written, data: 'new', mode: 'create' },
+        { op: 'move', from: copied, to: moved }
+      ] satisfies WriteOp[]) {
+        expect(await w.run([op]), `${code} ${op.op}`).toMatchObject({ status: 'failed', opsDone: 0 })
+      }
+      expect(await snapshotTree(w.root)).toEqual(before)
+
+      // Across drives the copy still gets its name by looking first.
+      disk.crossDrive = { from: moved, hits: 0 }
+      const far = w.inData('holding', 'far.package')
+      expect(await w.run([{ op: 'move', from: moved, to: far }]), code).toEqual({ status: 'done' })
+      expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
+      expect(await sha256(far)).toBe(hash)
+      expect(await exists(moved)).toBe(false)
+      disk.crossDrive = null
+      disk.noHardLinks = null
+    }
+  })
+
+  it('runs one request at a time: a second request waits until the first is over', async () => {
+    const w = await makeWorld()
+    let letGo = (): void => undefined
+    const held = new Promise<void>((resolve) => {
+      letGo = resolve
+    })
+    let gameWasAsked = (): void => undefined
+    const asked = new Promise<void>((resolve) => {
+      gameWasAsked = resolve
+    })
+    const realGame = w.deps.gameState
+    w.deps.gameState = async () => {
+      gameWasAsked()
+      await held
+      return await realGame()
+    }
+    const first = w.run([{ op: 'mkdir', path: w.inFolder('Mods', 'New') }])
+    await asked
+    const note = w.inData('state', 'settings.json')
+    const second = w.run([{ op: 'write', path: note, data: '{}', mode: 'create' }], {
+      folderPath: null,
+      reason: 'state'
+    })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    const ranEarly = await exists(note)
+    letGo()
+    expect(await first).toEqual({ status: 'done' })
+    expect(await second).toEqual({ status: 'done' })
+    expect(ranEarly, 'the second request ran while the first was still waiting for the game').toBe(false)
+    expect(await readFile(note, 'utf8')).toBe('{}')
+  })
+
+  it('a refused, a failed and an unreadable request each leave the gate open for the next', async () => {
+    const w = await makeWorld()
+    const results = await Promise.all([
+      w.run([{ op: 'remove', path: w.inFolder(...SAVE) }]),
+      w.run([{ op: 'move', from: w.inFolder('Mods', 'gone.package'), to: w.inData('holding', 'gone.package') }]),
+      runGate(null as unknown as GateDeps, null as unknown as WriteRequest),
+      w.run([{ op: 'mkdir', path: w.inData('journal') }], { folderPath: null })
+    ])
+    expect(results.map((result) => result.status)).toEqual(['refused', 'failed', 'refused', 'done'])
   })
 
   it('a source that changes while it is copied fails the copy', async () => {
