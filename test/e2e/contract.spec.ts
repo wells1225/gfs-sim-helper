@@ -18,6 +18,17 @@ test('launches against clean fixture and opens to About with an empty console', 
   }
 })
 
+test('the installed app ignores ELECTRON_RENDERER_URL and still opens its own page', async () => {
+  test.skip(!process.env['SIMS_HELPER_EXE'], 'needs the installed app (Windows CI)')
+  const running = await launchApp({ env: { ELECTRON_RENDERER_URL: 'http://127.0.0.1:9/' } })
+  try {
+    await expect(running.page.getByText('Built by Tyler, for Lila.')).toBeVisible()
+    expect(running.page.url()).toMatch(/^file:/)
+  } finally {
+    await running.close()
+  }
+})
+
 test('stubIpc replaces IPC handlers with inOrder values and preload blocks unknown channels', async () => {
   const running = await launchApp()
   try {
