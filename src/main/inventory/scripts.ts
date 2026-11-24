@@ -4,6 +4,7 @@ import type { ReadOnlyFile } from '../fs-read.ts'
 import type { ScriptRead } from '../../shared/model.ts'
 
 const MAX_SCRIPT_BYTES = 64 * 1024 * 1024
+const CENTRAL_ENTRY_MIN_BYTES = 46
 
 function formatError(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
@@ -41,10 +42,19 @@ export async function listScriptEntries(file: string): Promise<ScriptRead> {
     await fh.close()
   }
 
+  // fflate loops over the entry count the zip claims (up to 2^32 with zip64) without checking it against the
+  // file. Each central directory entry takes at least 46 bytes, and a real one always has a name.
+  const maxEntries = Math.floor(data.length / CENTRAL_ENTRY_MIN_BYTES)
   const entries: string[] = []
   try {
     unzipSync(data, {
       filter(entry) {
+        if (entries.length >= maxEntries) {
+          throw new Error('Script archive lists more entries than the file can hold')
+        }
+        if (entry.name === '') {
+          throw new Error('Script archive has an entry with no name')
+        }
         entries.push(entry.name.replaceAll('\\', '/'))
         return false
       }
