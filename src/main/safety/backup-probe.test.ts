@@ -40,6 +40,9 @@ describe.runIf(process.env.SIMS_HELPER_PROBE === 'backup')('backup probe on the 
     const backupMs = Math.round(performance.now() - started)
     expect(backup.status).toBe('verified')
     if (backup.status !== 'verified') return
+    const backupRequests = ws.gate.requests.filter((r) => r.reason === 'backup')
+    expect(backupRequests.length).toBeGreaterThan(2)
+    for (const request of backupRequests) expect(request.ops.length).toBeLessThanOrEqual(200)
 
     // One group's worth of files: the first Mods folder that holds files of its own.
     const tops = (await readdir(ws.mods, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name)

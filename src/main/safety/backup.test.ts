@@ -123,6 +123,22 @@ describe('createBackup', () => {
     expect(manifest.files.find((f) => f.path === 'Mods/BuildBuy/lamp_a.package')?.storedIn).toBe(second.record.id)
   })
 
+  it.skipIf(process.platform === 'win32')('does not follow a link in Mods that leaves the folder', async () => {
+    const ws = await makeWorkspace(TOOLS)
+    const outside = join(ws.root, 'elsewhere.package')
+    await writeFile(outside, 'not hers to back up')
+    const { symlink } = await import('node:fs/promises')
+    await symlink(outside, join(ws.mods, 'linked.package'))
+
+    const result = await createBackup(ws.deps, ws.simsFolder)
+
+    expect(result.status).toBe('verified')
+    if (result.status !== 'verified') return
+    const manifest = await readManifest(ws.paths.backupsDir, result.record.id)
+    expect(manifest.files.some((f) => f.path.includes('linked'))).toBe(false)
+    expect((await backupStatus(ws.deps, ws.simsFolder)).state).toBe('verified')
+  })
+
   it('fails when a copy differs from its source, and that backup does not count', async () => {
     const ws = await makeWorkspace(TOOLS)
     let corrupted = false
