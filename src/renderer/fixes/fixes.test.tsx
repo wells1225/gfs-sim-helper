@@ -92,7 +92,8 @@ describe('FIXES_READY and words', () => {
       { why: 'out-of-date', detail: 'unknown-group' },
       { why: 'out-of-date', detail: 'file-changed' },
       { why: 'out-of-date', detail: 'nothing-to-do' },
-      { why: 'fifty-fifty-running' }
+      { why: 'fifty-fifty-running' },
+      { why: 'not-started' }
     ]
 
     for (const refusal of allRefusals) {
@@ -117,6 +118,9 @@ describe('FIXES_READY and words', () => {
       canRetry: true
     })
     expect(refusalMessage({ why: 'fifty-fifty-running' })).toMatchObject({ canRetry: true })
+    // Also said after a half-done set-aside was put back, so it promises only what holds then too.
+    expect(refusalMessage({ why: 'not-started' })).toMatchObject({ canRetry: true })
+    expect(refusalMessage({ why: 'not-started' }).detail).toContain('just as they were')
   })
 })
 
@@ -420,7 +424,8 @@ describe('ModsScreen', () => {
           groupId: 'cf:901234',
           label: 'Wicked Wardrobe',
           entryId: 'e-1',
-          at: '2026-11-24T12:00:00.000Z'
+          at: '2026-11-24T12:00:00.000Z',
+          origin: 'fix'
         }
       ]
     })
@@ -632,7 +637,7 @@ describe('last check: a list that fails to load does not look empty', () => {
       'groups:disabled': () => {
         attempt += 1
         if (attempt === 1) throw new Error('boom')
-        return [{ groupId: 'cf:901234', label: 'Wicked Wardrobe', entryId: 'e-1', at: '2026-11-24T12:00:00.000Z' }]
+        return [{ groupId: 'cf:901234', label: 'Wicked Wardrobe', entryId: 'e-1', at: '2026-11-24T12:00:00.000Z', origin: 'fix' }]
       }
     })
 
@@ -676,6 +681,8 @@ describe('last check: a mod whose put-back needs attention stays on Your mods', 
     action: 'disable-group',
     summary: 'Set aside Wicked Wardrobe',
     groupId: 'cf:901234',
+    groupLabel: 'Wicked Wardrobe',
+    hasScript: true,
     status: 'needs-attention'
   })
 
@@ -704,7 +711,7 @@ describe('last check: a mod whose put-back needs attention stays on Your mods', 
     let undone = false
     const api = fakeApi({
       'groups:disabled': () =>
-        undone ? [] : [{ groupId: 'cf:901234', label: 'Wicked Wardrobe', entryId: 'e-stuck', at: stuck.at }],
+        undone ? [] : [{ groupId: 'cf:901234', label: 'Wicked Wardrobe', entryId: 'e-stuck', at: stuck.at, origin: 'fix' as const }],
       'journal:list': () => (undone ? [stuck] : [{ ...stuck, status: 'done' as const }]),
       'journal:undo': () => {
         undone = true
@@ -731,8 +738,8 @@ describe('last check: a mod whose put-back needs attention stays on Your mods', 
     const api = fakeApi({
       'groups:disabled': [],
       'journal:list': [
-        { ...stuck, id: 'e-hair', groupId: group.id, summary: 'Set aside Hair', folderPath: scan.folder.path },
-        { ...stuck, id: 'e-other', groupId: 'dir:elsewhere', summary: 'Set aside Elsewhere', folderPath: 'D:\\Other\\The Sims 4' }
+        { ...stuck, id: 'e-hair', groupId: group.id, groupLabel: 'Hair', summary: 'Set aside Hair', folderPath: scan.folder.path },
+        { ...stuck, id: 'e-other', groupId: 'dir:elsewhere', groupLabel: 'Elsewhere', summary: 'Set aside Elsewhere', folderPath: 'D:\\Other\\The Sims 4' }
       ]
     })
 
@@ -783,7 +790,7 @@ describe('last check: Your mods keeps the list that did load', () => {
   it('still lists the mods set aside when only the History half of the load fails', async () => {
     const api = fakeApi({
       'groups:disabled': [
-        { groupId: 'cf:901234', label: 'Wicked Wardrobe', entryId: 'e-1', at: '2026-11-24T12:00:00.000Z' }
+        { groupId: 'cf:901234', label: 'Wicked Wardrobe', entryId: 'e-1', at: '2026-11-24T12:00:00.000Z', origin: 'fix' }
       ],
       'journal:list': () => {
         throw new Error('boom')
@@ -798,5 +805,81 @@ describe('last check: Your mods keeps the list that did load', () => {
 
     expect(await screen.findByText("Couldn't load this right now")).toBeInTheDocument()
     expect(screen.getByRole('switch', { name: 'Turn Wicked Wardrobe back on' })).toBeInTheDocument()
+  })
+})
+
+describe('contract round 3 on Your mods', () => {
+  it('a stuck row takes its name and script mark from the entry, never from the summary', async () => {
+    const api = fakeApi({
+      'groups:disabled': [],
+      'journal:list': [
+        sampleJournalEntry({
+          id: 'e-stuck',
+          action: 'disable-group',
+          summary: 'Some other words',
+          groupId: 'cf:901234',
+          groupLabel: 'Wicked Wardrobe',
+          hasScript: true,
+          status: 'needs-attention'
+        })
+      ]
+    })
+
+    render(
+      <Harness api={api} initialScan={null} initialRoute={{ screen: 'mods' }}>
+        <ModsScreen />
+      </Harness>
+    )
+
+    expect(await screen.findByText('Wicked Wardrobe')).toBeInTheDocument()
+    expect(screen.getByText('Script mod')).toBeInTheDocument()
+    expect(screen.queryByText('Some other words')).not.toBeInTheDocument()
+  })
+
+  it('a set-aside mod that is not in the check-up keeps its script mark from its journal entry', async () => {
+    const api = fakeApi({
+      'groups:disabled': [
+        { groupId: 'cf:901234', label: 'Wicked Wardrobe', entryId: 'e-1', at: '2026-11-24T12:00:00.000Z', origin: 'fix' }
+      ],
+      'journal:list': [
+        sampleJournalEntry({
+          id: 'e-1',
+          action: 'disable-group',
+          groupId: 'cf:901234',
+          groupLabel: 'Wicked Wardrobe',
+          hasScript: true,
+          status: 'done'
+        })
+      ]
+    })
+
+    render(
+      <Harness api={api} initialScan={null} initialRoute={{ screen: 'mods' }}>
+        <ModsScreen />
+      </Harness>
+    )
+
+    expect(await screen.findByRole('switch', { name: 'Turn Wicked Wardrobe back on' })).toBeInTheDocument()
+    expect(screen.getByText('Script mod')).toBeInTheDocument()
+  })
+
+  it('a set-aside that was put back after stopping part way says nothing was set aside', async () => {
+    const user = userEvent.setup()
+    const api = fakeApi({
+      'groups:disabled': [],
+      'journal:list': [],
+      'fix:apply': () => ({ status: 'refused', refusal: { why: 'not-started' } })
+    })
+
+    render(
+      <Harness api={api} initialScan={sampleScan()} initialRoute={{ screen: 'mods' }}>
+        <ModsScreen />
+      </Harness>
+    )
+
+    await user.click(await screen.findByRole('switch', { name: 'Set Hair aside' }))
+    expect(await screen.findByText('Hair was not set aside')).toBeInTheDocument()
+    expect(screen.getByText(/just as they were/)).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: 'Set Hair aside' })).toHaveAttribute('aria-checked', 'true')
   })
 })
