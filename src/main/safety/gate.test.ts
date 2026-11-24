@@ -38,7 +38,7 @@ const disk = vi.hoisted(() => ({
   statAs: null as null | { file: string; as: string },
   readdirFails: null as null | { under: string; code: string; hits: number },
   foldersRead: [] as string[],
-  unlinkFails: null as null | { file: string; hits: number },
+  unlinkFails: null as null | { file: string; hits: number; meanwhile?: () => Promise<void> },
   writeFileQuotesItsData: null as null | { hits: number },
   whenTempOpens: null as null | (() => Promise<void>),
   noHardLinks: null as null | { code: string; hits: number },
@@ -109,6 +109,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     unlink: (async (file) => {
       if (disk.unlinkFails && String(file) === disk.unlinkFails.file) {
         disk.unlinkFails.hits += 1
+        await disk.unlinkFails.meanwhile?.()
         throw errno('EBUSY', 'unlink')
       }
       await real.unlink(file)
@@ -2093,6 +2094,42 @@ describe('doing the ops', () => {
     expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
     expect(await readFile(join(elsewhere, 'Slot_00000002.save'), 'utf8')).toBe('decoy mod')
     expect(await snapshotTree(w.inFolder('saves'))).toEqual(savesBefore)
+  })
+
+  // The same care when the source cannot be removed: the copy is taken back only from where the gate put it.
+  // Here the target folder now leads to another folder, which holds a file of the same name and size.
+  it('move across drives: when the source cannot be removed and the target folder was swapped, nothing is removed through it', async () => {
+    const w = await makeWorld()
+    const from = w.inFolder(...MOD)
+    const to = w.inData('holding', 'e1', 'Mods', 'cozy_rug.package')
+    const aside = w.inData('holding', 'aside')
+    const elsewhere = w.inData('holding', 'elsewhere')
+    const bystander = join(elsewhere, 'cozy_rug.package')
+    const sameSize = Buffer.alloc((await stat(from)).size, 'b')
+    await mkdir(elsewhere, { recursive: true })
+    await writeFile(bystander, sameSize)
+    const before = await snapshotTree(w.folder)
+    disk.crossDrive = { from, hits: 0 }
+    let swapped = false
+    disk.unlinkFails = {
+      file: from,
+      hits: 0,
+      meanwhile: async () => {
+        await rename(dirname(to), aside)
+        await linkFolder(elsewhere, dirname(to))
+        swapped = true
+      }
+    }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
+    expect(swapped, 'the target folder was really swapped').toBe(true)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await exists(bystander), 'the file in the other folder is still there').toBe(true)
+    expect(await readFile(bystander)).toEqual(sameSize)
+    expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
+    expect(await exists(join(aside, 'cozy_rug.package')), 'the copy is where the gate put it').toBe(true)
+    expect(await snapshotTree(w.folder)).toEqual(before)
   })
 
   it('an empty request is done', async () => {
