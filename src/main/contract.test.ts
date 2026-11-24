@@ -32,6 +32,7 @@ import { createContext } from './services.ts'
 import { updateHandlers } from './update/handlers.ts'
 import { createUpdater } from './update/updater.ts'
 import { launchEnv, shoot } from '../../test/e2e/support/app.ts'
+import { cspAtBuild, RENDERER_CSP } from '../../electron.vite.config.ts'
 
 const execFileAsync = promisify(execFile)
 const THIS_DIR = dirname(fileURLToPath(import.meta.url))
@@ -144,15 +145,29 @@ describe('e2e support shoot()', () => {
   })
 })
 
-describe('renderer index.html', () => {
-  it('sets the Content-Security-Policy the contract names', async () => {
+const CONTRACT_CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+  "font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'; " +
+  "form-action 'none'"
+
+describe('renderer Content-Security-Policy', () => {
+  it('is added only at build time, so the dev server can inject its inline script', async () => {
     const html = await readFile(join(REPO_ROOT, 'src/renderer/index.html'), 'utf8')
-    const match = html.match(/<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]*)"\s*\/?>/)
-    expect(match?.[1]).toBe(
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
-        "font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'; " +
-        "form-action 'none'"
-    )
+    expect(html).not.toMatch(/Content-Security-Policy/i)
+    const plugin = cspAtBuild()
+    expect(plugin.apply).toBe('build')
+    expect(RENDERER_CSP).toBe(CONTRACT_CSP)
+  })
+
+  it('puts the exact policy first in the built page head', () => {
+    const transform = cspAtBuild().transformIndexHtml as () => unknown
+    expect(transform()).toEqual([
+      {
+        tag: 'meta',
+        attrs: { 'http-equiv': 'Content-Security-Policy', content: CONTRACT_CSP },
+        injectTo: 'head-prepend'
+      }
+    ])
   })
 })
 
