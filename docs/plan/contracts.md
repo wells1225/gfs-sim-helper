@@ -425,8 +425,8 @@ The source of a `copy` is only read, so it may be anywhere inside the Sims folde
   `running` refuses with `game-running`, `unknown` with `game-state-unknown`.
 - **Verified backup** comes from `deps.backupStatus(folderPath)`, wired to PR 9. Only `state: 'verified'` passes;
   `none`, `stale` and `unknown` refuse with `no-verified-backup`. A probe that throws counts as `unknown`.
-- `folderPath` must be a real Sims folder (a localized folder name from PR 3, with `Options.ini` inside), or the
-  request is refused with `not-a-sims-folder`. A path that sits in an allowed zone by name but resolves somewhere
+- `folderPath` must be a real Sims folder: any name, `Options.ini` inside, not a drive or filesystem root (given or
+  real path), and not inside a `saves` or `Tray` folder. Otherwise the request is refused with `not-a-sims-folder`. A path that sits in an allowed zone by name but resolves somewhere
   else is refused with `link-escape`. A `dataDir` inside a Sims folder or OneDrive refuses every request.
 - **Op semantics (as built in PR 8):** `mkdir` creates parents and succeeds if the folder exists. `copy`, `move` and
   `write` create missing parent folders, in the mods and app-data zones only. `remove` of a missing path counts as
