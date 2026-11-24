@@ -56,13 +56,13 @@ export function makeFiftyHandlers(ctx: AppContext, api: FiftyApi = DRIVER): Hand
       const given = field(req, 'answer')
       if (!ANSWERS.includes(given as FiftyAnswer)) return Promise.reject(new Error('fifty:answer needs a known answer'))
       const round = field(req, 'round')
-      if (round !== undefined && (!Number.isInteger(round) || (round as number) < 0)) {
-        return Promise.reject(new Error('fifty:answer needs a valid round'))
+      if (!Number.isInteger(round) || (round as number) < 0) {
+        return Promise.reject(new Error('fifty:answer needs the round it answers'))
       }
       if (inFlightMutations > 0) {
         return one(async () => ({ status: 'ok', state: await api.loadState(ctx) }))
       }
-      return mutate(() => api.giveAnswer(ctx, given as FiftyAnswer, round as number | undefined))
+      return mutate(() => api.giveAnswer(ctx, given as FiftyAnswer, round as number))
     },
     'fifty:stop': () => mutate(() => api.stop(ctx)),
     'fifty:finish': (req) => {

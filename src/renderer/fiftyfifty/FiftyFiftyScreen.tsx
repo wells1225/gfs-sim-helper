@@ -8,7 +8,7 @@ import { useNav } from '../nav.tsx'
 import { useSession } from '../session.tsx'
 import { AnswerStep, CloseCurseForgeStep, Ended, FoundStep, Intro, ReadyStep, TestStep, type EndedHow } from './steps.tsx'
 import { StopDialog } from './StopDialog.tsx'
-import { CURSEFORGE_OPEN, groupLabel, isControlRound, isNotModsResult, PART_WAY, refusalWords } from './words.ts'
+import { CURSEFORGE_OPEN, groupLabel, isNotModsResult, PART_WAY, refusalWords } from './words.ts'
 
 type View = { kind: 'loading' } | { kind: 'session'; state: FiftyFifty | null } | { kind: 'ended'; how: EndedHow; label: string }
 
@@ -88,12 +88,14 @@ export function FiftyFiftyScreen() {
   const startTest = () =>
     void run('Starting the 50/50 test…', () => api.invoke('fifty:start'), () => startTest, show)
 
-  const giveAnswer = (answer: FiftyAnswer) => {
-    const controlCrash = view.kind === 'session' && !!view.state && isControlRound(view.state) && answer === 'crashed'
-    const working = controlCrash ? 'Putting your mods back…' : 'Getting the next round ready…'
+  /** `round` is the round on her screen, so main can tell a late click from an answer to the round it is on. */
+  const giveAnswer = (answer: FiftyAnswer, round: number) => {
+    const working = round === 0 && answer === 'crashed' ? 'Putting your mods back…' : 'Getting the next round ready…'
     const retryFor = (fresh: FiftyFifty | null) =>
-      answer !== 'not-sure' && fresh?.phase === 'awaiting-answer' ? () => giveAnswer(answer) : beginRound
-    void run(working, () => api.invoke('fifty:answer', { answer }), retryFor, (next) => {
+      answer !== 'not-sure' && fresh?.phase === 'awaiting-answer' && fresh.round === round
+        ? () => giveAnswer(answer, round)
+        : beginRound
+    void run(working, () => api.invoke('fifty:answer', { answer, round }), retryFor, (next) => {
       if (next && isNotModsResult(next)) {
         setView({ kind: 'ended', how: 'not-mods', label: '' })
         return
@@ -159,7 +161,7 @@ export function FiftyFiftyScreen() {
       step === 'test' ? (
         <TestStep state={state} onTested={() => setStep('answer')} locked={locked} />
       ) : (
-        <AnswerStep state={state} onAnswer={giveAnswer} locked={locked} />
+        <AnswerStep state={state} onAnswer={(answer) => giveAnswer(answer, state.round)} locked={locked} />
       )
   } else {
     const label = groupLabel(state, state.culprit)

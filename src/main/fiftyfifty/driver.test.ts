@@ -55,7 +55,7 @@ class FakeFixes implements Fixes {
       }
       if (this.aside.has(g.id)) throw new Error(`setAside twice: ${g.id}`)
       const entryId = `e${++this.n}`
-      this.aside.set(g.id, { groupId: g.id, label: g.label, entryId, at: '2026-11-24T12:00:00.000Z' })
+      this.aside.set(g.id, { groupId: g.id, label: g.label, entryId, at: '2026-11-24T12:00:00.000Z', origin: origin.by })
       entries.push(sampleJournalEntry({ id: entryId, groupId: g.id, origin }))
     }
     return { status: 'done', entries }
@@ -403,16 +403,27 @@ describe('a full session', () => {
   })
 
   it('leaves groups she set aside before the test alone', async () => {
-    fixes.aside.set('dir:old', { groupId: 'dir:old', label: 'Old', entryId: 'e0', at: '2026-11-01T00:00:00.000Z' })
+    fixes.aside.set('dir:old', { groupId: 'dir:old', label: 'Old', entryId: 'e0', at: '2026-11-01T00:00:00.000Z', origin: 'fix' })
     const deps = makeDeps()
     await start(deps, scanWith(makeGroups(4)))
     await beginRound(deps)
     await stop(deps)
     expect(fixes.asideIds()).toEqual(['dir:old'])
   })
+  it('never puts back a group of the test that she set aside herself', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    await beginRound(deps)
+    const r1 = stateOf(await giveAnswer(deps, 'worked', 0))
+    const hers = r1.inMods[0]!
+    fixes.aside.set(hers, { groupId: hers, label: 'Hers', entryId: 'e-hers', at: '2026-11-24T12:05:00.000Z', origin: 'fix' })
+    await stop(deps)
+    expect(fixes.asideIds()).toEqual([hers])
+  })
+
   it('leaves out a scanned group that is already set aside, so the test never puts it back', async () => {
     const groups = makeGroups(5)
-    fixes.aside.set('dir:g2', { groupId: 'dir:g2', label: 'Group 002', entryId: 'e0', at: '2026-11-01T00:00:00.000Z' })
+    fixes.aside.set('dir:g2', { groupId: 'dir:g2', label: 'Group 002', entryId: 'e0', at: '2026-11-01T00:00:00.000Z', origin: 'fix' })
     const deps = makeDeps()
     const state = stateOf(await start(deps, scanWith(groups)))
     expect(state.groups.map((g) => g.id)).not.toContain('dir:g2')
@@ -424,7 +435,7 @@ describe('a full session', () => {
   })
 
   it('refuses when every scanned group is already set aside', async () => {
-    fixes.aside.set('dir:g0', { groupId: 'dir:g0', label: 'Group 000', entryId: 'e0', at: '2026-11-01T00:00:00.000Z' })
+    fixes.aside.set('dir:g0', { groupId: 'dir:g0', label: 'Group 000', entryId: 'e0', at: '2026-11-01T00:00:00.000Z', origin: 'fix' })
     expect(await start(makeDeps(), scanWith(makeGroups(1)))).toEqual({
       status: 'refused',
       refusal: { why: 'out-of-date', detail: 'nothing-to-do' }

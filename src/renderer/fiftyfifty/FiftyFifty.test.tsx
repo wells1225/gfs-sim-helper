@@ -145,6 +145,14 @@ describe('FiftyFiftyScreen', () => {
     expect(answers).toEqual(['crashed', 'not-sure'])
   })
 
+  it('sends the round on her screen with the answer', async () => {
+    const { api, user } = setup(<FiftyFiftyScreen />, { 'fifty:get': round(), 'fifty:answer': ok(round({ round: 2 })) })
+    await user.click(await screen.findByRole('button', { name: "I've tested it" }))
+    await user.click(screen.getByRole('button', { name: 'It still crashed' }))
+    await screen.findByText(/Round 3 of about 3/)
+    expect(api.calls.find((c) => c.channel === 'fifty:answer')?.req).toEqual({ answer: 'crashed', round: 1 })
+  })
+
   it('locks the answer buttons while an answer is being saved', async () => {
     const { user } = setup(<FiftyFiftyScreen />, {
       'fifty:get': round(),
@@ -208,6 +216,10 @@ describe('FiftyFiftyScreen', () => {
     expect(words).toMatch(/safety check/)
     expect(words).toMatch(/click Try again/)
     expect(words).not.toMatch(/report/)
+  })
+
+  it('an action that never started asks her to try again', () => {
+    expect(refusalWords({ why: 'not-started' })).toMatch(/nothing was moved.*click Try again/)
   })
 
   it('files that changed during the test point her to stopping, not to a check-up that cannot help', () => {

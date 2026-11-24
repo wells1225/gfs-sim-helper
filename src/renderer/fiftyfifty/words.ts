@@ -96,6 +96,8 @@ export function refusalWords(refusal: FixRefusal, again = 'click Try again'): st
         default:
           return 'There is nothing to do right now. Run the check-up again.'
       }
+    case 'not-started':
+      return `Something got in the way before we could start, so nothing was moved. Wait a moment, then ${again}.`
     case 'fifty-fifty-running':
       return 'A 50/50 test is already running.'
   }

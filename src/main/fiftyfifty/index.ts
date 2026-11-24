@@ -35,11 +35,14 @@ async function curseForgeOpen(deps: FiftyDeps): Promise<boolean> {
   }
 }
 
-/** Which of this session's groups fixes reports as set aside right now. */
+/**
+ * Which of this session's groups the test has set aside right now. A group she set aside herself
+ * (origin 'fix') is hers even when it is one of the session's groups, and is never counted or put back.
+ */
 async function sessionAside(deps: FiftyDeps, state: FiftyFifty): Promise<Set<string>> {
   const ours = new Set(state.groups.map((g) => g.id))
   const off = await deps.fixes.disabledGroups(state.folderPath)
-  return new Set(off.map((d) => d.groupId).filter((id) => ours.has(id)))
+  return new Set(off.filter((d) => d.origin === 'fifty-fifty' && ours.has(d.groupId)).map((d) => d.groupId))
 }
 
 /** A group with no files is never moved, so it cannot tell us anything. */
