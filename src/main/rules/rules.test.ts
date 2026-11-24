@@ -351,6 +351,25 @@ describe('duplicate-files', () => {
     ])
   })
 
+  it('counts a folder as a backup folder only when a whole word in its name says so', () => {
+    const keptAndExtra = (paths: [string, string]) => {
+      const [finding] = only(withFiles(paths.map((p) => pkg(p, { hash: hashed('e') }))), 'duplicate-files')
+      return finding!.evidence
+    }
+    // "Household", "Gold" and "Folder" only contain the letters of "old": same depth, so the first by name stays.
+    expect(keptAndExtra(['Household/x.package', 'Mods/x.package'])).toEqual(['Keeps: Household/x.package', 'Extra copy: Mods/x.package'])
+    expect(keptAndExtra(['Gold/x.package', 'Mods/x.package'])).toEqual(['Keeps: Gold/x.package', 'Extra copy: Mods/x.package'])
+    expect(keptAndExtra(['Folder/x.package', 'Mods/x.package'])).toEqual(['Keeps: Folder/x.package', 'Extra copy: Mods/x.package'])
+    expect(keptAndExtra(['Copyright Free/x.package', 'Mods/x.package'])).toEqual([
+      'Keeps: Copyright Free/x.package',
+      'Extra copy: Mods/x.package'
+    ])
+    // Whole words, split on non-letters and on a lower-to-upper change, in any case.
+    for (const backup of ['BackupCopy', 'my backups', 'mods.bak', 'Copy of CAS', 'copies2', 'OLD', 'old_mods', 'hairOlder', 'Mods - Copy (2)']) {
+      expect(keptAndExtra([`${backup}/x.package`, 'Zed/x.package']), backup).toEqual(['Keeps: Zed/x.package', `Extra copy: ${backup}/x.package`])
+    }
+  })
+
   it('ignores files that were not hashed, and files that are not mods', () => {
     const files = [
       pkg('a.package', { hash: { status: 'not-needed' } }),
