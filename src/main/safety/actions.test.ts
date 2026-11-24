@@ -15,7 +15,7 @@ import type { Workspace, WorkspaceTools } from './testing/harness.ts'
 const SPECS = join(dirname(fileURLToPath(import.meta.url)), '../../../scripts/fixtures/specs')
 const roots: string[] = []
 const TOOLS: WorkspaceTools = {
-  fs: { mkdir: (p) => mkdir(p), copyFile, rename, writeFile, rm, utimes },
+  fs: { mkdir, copyFile, rename, writeFile, rm, utimes },
   makeTempRoot: async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), 'sims-helper-actions-')))
     roots.push(root)
@@ -43,6 +43,7 @@ function held(ws: Workspace, holdId: string, ...rel: string[]): string {
 
 function disablePlan(ws: Workspace, holdId = 'hold-1'): ActionPlan {
   return {
+    entryId: holdId,
     action: 'disable-group',
     summary: 'Set aside BuildBuy',
     origin: { by: 'fix' },
@@ -55,8 +56,9 @@ function disablePlan(ws: Workspace, holdId = 'hold-1'): ActionPlan {
   }
 }
 
-function editPlan(ws: Workspace, newText: string): ActionPlan {
+function editPlan(ws: Workspace, newText: string, entryId = 'edit-1'): ActionPlan {
   return {
+    entryId,
     action: 'turn-mods-on',
     summary: 'Turned mods on',
     origin: { by: 'fix' },
@@ -216,27 +218,124 @@ describe('runAction', () => {
     expect(await readFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), 'utf8')).toBe('updated by CurseForge')
   })
 
-  it('counts a cache that is already gone as cleared', async () => {
+  it('counts a cache that is already gone as cleared, and still goes through the gate so the game check runs', async () => {
     const ws = await backedUp()
-    const outcome = await runAction(ws.deps, {
+    const plan: ActionPlan = {
+      entryId: 'clear-missing-1',
       action: 'clear-caches',
       summary: 'Cleared caches',
       origin: { by: 'fix' },
       folderPath: ws.simsFolder,
       groupId: null,
+      steps: [{ kind: 'remove-cache', path: join(ws.simsFolder, 'clientDB.package') }]
+    }
+    ws.game.state = 'running'
+    expect(await runAction(ws.deps, plan)).toEqual({
+      status: 'refused',
+      refusal: { why: 'gate', refusal: { reason: 'game-running' } }
+    })
+    expect(await journalFiles(ws)).toEqual([])
+
+    ws.game.state = 'not-running'
+    const outcome = await runAction(ws.deps, {
+      ...plan,
+      entryId: 'clear-missing-2',
       steps: [
         { kind: 'remove-cache', path: join(ws.simsFolder, 'clientDB.package') },
         { kind: 'remove-cache', path: join(ws.simsFolder, 'localthumbcache.package') }
       ]
     })
-    expect(outcome).toMatchObject({ status: 'done', entry: { status: 'done', undo: 'cannot-undo' } })
+    expect(outcome).toMatchObject({ status: 'done', entry: { id: 'clear-missing-2', status: 'done', undo: 'cannot-undo' } })
     if (outcome.status === 'done') expect(outcome.entry.steps.every((s) => s.state === 'applied')).toBe(true)
     expect(await pathExists(join(ws.simsFolder, 'localthumbcache.package'))).toBe(false)
+  })
+
+  it('uses plan.entryId for the journal entry and edit holding copy instead of calling newId', async () => {
+    const ws = await backedUp()
+    let newIdCalls = 0
+    ws.deps.newId = () => {
+      newIdCalls += 1
+      return `unexpected-${newIdCalls}`
+    }
+
+    const moved = await runAction(ws.deps, disablePlan(ws, 'planned-move-id'))
+    expect(moved.status).toBe('done')
+    if (moved.status !== 'done') return
+    expect(moved.entry.id).toBe('planned-move-id')
+    expect(await journalFiles(ws)).toContain('planned-move-id.json')
+
+    const edited = await runAction(ws.deps, editPlan(ws, '[options]\nmodsdisabled = 0\n', 'planned-edit-id'))
+    expect(edited.status).toBe('done')
+    if (edited.status !== 'done') return
+    expect(edited.entry.id).toBe('planned-edit-id')
+    expect(edited.entry.steps[0]).toMatchObject({
+      kind: 'edit',
+      savedCopy: join(ws.paths.holdingDir, 'planned-edit-id', 'edits', 'Options.ini')
+    })
+    expect(newIdCalls).toBe(0)
+  })
+
+  it('refuses a plan with colliding move destinations before writing the journal or moving any file', async () => {
+    const ws = await backedUp()
+    const before = await snapshotTree(ws.simsFolder)
+    const sameTo = held(ws, 'collide-1', 'same.package')
+    const outcome = await runAction(ws.deps, {
+      entryId: 'collide-1',
+      action: 'set-aside-files',
+      summary: 'Duplicate target',
+      origin: { by: 'fix' },
+      folderPath: ws.simsFolder,
+      groupId: null,
+      steps: [
+        { kind: 'move', from: join(ws.mods, 'BuildBuy', 'lamp_a.package'), to: sameTo },
+        { kind: 'move', from: join(ws.mods, 'BuildBuy', 'lamp_b.package'), to: sameTo }
+      ]
+    })
+    expect(outcome).toEqual({ status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } })
+    expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+    expect(await journalFiles(ws)).toEqual([])
+  })
+
+  it('refuses cleanly when a file appears in Mods between backupFirst and the fix gate request', async () => {
+    const ws = await backedUp()
+    const before = await snapshotTree(ws.simsFolder)
+    let planted = false
+    ws.gate.hooks.afterOp = async (op, _i, request) => {
+      if (request.reason === 'journal' && op.op === 'write' && !planted) {
+        planted = true
+        await writeFile(join(ws.mods, 'sneaked-in.package'), 'unbacked up')
+      }
+    }
+
+    const outcome = await runAction(ws.deps, disablePlan(ws))
+
+    expect(outcome).toEqual({
+      status: 'refused',
+      refusal: { why: 'gate', refusal: { reason: 'no-verified-backup', backup: 'stale' } }
+    })
+    expect(await journalFiles(ws)).toEqual([])
+    expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_a.package'))).toBe(false)
+    await rm(join(ws.mods, 'sneaked-in.package'))
+    expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+  })
+
+  it('does not falsely return done if updating the journal after the fix fails', async () => {
+    const ws = await backedUp()
+    ws.gate.hooks.beforeRequest = (request) =>
+      request.reason === 'journal' && request.ops.some((op) => op.op === 'write' && op.mode === 'replace')
+        ? { status: 'failed', opsDone: 0, detail: 'disk full' }
+        : undefined
+
+    const outcome = await runAction(ws.deps, disablePlan(ws))
+
+    expect(outcome.status).toBe('stopped-part-way')
+    if (outcome.status === 'stopped-part-way') expect(outcome.detail).toContain('disk full')
   })
 
   it('records a cache clear as one that cannot be undone', async () => {
     const ws = await backedUp()
     const outcome = await runAction(ws.deps, {
+      entryId: 'clear-1',
       action: 'clear-caches',
       summary: 'Cleared caches',
       origin: { by: 'fix' },
@@ -357,9 +456,35 @@ describe('undo', () => {
     expect(await readFile(join(ws.simsFolder, 'Options.ini'), 'utf8')).toBe('the game rewrote this')
   })
 
+  it('never overwrites a folder or link that appeared at from, and lets a follow-up undo finish once cleared', async () => {
+    const ws = await backedUp()
+    const before = await snapshotTree(ws.simsFolder)
+    const moved = await runAction(ws.deps, disablePlan(ws))
+    if (moved.status !== 'done') throw new Error(moved.status)
+
+    // Step 0's original path is now occupied by a folder; step 1 is clean.
+    const lampAFrom = join(ws.mods, 'BuildBuy', 'lamp_a.package')
+    await mkdir(lampAFrom)
+
+    const partial = await undo(ws.deps, moved.entry.id)
+    expect(partial.status).toBe('stopped-part-way')
+    if (partial.status !== 'stopped-part-way') return
+    expect(partial.detail).toContain('lamp_a.package')
+    expect(partial.entry.status).toBe('needs-attention')
+    // Step 1 (lamp_b) was put back, step 0 (lamp_a) stayed safe in holding and the folder was not overwritten.
+    expect(await pathExists(join(ws.mods, 'BuildBuy', 'lamp_b.package'))).toBe(true)
+    expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_a.package'))).toBe(true)
+
+    await rm(lampAFrom, { recursive: true })
+    const finished = await undo(ws.deps, moved.entry.id)
+    expect(finished).toMatchObject({ status: 'done', entry: { status: 'undone' } })
+    expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+  })
+
   it('has nothing to do for a cache clear or an unknown entry', async () => {
     const ws = await backedUp()
     const cleared = await runAction(ws.deps, {
+      entryId: 'clear-only-1',
       action: 'clear-caches',
       summary: 'Cleared caches',
       origin: { by: 'fix' },
@@ -405,19 +530,100 @@ describe('recover', () => {
     return saved
   }
 
-  it('puts back an entry left in progress after only some moves ran', async () => {
+  it('puts back an entry left in progress across every crash point (0, 1, or all moves ran)', async () => {
+    for (const movesThatRan of [0, 1, 2]) {
+      const ws = await backedUp()
+      const before = await snapshotTree(ws.simsFolder)
+      const entry = await interrupted(ws, movesThatRan)
+
+      const touched = await recover(ws.deps)
+
+      expect(touched.map((e) => e.id), `movesThatRan=${movesThatRan}`).toEqual([entry.id])
+      expect(touched[0]!.status, `movesThatRan=${movesThatRan}`).toBe('undone')
+      expect(await snapshotTree(ws.simsFolder), `movesThatRan=${movesThatRan}`).toEqual(before)
+      expect((await listJournal(ws.deps))[0]!.status).toBe('undone')
+      expect(await recover(ws.deps)).toEqual([])
+    }
+  })
+
+  it('preserves earlier moved steps as applied when recover stops on a later unclear step, so a follow-up undo restores everything', async () => {
     const ws = await backedUp()
     const before = await snapshotTree(ws.simsFolder)
-    const entry = await interrupted(ws, 1)
-    expect(await pathExists(join(ws.mods, 'BuildBuy', 'lamp_a.package'))).toBe(false)
+    const entry = await interrupted(ws, 2)
+    // Something new sits at step 1's original path before restart.
+    const conflict = join(ws.mods, 'BuildBuy', 'lamp_b.package')
+    await writeFile(conflict, 'new file at lamp_b')
+
+    const touched = await recover(ws.deps)
+    expect(touched.map((e) => [e.id, e.status])).toEqual([[entry.id, 'needs-attention']])
+    expect(await readFile(conflict, 'utf8')).toBe('new file at lamp_b')
+    expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_a.package'))).toBe(true)
+    expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package'))).toBe(true)
+
+    // Once the conflicting file is cleared, undo must restore BOTH lamp_a and lamp_b — never silently mark undone.
+    await rm(conflict)
+    const undone = await undo(ws.deps, entry.id)
+    expect(undone).toMatchObject({ status: 'done', entry: { status: 'undone' } })
+    expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+  })
+
+  it('recovers an edit action that crashed before savedCopy, after savedCopy, or after replacing Options.ini', async () => {
+    for (const stage of ['before-copy', 'after-copy', 'after-write'] as const) {
+      const ws = await backedUp()
+      const before = await snapshotTree(ws.simsFolder)
+      const optionsPath = join(ws.simsFolder, 'Options.ini')
+      const newText = '[options]\nmodsdisabled = 0\nscriptmodsenabled = 1\n'
+      let saved: JournalEntry | null = null
+      ws.gate.hooks.beforeRequest = async (request) => {
+        if (request.reason !== 'fix') return undefined
+        const files = await journalFiles(ws)
+        saved = JSON.parse(await readFile(join(ws.paths.journalDir, files[0]!), 'utf8')) as JournalEntry
+        return { status: 'refused', refusal: { reason: 'game-running' } }
+      }
+      await runAction(ws.deps, editPlan(ws, newText, `edit-crash-${stage}`))
+      ws.gate.hooks.beforeRequest = undefined
+      if (!saved) throw new Error('no entry written')
+      const entry: JournalEntry = saved
+      const step = entry.steps[0]!
+      if (step.kind !== 'edit') throw new Error('expected edit')
+      await writeFile(join(ws.paths.journalDir, `${entry.id}.json`), JSON.stringify(entry))
+      if (stage === 'after-copy' || stage === 'after-write') {
+        await mkdir(dirname(step.savedCopy), { recursive: true })
+        await copyFile(optionsPath, step.savedCopy)
+      }
+      if (stage === 'after-write') {
+        await writeFile(optionsPath, newText)
+      }
+
+      const touched = await recover(ws.deps)
+
+      expect(touched.map((e) => e.status), stage).toEqual(['undone'])
+      expect(await snapshotTree(ws.simsFolder), stage).toEqual(before)
+    }
+  })
+
+  it('finishes an undo of a needs-attention entry that crashed mid-undo without tripping on steps that never ran', async () => {
+    const ws = await backedUp()
+    const lampAHash = await sha256File(join(ws.mods, 'BuildBuy', 'lamp_a.package'))
+    ws.gate.hooks.beforeOp = (op, _i, request) =>
+      request.reason === 'fix' && op.op === 'move' && op.from.endsWith('lamp_b.package') ? 'file in use' : undefined
+    const stopped = await runAction(ws.deps, disablePlan(ws))
+    if (stopped.status !== 'stopped-part-way') throw new Error(stopped.status)
+    ws.gate.hooks.beforeOp = undefined
+
+    // Step 1 (lamp_b) never ran and was updated externally.
+    await writeFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), 'updated by CurseForge')
+    // Simulate a crash right after undo wrote status: 'in-progress' before moving lamp_a back.
+    await writeFile(
+      join(ws.paths.journalDir, `${stopped.entry.id}.json`),
+      JSON.stringify({ ...stopped.entry, status: 'in-progress' })
+    )
 
     const touched = await recover(ws.deps)
 
-    expect(touched.map((e) => e.id)).toEqual([entry.id])
-    expect(touched[0]!.status).toBe('undone')
-    expect(await snapshotTree(ws.simsFolder)).toEqual(before)
-    expect((await listJournal(ws.deps))[0]!.status).toBe('undone')
-    expect(await recover(ws.deps)).toEqual([])
+    expect(touched.map((e) => e.status)).toEqual(['undone'])
+    expect(await sha256File(join(ws.mods, 'BuildBuy', 'lamp_a.package'))).toBe(lampAHash)
+    expect(await readFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), 'utf8')).toBe('updated by CurseForge')
   })
 
   it('marks an entry it cannot settle as needing attention, and deletes nothing', async () => {
@@ -437,22 +643,37 @@ describe('recover', () => {
     }
   })
 
-  it('finishes an undo that was interrupted part way', async () => {
+  it('finishes an undo that was interrupted before the first revert move, mid-moves, or during an edit undo', async () => {
+    for (const revertedBeforeCrash of [0, 1]) {
+      const ws = await backedUp()
+      const before = await snapshotTree(ws.simsFolder)
+      const moved = await runAction(ws.deps, disablePlan(ws))
+      if (moved.status !== 'done') throw new Error(moved.status)
+      if (revertedBeforeCrash === 1) {
+        const lastStep = moved.entry.steps[1]!
+        if (lastStep.kind !== 'move') throw new Error('expected a move')
+        await rename(lastStep.to, lastStep.from)
+      }
+      await writeFile(
+        join(ws.paths.journalDir, `${moved.entry.id}.json`),
+        JSON.stringify({ ...moved.entry, status: 'in-progress' })
+      )
+
+      const touched = await recover(ws.deps)
+
+      expect(touched.map((e) => e.status), `reverted=${revertedBeforeCrash}`).toEqual(['undone'])
+      expect(await snapshotTree(ws.simsFolder), `reverted=${revertedBeforeCrash}`).toEqual(before)
+    }
+
     const ws = await backedUp()
     const before = await snapshotTree(ws.simsFolder)
-    const moved = await runAction(ws.deps, disablePlan(ws))
-    if (moved.status !== 'done') throw new Error(moved.status)
-    // A crash during undo: the entry was marked in-progress, the last step was moved back, then the app died.
-    const lastStep = moved.entry.steps[1]!
-    if (lastStep.kind !== 'move') throw new Error('expected a move')
-    await rename(lastStep.to, lastStep.from)
+    const edited = await runAction(ws.deps, editPlan(ws, '[options]\nmodsdisabled = 0\n'))
+    if (edited.status !== 'done') throw new Error(edited.status)
     await writeFile(
-      join(ws.paths.journalDir, `${moved.entry.id}.json`),
-      JSON.stringify({ ...moved.entry, status: 'in-progress' })
+      join(ws.paths.journalDir, `${edited.entry.id}.json`),
+      JSON.stringify({ ...edited.entry, status: 'in-progress' })
     )
-
     const touched = await recover(ws.deps)
-
     expect(touched.map((e) => e.status)).toEqual(['undone'])
     expect(await snapshotTree(ws.simsFolder)).toEqual(before)
   })

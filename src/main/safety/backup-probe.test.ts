@@ -7,14 +7,14 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, describe, expect, it } from 'vitest'
 import { createBackup, runAction, undo } from './index.ts'
-import { makeWorkspace, SIMS_REL, snapshotTree } from './testing/harness.ts'
+import { makeWorkspace, snapshotTree } from './testing/harness.ts'
 import type { WorkspaceTools } from './testing/harness.ts'
 
 const THIS_DIR = dirname(fileURLToPath(import.meta.url))
 const BIG = join(THIS_DIR, '../../../test/fixtures/big')
 const roots: string[] = []
 const TOOLS: WorkspaceTools = {
-  fs: { mkdir: (p) => mkdir(p), copyFile, rename, writeFile, rm, utimes },
+  fs: { mkdir, copyFile, rename, writeFile, rm, utimes },
   makeTempRoot: async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), 'sims-helper-probe-')))
     roots.push(root)
@@ -55,6 +55,7 @@ describe.runIf(process.env.SIMS_HELPER_PROBE === 'backup')('backup probe on the 
     }
     expect(files.length, 'a Mods folder with files').toBeGreaterThan(0)
     const outcome = await runAction(ws.deps, {
+      entryId: 'probe',
       action: 'disable-group',
       summary: `Set aside ${top}`,
       origin: { by: 'fix' },

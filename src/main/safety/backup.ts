@@ -1,23 +1,33 @@
-import { stat } from 'node:fs/promises'
+import { lstat, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import type { BackupRecord, BackupResult, BackupStatus, GameRunState, Progress } from '../../shared/model.ts'
+import type { BackupRecord, BackupResult, BackupStatus, GameRunState, Progress, Sha256 } from '../../shared/model.ts'
 import { sha256File } from '../fs-read.ts'
 import type { GateResult, OnProgress, SafetyDeps, WriteOp } from '../ports.ts'
 import { freeBytes } from './disk.ts'
 import { listFolderFiles } from './files.ts'
-import type { ListedFile } from './files.ts'
+import type { ListedFile, SkippedLink } from './files.ts'
 import { listEntries } from './journal.ts'
 import { manifestFile, manifestJson, newestVerified, storedFile } from './manifest.ts'
 import type { Manifest, ManifestFile } from './manifest.ts'
-import { exists, fromManifestPath, inOneDrive, isInside, manifestKey, missingDirs, pathKey, samePath } from './where.ts'
+import {
+  fromManifestPath,
+  inOneDriveReal,
+  isInsideReal,
+  manifestKey,
+  missingDirs,
+  pathKey,
+  samePath
+} from './where.ts'
 
 const OPS_PER_REQUEST = 200
 const PROGRESS_EVERY_MS = 100
 const SPACE_FACTOR = 1.1
+const RACY_WINDOW_MS = 2000
 
 export async function askGame(deps: SafetyDeps): Promise<GameRunState> {
   try {
-    return await deps.gameState()
+    const state = await deps.gameState()
+    return state === 'running' || state === 'not-running' ? state : 'unknown'
   } catch {
     return 'unknown'
   }
@@ -39,6 +49,12 @@ function sameDate(a: number, b: number): boolean {
   return Math.floor(a) === Math.floor(b)
 }
 
+/** A file whose mtime falls within 2 seconds of when the backup ran may have been overwritten in the same ms. */
+function isRacy(backupAt: string, fileMtimeMs: number): boolean {
+  const atMs = Date.parse(backupAt)
+  return Number.isFinite(atMs) && Math.abs(atMs - fileMtimeMs) < RACY_WINDOW_MS
+}
+
 function gateDetail(result: GateResult): string {
   if (result.status === 'refused') return `refused: ${result.refusal.reason}`
   if (result.status === 'failed') return result.detail
@@ -51,26 +67,34 @@ export async function backupStatus(deps: SafetyDeps, folderPath: string): Promis
     if (!manifest) return { state: 'none' }
     const { id: backupId, at } = manifest.record
     const lines = new Map(manifest.files.map((line) => [manifestKey(line.path), line]))
-    const journalMoves = new Map<string, number[]>()
-    const journalEdits = new Set<string>()
+    const journalMoves = new Map<string, { bytes: number; sha256: Sha256 }[]>()
+    const journalEdits = new Map<string, Sha256[]>()
     for (const entry of await listEntries(deps.paths.journalDir)) {
-      if (!samePath(entry.folderPath, folderPath)) continue
+      if (!samePath(entry.folderPath, folderPath) || entry.backupId !== backupId) continue
       for (const step of entry.steps) {
         if (step.state !== 'applied') continue
         if (step.kind === 'move') {
           const key = pathKey(step.to)
-          journalMoves.set(key, [...(journalMoves.get(key) ?? []), step.bytes])
+          journalMoves.set(key, [...(journalMoves.get(key) ?? []), { bytes: step.bytes, sha256: step.sha256 }])
         } else if (step.kind === 'edit') {
-          journalEdits.add(pathKey(step.path))
+          const key = pathKey(step.path)
+          journalEdits.set(key, [...(journalEdits.get(key) ?? []), step.afterSha256])
         }
       }
     }
-    for (const file of await listFolderFiles(folderPath, 'Mods')) {
+    const { files } = await listFolderFiles(folderPath, 'Mods')
+    for (const file of files) {
       const line = lines.get(manifestKey(file.path))
-      if (line && line.bytes === file.bytes && sameDate(line.mtimeMs, file.mtimeMs)) continue
+      if (line && line.bytes === file.bytes && sameDate(line.mtimeMs, file.mtimeMs)) {
+        if (!isRacy(at, file.mtimeMs) || (await sha256File(file.abs)) === line.sha256) continue
+      }
       const key = pathKey(file.abs)
-      if (journalMoves.get(key)?.includes(file.bytes)) continue
-      if (journalEdits.has(key)) continue
+      const moves = journalMoves.get(key)?.filter((m) => m.bytes === file.bytes)
+      const edits = journalEdits.get(key)
+      if ((moves && moves.length > 0) || (edits && edits.length > 0)) {
+        const hash = await sha256File(file.abs)
+        if (moves?.some((m) => m.sha256 === hash) || edits?.includes(hash)) continue
+      }
       return { state: 'stale', backupId, at }
     }
     return { state: 'verified', backupId, at }
@@ -80,12 +104,21 @@ export async function backupStatus(deps: SafetyDeps, folderPath: string): Promis
 }
 
 /** A line of the newest verified backup that still matches the file, with its stored bytes still in place. */
-async function reusable(deps: SafetyDeps, previous: Map<string, ManifestFile>, file: ListedFile): Promise<ManifestFile | null> {
+async function reusable(
+  deps: SafetyDeps,
+  previous: Map<string, ManifestFile>,
+  previousAt: string | null,
+  file: ListedFile
+): Promise<ManifestFile | null> {
   const line = previous.get(manifestKey(file.path))
   if (!line || line.bytes !== file.bytes || !sameDate(line.mtimeMs, file.mtimeMs)) return null
   try {
-    const kept = await stat(storedFile(deps.paths.backupsDir, line))
-    return kept.isFile() && kept.size === line.bytes ? line : null
+    const kept = await lstat(storedFile(deps.paths.backupsDir, line))
+    if (!kept.isFile() || kept.size !== line.bytes) return null
+    if (previousAt !== null && isRacy(previousAt, file.mtimeMs)) {
+      if ((await sha256File(file.abs)) !== line.sha256) return null
+    }
+    return line
   } catch {
     return null
   }
@@ -112,30 +145,36 @@ export async function makeBackup(deps: SafetyDeps, folderPath: string, onProgres
   const { paths } = deps
   const game = await askGame(deps)
   if (game === 'running') return { status: 'refused', reason: 'game-running' }
-  if (game === 'unknown') return { status: 'refused', reason: 'game-state-unknown' }
-  if (inOneDrive(paths.backupsDir, paths.oneDriveRoots)) return { status: 'refused', reason: 'backup-folder-in-onedrive' }
+  if (game !== 'not-running') return { status: 'refused', reason: 'game-state-unknown' }
+  if (await inOneDriveReal(paths.backupsDir, paths.oneDriveRoots)) {
+    return { status: 'refused', reason: 'backup-folder-in-onedrive' }
+  }
   try {
     if (!(await stat(folderPath)).isDirectory()) return { status: 'refused', reason: 'sims-folder-missing' }
   } catch {
     return { status: 'refused', reason: 'sims-folder-missing' }
   }
-  if (isInside(paths.backupsDir, folderPath)) {
-    return { status: 'failed', detail: 'The backups folder is inside the Sims folder, so no backup was made.' }
+  if (await isInsideReal(paths.backupsDir, folderPath)) {
+    return { status: 'refused', reason: 'backup-folder-in-sims-folder' }
   }
 
   let files: ListedFile[]
+  let skipped: SkippedLink[]
   let previous: Manifest | null
   try {
-    files = await listFolderFiles(folderPath)
+    const listed = await listFolderFiles(folderPath)
+    files = listed.files
+    skipped = listed.skipped
     previous = await newestVerified(paths.backupsDir, folderPath)
   } catch (err) {
     return { status: 'failed', detail: `Could not read the Sims folder: ${(err as Error).message}` }
   }
   const previousLines = new Map((previous?.files ?? []).map((line) => [manifestKey(line.path), line]))
+  const previousAt = previous?.record.at ?? null
   const kept = new Map<string, ManifestFile>()
   const toCopy: ListedFile[] = []
   for (const file of files) {
-    const line = await reusable(deps, previousLines, file)
+    const line = await reusable(deps, previousLines, previousAt, file)
     if (line) kept.set(file.path, line)
     else toCopy.push(file)
   }
@@ -160,10 +199,14 @@ export async function makeBackup(deps: SafetyDeps, folderPath: string, onProgres
 
   const startOps: WriteOp[] = []
   const planned = new Set<string>()
-  for (const dir of await missingDirs(paths.backupsDir, planned)) startOps.push({ op: 'mkdir', path: dir })
-  startOps.push({ op: 'mkdir', path: backupDir }, { op: 'mkdir', path: filesDir })
-  planned.add(pathKey(backupDir)).add(pathKey(filesDir))
-  startOps.push({ op: 'write', path: manifestFile(paths.backupsDir, id), data: manifestJson({ record, files: [] }), mode: 'create' })
+  for (const dir of await missingDirs(filesDir, planned)) startOps.push({ op: 'mkdir', path: dir })
+  planned.add(pathKey(paths.backupsDir)).add(pathKey(backupDir)).add(pathKey(filesDir))
+  startOps.push({
+    op: 'write',
+    path: manifestFile(paths.backupsDir, id),
+    data: manifestJson({ record, files: [], skipped }),
+    mode: 'create'
+  })
   const started = await deps.gate.run({ reason: 'backup', folderPath: null, ops: startOps })
   if (started.status !== 'done') return { status: 'failed', detail: `Could not start the backup: ${gateDetail(started)}` }
 
@@ -172,7 +215,14 @@ export async function makeBackup(deps: SafetyDeps, folderPath: string, onProgres
     const written = await deps.gate.run({
       reason: 'backup',
       folderPath: null,
-      ops: [{ op: 'write', path: manifestFile(paths.backupsDir, id), data: manifestJson({ record: done, files: lines }), mode: 'replace' }]
+      ops: [
+        {
+          op: 'write',
+          path: manifestFile(paths.backupsDir, id),
+          data: manifestJson({ record: done, files: lines, skipped }),
+          mode: 'replace'
+        }
+      ]
     })
     if (state === 'failed') return { status: 'failed', detail }
     if (written.status !== 'done') return { status: 'failed', detail: `Could not save the backup list: ${gateDetail(written)}` }
@@ -206,9 +256,12 @@ export async function makeBackup(deps: SafetyDeps, folderPath: string, onProgres
         continue
       }
       const target = fromManifestPath(filesDir, file.path)
-      const copy = (await exists(target)) ? await stat(target) : null
-      const [source, copyHash] = copy?.size === file.bytes ? await Promise.all([sha256File(file.abs), sha256File(target)]) : ['', '']
-      if (!copy || copy.size !== file.bytes || source !== copyHash) {
+      const [srcInfo, copy] = await Promise.all([lstat(file.abs).catch(() => null), lstat(target).catch(() => null)])
+      const unchanged =
+        srcInfo !== null && srcInfo.isFile() && srcInfo.size === file.bytes && sameDate(srcInfo.mtimeMs, file.mtimeMs)
+      const copyOk = copy !== null && copy.isFile() && copy.size === file.bytes
+      const [source, copyHash] = unchanged && copyOk ? await Promise.all([sha256File(file.abs), sha256File(target)]) : ['', '']
+      if (!unchanged || !copyOk || source !== copyHash) {
         return await finish('failed', lines, `The copy of ${file.path} does not match the original.`)
       }
       lines.push({ path: file.path, bytes: file.bytes, mtimeMs: file.mtimeMs, sha256: copyHash, storedIn: id })

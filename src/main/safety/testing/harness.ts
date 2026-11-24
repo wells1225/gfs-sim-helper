@@ -63,6 +63,7 @@ export async function makeWorkspace(tools: WorkspaceTools, spec = 'duplicates'):
   }
   const gate = makeTestGate({
     fs: tools.fs,
+    dataDir,
     gameState,
     backupStatus: (folderPath) => backupStatus(deps, folderPath)
   })

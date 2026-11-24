@@ -2,7 +2,7 @@ import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { JournalEntry } from '../../shared/model.ts'
 import type { GateResult, SafetyDeps, WriteOp } from '../ports.ts'
-import { missingDirs } from './where.ts'
+import { isSafeId, missingDirs } from './where.ts'
 
 export function entryFile(journalDir: string, id: string): string {
   return join(journalDir, `${id}.json`)
@@ -14,7 +14,7 @@ function looksLikeEntry(value: unknown): value is JournalEntry {
 }
 
 export async function readEntry(journalDir: string, id: string): Promise<JournalEntry | null> {
-  if (!/^[\w.-]+$/.test(id)) return null
+  if (!isSafeId(id)) return null
   try {
     const parsed: unknown = JSON.parse(await readFile(entryFile(journalDir, id), 'utf8'))
     return looksLikeEntry(parsed) && parsed.id === id ? parsed : null

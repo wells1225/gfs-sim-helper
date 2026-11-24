@@ -1,17 +1,19 @@
 // A stand-in for the real write gate (PR 8), for PR 9's tests only. Nothing in the app imports this file.
 //
 // It imports no fs write function: the test file hands it the ones it may use, so the read and write rule
-// (gate-lint.test.ts) still holds for every non-test file under src/. It is strict on purpose, like the real gate:
-// mkdir makes one level and fails when the folder exists; copy, move and write 'create' never overwrite; Saves and
-// Tray are always refused; a write into Mods, a cache or Options.ini asks gameState and backupStatus first.
-import { lstat, stat } from 'node:fs/promises'
+// (gate-lint.test.ts) still holds for every non-test file under src/. It matches PR 8's op semantics
+// (contracts.md, section 5): mkdir creates parents and succeeds if the folder exists; copy and move take
+// plain files only (a folder or link as the source fails) and never overwrite; remove of a missing path is
+// done; Saves and Tray are always refused; writes outside Mods/caches/Options.ini/dataDir are refused;
+// a write into Mods, a cache or Options.ini asks gameState and backupStatus first.
+import { lstat } from 'node:fs/promises'
 import { basename, dirname, join, relative, sep } from 'node:path'
 import type { BackupStatus, GameRunState } from '../../../shared/model.ts'
 import { CACHE_NAMES } from '../../ports.ts'
 import type { Gate, GateResult, WriteOp, WriteRequest } from '../../ports.ts'
 
 export interface TestGateFs {
-  mkdir(path: string): Promise<unknown>
+  mkdir(path: string, options?: { recursive?: boolean }): Promise<unknown>
   copyFile(from: string, to: string, mode: number): Promise<void>
   rename(from: string, to: string): Promise<void>
   writeFile(path: string, data: string | Uint8Array, options: { flag: string }): Promise<void>
@@ -29,6 +31,7 @@ export interface TestGateHooks {
 
 export interface TestGateOptions {
   fs: TestGateFs
+  dataDir?: string
   gameState?: () => Promise<GameRunState>
   backupStatus?: (folderPath: string) => Promise<BackupStatus>
   hooks?: TestGateHooks
@@ -75,21 +78,27 @@ function writtenPaths(op: WriteOp): string[] {
   }
 }
 
-function zoneOf(path: string, folderPath: string | null): 'forbidden' | 'protected' | 'other' {
-  if (folderPath === null || !inside(path, folderPath)) return 'other'
-  const rel = relative(folderPath, path)
-  const top = lower(rel.split(sep)[0] ?? '')
-  if (top === 'saves' || top === 'tray') return 'forbidden'
-  if (top === 'mods') return 'protected'
-  if (rel.split(sep).length === 1) {
-    if (top === 'options.ini') return 'protected'
-    if (CACHE_NAMES.some((name) => lower(name.replace(/\/$/, '')) === top)) return 'protected'
+type TestZone = 'forbidden' | 'protected' | 'app-data' | 'outside'
+
+function zoneOf(path: string, folderPath: string | null, dataDir: string | undefined): TestZone {
+  if (folderPath !== null && inside(path, folderPath)) {
+    const rel = relative(folderPath, path)
+    const parts = rel === '' ? [] : rel.split(sep)
+    const top = lower(parts[0] ?? '')
+    if (top === 'saves' || top === 'tray') return 'forbidden'
+    if (top === 'mods') return 'protected'
+    if (parts.length === 1) {
+      if (top === 'options.ini') return 'protected'
+      if (CACHE_NAMES.some((name) => lower(name.replace(/\/$/, '')) === top)) return 'protected'
+    }
+    return 'outside'
   }
-  return 'other'
+  if (dataDir === undefined || inside(path, dataDir)) return 'app-data'
+  return 'outside'
 }
 
 export function makeTestGate(options: TestGateOptions): TestGate {
-  const { fs } = options
+  const { fs, dataDir } = options
   const requests: WriteRequest[] = []
   const gate: TestGate = {
     requests,
@@ -106,8 +115,9 @@ export function makeTestGate(options: TestGateOptions): TestGate {
       let touchesProtected = false
       for (const op of request.ops) {
         for (const path of writtenPaths(op)) {
-          const zone = zoneOf(path, request.folderPath)
+          const zone = zoneOf(path, request.folderPath, dataDir)
           if (zone === 'forbidden') return { status: 'refused', refusal: { reason: 'saves-or-tray', path } }
+          if (zone === 'outside') return { status: 'refused', refusal: { reason: 'outside-allowed-area', path } }
           if (zone === 'protected') touchesProtected = true
         }
       }
@@ -145,20 +155,26 @@ export function makeTestGate(options: TestGateOptions): TestGate {
 async function runOp(fs: TestGateFs, op: WriteOp): Promise<void> {
   switch (op.op) {
     case 'mkdir':
-      await fs.mkdir(op.path)
+      await fs.mkdir(op.path, { recursive: true })
       return
     case 'copy': {
-      const source = await stat(op.from)
+      const source = await lstat(op.from)
+      if (!source.isFile()) throw new Error(`source is not a plain file: ${op.from}`)
+      await fs.mkdir(dirname(op.to), { recursive: true })
       await fs.copyFile(op.from, op.to, COPYFILE_EXCL)
       await fs.utimes(op.to, source.atime, source.mtime)
       return
     }
-    case 'move':
+    case 'move': {
+      const source = await lstat(op.from)
+      if (!source.isFile()) throw new Error(`source is not a plain file: ${op.from}`)
       if (await exists(op.to)) throw new Error(`target exists: ${op.to}`)
-      if (!(await exists(dirname(op.to)))) throw new Error(`no parent folder: ${op.to}`)
+      await fs.mkdir(dirname(op.to), { recursive: true })
       await fs.rename(op.from, op.to)
       return
+    }
     case 'write':
+      await fs.mkdir(dirname(op.path), { recursive: true })
       if (op.mode === 'create') {
         await fs.writeFile(op.path, op.data, { flag: 'wx' })
         return
@@ -170,6 +186,7 @@ async function runOp(fs: TestGateFs, op: WriteOp): Promise<void> {
       }
       return
     case 'remove':
+      if (!(await exists(op.path))) return
       await fs.rm(op.path, { recursive: true, force: false })
       return
   }

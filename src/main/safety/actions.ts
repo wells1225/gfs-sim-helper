@@ -6,7 +6,7 @@ import { sha256File } from '../fs-read.ts'
 import type { ActionPlan, GateResult, OnProgress, SafetyDeps, WriteOp } from '../ports.ts'
 import { backupStatus, makeBackup, tracked } from './backup.ts'
 import { readEntry, removeEntry, saveEntry } from './journal.ts'
-import { exists, missingDirs } from './where.ts'
+import { exists, isSafeId, missingDirs, pathKey } from './where.ts'
 
 type BackupFirst = { status: 'ok'; backupId: string } | { status: 'refused'; refusal: FixRefusal }
 
@@ -40,15 +40,27 @@ async function journalSteps(
   plan: ActionPlan,
   entryId: string
 ): Promise<{ steps: JournalStep[]; editData: Map<number, Uint8Array> } | null> {
+  if (!isSafeId(entryId)) return null
   const steps: JournalStep[] = []
   const editData = new Map<number, Uint8Array>()
   const savedNames = new Set<string>()
+  const seenFrom = new Set<string>()
+  const seenTo = new Set<string>()
+  const seenEdit = new Set<string>()
   for (const planned of plan.steps) {
     if (planned.kind === 'move') {
+      const fromKey = pathKey(planned.from)
+      const toKey = pathKey(planned.to)
+      if (seenFrom.has(fromKey) || seenTo.has(toKey) || seenTo.has(fromKey) || seenFrom.has(toKey)) return null
+      seenFrom.add(fromKey)
+      seenTo.add(toKey)
       const info = await lstat(planned.from).catch(() => null)
       if (!info?.isFile() || (await exists(planned.to))) return null
       steps.push({ kind: 'move', from: planned.from, to: planned.to, bytes: info.size, sha256: await sha256File(planned.from), state: 'pending' })
     } else if (planned.kind === 'edit') {
+      const editKey = pathKey(planned.path)
+      if (seenEdit.has(editKey)) return null
+      seenEdit.add(editKey)
       const before = await fileHash(planned.path)
       if (before === null) return null
       const data = new TextEncoder().encode(planned.newText)
@@ -59,6 +71,7 @@ async function journalSteps(
       }
       savedNames.add(name.toLowerCase())
       const savedCopy = join(deps.paths.holdingDir, entryId, 'edits', name)
+      if (await exists(savedCopy)) return null
       editData.set(steps.length, data)
       steps.push({ kind: 'edit', path: planned.path, savedCopy, beforeSha256: before, afterSha256: sha256Of(data), state: 'pending' })
     } else {
@@ -87,12 +100,18 @@ async function inspect(step: JournalStep): Promise<StepOnDisk> {
   return (await exists(step.path)) ? { where: 'not-done' } : { where: 'done' }
 }
 
+function saveError(result: GateResult): string {
+  if (result.status === 'refused') return `Could not update the journal entry: refused (${result.refusal.reason})`
+  if (result.status === 'failed') return `Could not update the journal entry: ${result.detail}`
+  return ''
+}
+
 export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgress?: OnProgress): Promise<FixOutcome> {
   if (plan.steps.length === 0) return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
   const backup = await backupFirst(deps, plan.folderPath, onProgress)
   if (backup.status === 'refused') return backup
 
-  const id = deps.newId()
+  const id = plan.entryId
   const built = await journalSteps(deps, plan, id)
   if (!built) return OUT_OF_DATE
   const entry: JournalEntry = {
@@ -125,19 +144,20 @@ export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgres
       for (const dir of await missingDirs(dirname(step.savedCopy), planned)) ops.push({ op: 'mkdir', path: dir })
       ops.push({ op: 'copy', from: step.path, to: step.savedCopy })
       ops.push({ op: 'write', path: step.path, data: built.editData.get(i)!, mode: 'replace' })
-    } else if (await exists(step.path)) {
+    } else {
+      // Always send remove through the gate so game/backup/zone checks run; removing a missing cache is done.
       ops.push({ op: 'remove', path: step.path })
-    } // a cache that is already gone needs no op: the step counts as applied
+    }
     lastOp.push(ops.length - 1)
   }
 
   onProgress?.({ task: 'fix', stage: 'moving', done: 0, total: entry.steps.length })
   let result: GateResult
   try {
-    result = ops.length === 0 ? { status: 'done' } : await deps.gate.run({ reason: 'fix', folderPath: plan.folderPath, ops })
+    result = await deps.gate.run({ reason: 'fix', folderPath: plan.folderPath, ops })
   } catch (err) {
-    // We cannot know which ops ran: ask the disk.
-    for (const step of entry.steps) if ((await inspect(step)).where === 'done') step.state = 'applied'
+    // We cannot know which ops ran: ask the disk, and treat unclear steps as applied so undo still checks them.
+    for (const step of entry.steps) if ((await inspect(step)).where !== 'not-done') step.state = 'applied'
     result = { status: 'failed', opsDone: -1, detail: (err as Error).message }
   }
 
@@ -155,7 +175,11 @@ export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgres
   }
   for (const step of entry.steps) step.state = 'applied'
   entry.status = 'done'
-  await saveEntry(deps, entry, 'replace')
+  const saved = await saveEntry(deps, entry, 'replace')
+  if (saved.status !== 'done') {
+    entry.status = 'needs-attention'
+    return { status: 'stopped-part-way', entry, detail: saveError(saved) }
+  }
   onProgress?.({ task: 'fix', stage: 'moving', done: entry.steps.length, total: entry.steps.length })
   return { status: 'done', entry }
 }
@@ -168,20 +192,33 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
   const backup = await backupFirst(deps, entry.folderPath, onProgress)
   if (backup.status === 'refused') return backup
 
+  // An entry left in-progress with every step still pending crashed during runAction: probe every step first so
+  // no moved or unclear step is left pending if the reverse loop stops early. An in-progress entry that already has
+  // applied or reverted steps crashed during undo, so pending steps are already known never to have run.
+  const cutOffAction = entry.status === 'in-progress' && entry.steps.every((s) => s.state === 'pending')
+  const inspected = new Map<number, StepOnDisk>()
+  if (cutOffAction) {
+    for (const [i, step] of entry.steps.entries()) {
+      const onDisk = await inspect(step)
+      inspected.set(i, onDisk)
+      if (step.kind === 'remove-cache') {
+        if (onDisk.where === 'done') step.state = 'applied'
+      } else if (onDisk.where !== 'not-done') {
+        step.state = 'applied'
+      }
+    }
+  }
+
   const ops: WriteOp[] = []
   const toRevert: { index: number; lastOp: number }[] = []
   const planned = new Set<string>()
   let problem: string | null = null
-  // A settled entry is trusted: only its applied steps are undone. An in-progress one was cut off, so the disk
-  // decides for its pending and applied steps.
-  const cutOff = entry.status === 'in-progress'
   for (let i = entry.steps.length - 1; i >= 0; i -= 1) {
     const step = entry.steps[i]!
-    if (step.kind === 'remove-cache' || step.state === 'reverted') continue
-    if (!cutOff && step.state !== 'applied') continue
-    const onDisk = await inspect(step)
+    if (step.kind === 'remove-cache' || step.state !== 'applied') continue
+    const onDisk = inspected.get(i) ?? (await inspect(step))
     if (onDisk.where === 'not-done') {
-      if (step.state === 'applied') step.state = 'reverted'
+      step.state = 'reverted'
       continue
     }
     if (onDisk.where === 'unclear') {
@@ -199,7 +236,6 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
       }
       ops.push({ op: 'write', path: step.path, data: new Uint8Array(saved), mode: 'replace' })
     }
-    step.state = 'applied'
     toRevert.push({ index: i, lastOp: ops.length - 1 })
   }
 
@@ -245,7 +281,11 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
     entry.status = 'needs-attention'
     detail ??= 'Some files could not be put back.'
   }
-  await saveEntry(deps, entry, 'replace')
+  const saved = await saveEntry(deps, entry, 'replace')
+  if (saved.status !== 'done') {
+    entry.status = 'needs-attention'
+    return { status: 'stopped-part-way', entry, detail: detail ?? saveError(saved) }
+  }
   onProgress?.({ task: 'fix', stage: 'moving', done: toRevert.length, total: toRevert.length })
   return detail === null ? { status: 'done', entry } : { status: 'stopped-part-way', entry, detail }
 }
@@ -261,11 +301,11 @@ export async function undoNow(deps: SafetyDeps, entryId: string, onProgress?: On
 }
 
 /** A cache clear cannot be undone: the next start only records how far it got. */
-async function settleCacheClear(deps: SafetyDeps, entry: JournalEntry): Promise<JournalEntry> {
+async function settleCacheClear(deps: SafetyDeps, entry: JournalEntry): Promise<JournalEntry | null> {
   for (const step of entry.steps) if ((await inspect(step)).where === 'done') step.state = 'applied'
   entry.status = entry.steps.every((s) => s.state === 'applied') ? 'done' : 'needs-attention'
-  await saveEntry(deps, entry, 'replace')
-  return entry
+  const saved = await saveEntry(deps, entry, 'replace')
+  return saved.status === 'done' ? entry : null
 }
 
 export async function recoverNow(deps: SafetyDeps, entries: JournalEntry[]): Promise<JournalEntry[]> {
@@ -273,7 +313,8 @@ export async function recoverNow(deps: SafetyDeps, entries: JournalEntry[]): Pro
   for (const entry of entries) {
     if (entry.status !== 'in-progress') continue
     if (entry.undo === 'cannot-undo') {
-      touched.push(await settleCacheClear(deps, entry))
+      const settled = await settleCacheClear(deps, entry)
+      if (settled) touched.push(settled)
       continue
     }
     const outcome = await revert(deps, entry)

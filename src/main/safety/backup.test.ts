@@ -14,7 +14,7 @@ import type { WorkspaceTools } from './testing/harness.ts'
 const SPECS = join(dirname(fileURLToPath(import.meta.url)), '../../../scripts/fixtures/specs')
 const roots: string[] = []
 const TOOLS: WorkspaceTools = {
-  fs: { mkdir: (p) => mkdir(p), copyFile, rename, writeFile, rm, utimes },
+  fs: { mkdir, copyFile, rename, writeFile, rm, utimes },
   makeTempRoot: async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), 'sims-helper-backup-')))
     roots.push(root)
@@ -30,7 +30,12 @@ afterEach(async () => {
 })
 
 interface ManifestFile { path: string; bytes: number; mtimeMs: number; sha256: string; storedIn: string }
-interface Manifest { record: { id: string; state: string; files: number; bytes: number; folderPath: string }; files: ManifestFile[] }
+interface SkippedLink { path: string; reason: string }
+interface Manifest {
+  record: { id: string; state: string; files: number; bytes: number; folderPath: string }
+  files: ManifestFile[]
+  skipped?: SkippedLink[]
+}
 
 async function readManifest(backupsDir: string, id: string): Promise<Manifest> {
   return JSON.parse(await readFile(join(backupsDir, id, 'manifest.json'), 'utf8')) as Manifest
@@ -123,20 +128,144 @@ describe('createBackup', () => {
     expect(manifest.files.find((f) => f.path === 'Mods/BuildBuy/lamp_a.package')?.storedIn).toBe(second.record.id)
   })
 
-  it.skipIf(process.platform === 'win32')('does not follow a link in Mods that leaves the folder', async () => {
+  it.skipIf(process.platform === 'win32')(
+    'skips and lists every link inside the Sims folder (in-folder, outside, folder and broken) without failing the backup',
+    async () => {
+      const ws = await makeWorkspace(TOOLS)
+      const outside = join(ws.root, 'elsewhere.package')
+      await writeFile(outside, 'not hers to back up')
+      const { symlink } = await import('node:fs/promises')
+      await symlink(outside, join(ws.mods, 'outside.package'))
+      await symlink(join(ws.mods, 'BuildBuy', 'lamp_a.package'), join(ws.mods, 'in-folder.package'))
+      await symlink(join(ws.mods, 'BuildBuy'), join(ws.mods, 'folder-link'))
+      await symlink(join(ws.mods, 'no-such-file.package'), join(ws.mods, 'broken.package'))
+
+      const result = await createBackup(ws.deps, ws.simsFolder)
+
+      expect(result.status).toBe('verified')
+      if (result.status !== 'verified') return
+      const manifest = await readManifest(ws.paths.backupsDir, result.record.id)
+      for (const name of ['outside.package', 'in-folder.package', 'folder-link', 'broken.package']) {
+        expect(manifest.files.some((f) => f.path.includes(name)), name).toBe(false)
+      }
+      expect(manifest.skipped).toEqual([
+        { path: 'Mods/broken.package', reason: 'link' },
+        { path: 'Mods/folder-link', reason: 'link' },
+        { path: 'Mods/in-folder.package', reason: 'link' },
+        { path: 'Mods/outside.package', reason: 'link' }
+      ])
+      expect((await backupStatus(ws.deps, ws.simsFolder)).state).toBe('verified')
+    }
+  )
+
+  it('skips and lists a folder link (junction on Windows) inside Mods without failing the backup', async () => {
     const ws = await makeWorkspace(TOOLS)
-    const outside = join(ws.root, 'elsewhere.package')
-    await writeFile(outside, 'not hers to back up')
     const { symlink } = await import('node:fs/promises')
-    await symlink(outside, join(ws.mods, 'linked.package'))
+    await symlink(join(ws.mods, 'BuildBuy'), join(ws.mods, 'BuildBuyLink'), 'junction')
 
     const result = await createBackup(ws.deps, ws.simsFolder)
 
     expect(result.status).toBe('verified')
     if (result.status !== 'verified') return
     const manifest = await readManifest(ws.paths.backupsDir, result.record.id)
-    expect(manifest.files.some((f) => f.path.includes('linked'))).toBe(false)
+    expect(manifest.files.some((f) => f.path.includes('BuildBuyLink'))).toBe(false)
+    expect(manifest.skipped).toEqual([{ path: 'Mods/BuildBuyLink', reason: 'link' }])
     expect((await backupStatus(ws.deps, ws.simsFolder)).state).toBe('verified')
+  })
+
+  it('succeeds even when the parent of dataDir does not exist yet (never mkdirs outside dataDir)', async () => {
+    const ws = await makeWorkspace(TOOLS)
+    await rm(dirname(ws.paths.dataDir), { recursive: true, force: true })
+
+    const result = await createBackup(ws.deps, ws.simsFolder)
+
+    expect(result.status).toBe('verified')
+  })
+
+  it('crashes during backup (after manifest create, mid-copy, before final verify write) keep the old backup and source intact', async () => {
+    const ws = await makeWorkspace(TOOLS)
+    const first = await createBackup(ws.deps, ws.simsFolder)
+    if (first.status !== 'verified') throw new Error(first.status)
+    await writeFile(join(ws.mods, 'added_after_first.package'), 'needs copying in backup 2')
+    const afterAdd = await snapshotTree(ws.simsFolder)
+
+    // Crash after writing copying manifest, before copies run.
+    ws.gate.hooks.beforeRequest = (request) =>
+      request.ops.some((op) => op.op === 'copy') ? { status: 'failed', opsDone: 0, detail: 'simulated crash' } : undefined
+    const failed1 = await createBackup(ws.deps, ws.simsFolder)
+    expect(failed1.status).toBe('failed')
+    expect(await backupStatus(ws.deps, ws.simsFolder)).toEqual({
+      state: 'stale',
+      backupId: first.record.id,
+      at: first.record.at
+    })
+
+    // Crash right before the final verified manifest write (leaving state: 'copying' on disk).
+    ws.gate.hooks.beforeRequest = (request) => {
+      const replace = request.ops.find((op) => op.op === 'write' && op.mode === 'replace')
+      if (replace) throw new Error('power loss')
+      return undefined
+    }
+    const failed2 = await createBackup(ws.deps, ws.simsFolder)
+    expect(failed2.status).toBe('failed')
+    expect(await backupStatus(ws.deps, ws.simsFolder)).toEqual({
+      state: 'stale',
+      backupId: first.record.id,
+      at: first.record.at
+    })
+    expect(await snapshotTree(ws.simsFolder)).toEqual(afterAdd)
+  })
+
+  it('does not reuse a stale copy when bytes change within the same millisecond right after a backup', async () => {
+    const ws = await makeWorkspace(TOOLS)
+    const lamp = join(ws.mods, 'BuildBuy', 'lamp_a.package')
+    const now = new Date('2026-11-24T12:00:00.000Z')
+    await utimes(lamp, now, now)
+    ws.deps.clock = { now: () => now }
+
+    const first = await createBackup(ws.deps, ws.simsFolder)
+    if (first.status !== 'verified') throw new Error(first.status)
+
+    // Same size, same whole-millisecond mtime as the previous backup, different bytes.
+    const bytes = await readFile(lamp)
+    bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 0xff
+    await writeFile(lamp, bytes)
+    await utimes(lamp, now, now)
+    const updatedHash = await sha256File(lamp)
+
+    expect((await backupStatus(ws.deps, ws.simsFolder)).state).toBe('stale')
+
+    const mark = ws.gate.requests.length
+    const second = await createBackup(ws.deps, ws.simsFolder)
+    expect(second.status).toBe('verified')
+    if (second.status !== 'verified') return
+    expect(copyOps(ws, mark)).toBe(1)
+    const manifest = await readManifest(ws.paths.backupsDir, second.record.id)
+    const line = manifest.files.find((f) => f.path === 'Mods/BuildBuy/lamp_a.package')
+    expect(line?.storedIn).toBe(second.record.id)
+    expect(line?.sha256).toBe(updatedHash)
+  })
+
+  it('fails verification when the source changes (same size, new date) between listing and copy', async () => {
+    const ws = await makeWorkspace(TOOLS)
+    const lamp = join(ws.mods, 'BuildBuy', 'lamp_a.package')
+    let mutated = false
+    ws.gate.hooks.beforeOp = async (op) => {
+      if (op.op === 'copy' && !mutated && op.from === lamp) {
+        mutated = true
+        const bytes = await readFile(lamp)
+        bytes[0] = bytes[0]! ^ 0xff
+        await writeFile(lamp, bytes)
+        await utimes(lamp, new Date('2026-11-20T00:00:00Z'), new Date('2026-11-20T00:00:00Z'))
+      }
+      return undefined
+    }
+
+    const result = await createBackup(ws.deps, ws.simsFolder)
+
+    expect(mutated).toBe(true)
+    expect(result.status).toBe('failed')
+    expect(await backupStatus(ws.deps, ws.simsFolder)).toEqual({ state: 'none' })
   })
 
   it('fails when a copy differs from its source, and that backup does not count', async () => {
@@ -242,6 +371,7 @@ describe('backupStatus', () => {
     const to = join(ws.mods, 'helper_mod.ts4script')
 
     const outcome = await runAction(ws.deps, {
+      entryId: 'move-script-1',
       action: 'move-script-up',
       summary: 'Moved a script mod up',
       origin: { by: 'fix' },
@@ -253,6 +383,60 @@ describe('backupStatus', () => {
     expect(outcome.status).toBe('done')
     expect(await pathExists(to)).toBe(true)
     expect((await backupStatus(ws.deps, ws.simsFolder)).state).toBe('verified')
+
+    // If that moved file is later altered in-place (even keeping its byte count), status becomes stale.
+    const bytes = await readFile(to)
+    bytes[0] = bytes[0]! ^ 0xff
+    await writeFile(to, bytes)
+    expect((await backupStatus(ws.deps, ws.simsFolder)).state).toBe('stale')
+  })
+
+  it('picks the newer verified backup by timestamp even when two backups share the same second with reversed random suffixes', async () => {
+    const ws = await makeWorkspace(TOOLS)
+    const ids = ['20261124-120000-ffff', '20261124-120000-0001']
+    const times = [new Date('2026-11-24T12:00:00.100Z'), new Date('2026-11-24T12:00:00.800Z')]
+    let n = 0
+    ws.deps.newId = () => ids[n]!
+    ws.deps.clock = { now: () => times[Math.min(n, times.length - 1)]! }
+
+    const first = await createBackup(ws.deps, ws.simsFolder)
+    if (first.status !== 'verified') throw new Error(first.status)
+    await writeFile(join(ws.mods, 'added.package'), 'brand new')
+    n = 1
+    const second = await createBackup(ws.deps, ws.simsFolder)
+    if (second.status !== 'verified') throw new Error(second.status)
+
+    expect(await backupStatus(ws.deps, ws.simsFolder)).toEqual({
+      state: 'verified',
+      backupId: second.record.id,
+      at: second.record.at
+    })
+  })
+
+  it('does not let a journal move from an older backup excuse an unbacked-up file after a newer backup', async () => {
+    const ws = await makeWorkspace(TOOLS)
+    await createBackup(ws.deps, ws.simsFolder)
+    const from = join(ws.mods, 'HelperMod', 'helper_mod.ts4script')
+    const to = join(ws.mods, 'helper_mod.ts4script')
+    const moved = await runAction(ws.deps, {
+      entryId: 'move-old-1',
+      action: 'move-script-up',
+      summary: 'Moved a script mod up',
+      origin: { by: 'fix' },
+      folderPath: ws.simsFolder,
+      groupId: null,
+      steps: [{ kind: 'move', from, to }]
+    })
+    if (moved.status !== 'done') throw new Error(moved.status)
+    const size = (await readFile(to)).byteLength
+
+    // Remove the moved file, take a fresh backup that does not have it, then drop a brand-new same-size file there.
+    await rm(to)
+    const fresh = await createBackup(ws.deps, ws.simsFolder)
+    if (fresh.status !== 'verified') throw new Error(fresh.status)
+    await writeFile(to, Buffer.alloc(size, 0x5a))
+
+    expect((await backupStatus(ws.deps, ws.simsFolder)).state).toBe('stale')
   })
 
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('is unknown when Mods cannot be read', async () => {

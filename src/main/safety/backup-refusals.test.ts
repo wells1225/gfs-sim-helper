@@ -15,7 +15,7 @@ vi.mock('./disk.ts', () => ({ freeBytes: vi.fn() }))
 const SPECS = join(dirname(fileURLToPath(import.meta.url)), '../../../scripts/fixtures/specs')
 const roots: string[] = []
 const TOOLS: WorkspaceTools = {
-  fs: { mkdir: (p) => mkdir(p), copyFile, rename, writeFile, rm, utimes },
+  fs: { mkdir, copyFile, rename, writeFile, rm, utimes },
   makeTempRoot: async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), 'sims-helper-refuse-')))
     roots.push(root)
@@ -97,11 +97,41 @@ describe('createBackup refuses', () => {
     expect((await createBackup(ws.deps, ws.simsFolder)).status).toBe('verified')
   })
 
-  it('to put the backup inside the Sims folder (no refusal reason exists for it, so it fails)', async () => {
+  it('when the backups folder is inside the Sims folder, or is the Sims folder itself', async () => {
     const ws = await makeWorkspace(TOOLS)
     ws.deps.paths = { ...ws.paths, backupsDir: join(ws.simsFolder, 'Backups') }
-    const result = await createBackup(ws.deps, ws.simsFolder)
-    expect(result.status).toBe('failed')
+    expect(await createBackup(ws.deps, ws.simsFolder)).toEqual({
+      status: 'refused',
+      reason: 'backup-folder-in-sims-folder'
+    })
+    ws.deps.paths = { ...ws.paths, backupsDir: ws.simsFolder }
+    expect(await createBackup(ws.deps, ws.simsFolder)).toEqual({
+      status: 'refused',
+      reason: 'backup-folder-in-sims-folder'
+    })
+    expect(ws.gate.requests).toEqual([])
+  })
+
+  it('when the backups folder leads into the Sims folder or OneDrive via a link', async () => {
+    const { symlink } = await import('node:fs/promises')
+    const ws = await makeWorkspace(TOOLS)
+    const linkToSims = join(ws.root, 'sneaky-sims')
+    await symlink(ws.simsFolder, linkToSims, 'junction')
+    ws.deps.paths = { ...ws.paths, backupsDir: join(linkToSims, 'Backups') }
+    expect(await createBackup(ws.deps, ws.simsFolder)).toEqual({
+      status: 'refused',
+      reason: 'backup-folder-in-sims-folder'
+    })
+
+    const cloud = join(ws.root, 'OneDrive - Personal')
+    await mkdir(cloud, { recursive: true })
+    const linkToCloud = join(ws.root, 'sneaky-cloud')
+    await symlink(cloud, linkToCloud, 'junction')
+    ws.deps.paths = { ...ws.paths, backupsDir: join(linkToCloud, 'SimsHelper', 'backups') }
+    expect(await createBackup(ws.deps, ws.simsFolder)).toEqual({
+      status: 'refused',
+      reason: 'backup-folder-in-onedrive'
+    })
     expect(ws.gate.requests).toEqual([])
   })
 })
