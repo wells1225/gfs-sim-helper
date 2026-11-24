@@ -1045,6 +1045,47 @@ describe('links', () => {
     expect(await exists(w.inFolder('Mods', 'box'))).toBe(false)
     expect(await exists(w.inData('taken.save'))).toBe(false)
   })
+
+  it('TOCTOU: a parent folder in Mods swapped to a link into saves during gameState does not move a save', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    await mkdir(sub, { recursive: true })
+    const decoy = join(sub, 'Slot_00000002.save')
+    await writeFile(decoy, 'decoy mod')
+    const savesBefore = await snapshotTree(w.inFolder('saves'))
+    const realGame = w.deps.gameState
+    w.deps.gameState = async () => {
+      await rm(sub, { recursive: true })
+      await linkFolder(w.inFolder('saves'), sub)
+      return await realGame()
+    }
+    const result = await w.run([{ op: 'move', from: decoy, to: w.inData('holding', 'taken.save') }])
+    expect(result.status).not.toBe('done')
+    expect(await snapshotTree(w.inFolder('saves'))).toEqual(savesBefore)
+  })
+
+  it('TOCTOU: a parent folder in app data swapped to a link into saves during gameState does not overwrite or remove a save', async () => {
+    for (const op of [
+      (target: string): WriteOp => ({ op: 'write', path: target, data: 'corrupted', mode: 'replace' }),
+      (target: string): WriteOp => ({ op: 'remove', path: target })
+    ]) {
+      const w = await makeWorld()
+      const sub = w.inData('sub')
+      await mkdir(sub, { recursive: true })
+      const target = join(sub, 'Slot_00000002.save')
+      await writeFile(target, 'app data copy')
+      const savesBefore = await snapshotTree(w.inFolder('saves'))
+      const realGame = w.deps.gameState
+      w.deps.gameState = async () => {
+        await rm(sub, { recursive: true })
+        await linkFolder(w.inFolder('saves'), sub)
+        return await realGame()
+      }
+      const result = await w.run([{ op: 'mkdir', path: w.inFolder('Mods', 'TriggerGuard') }, op(target)])
+      expect(result.status).not.toBe('done')
+      expect(await snapshotTree(w.inFolder('saves'))).toEqual(savesBefore)
+    }
+  })
 })
 
 describe('doing the ops', () => {
