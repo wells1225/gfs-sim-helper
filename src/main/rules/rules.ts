@@ -218,10 +218,16 @@ export const wrongGamePackage: Rule = (scan) => {
   )
 }
 
-const BACKUP_FOLDER = /backup|copy|old/i
+const BACKUP_WORDS = new Set(['backup', 'backups', 'bak', 'copy', 'copies', 'old', 'older'])
+
+/** 'BackupCopy' and 'my_old mods' are backup folders; 'Household' and 'Gold' are not. */
+function isBackupFolderName(folder: string): boolean {
+  const tokens = folder.replace(/(\p{Ll})(?=\p{Lu})/gu, '$1 ').split(/\P{L}+/u)
+  return tokens.some((word) => BACKUP_WORDS.has(word.toLowerCase()))
+}
 
 function inBackupFolder(file: ModFile): boolean {
-  return file.relPath.split('/').slice(0, -1).some((folder) => BACKUP_FOLDER.test(folder))
+  return file.relPath.split('/').slice(0, -1).some(isBackupFolderName)
 }
 
 function byName(a: ModFile, b: ModFile): number {
@@ -240,7 +246,7 @@ export const duplicateFiles: Rule = (scan) => {
     if (copies) copies.push(file)
     else bySha.set(file.hash.sha256, [file])
   }
-  // Keep the CurseForge-tracked copy, then a copy not under a backup/copy/old folder, then the shallower depth, then by name.
+  // Keep the CurseForge-tracked copy, then a copy not under a folder named as a backup, copy or old, then the shallower depth, then by name.
   const keepOrder = (a: ModFile, b: ModFile) =>
     Number(curseForgeGroups.has(b.groupId)) - Number(curseForgeGroups.has(a.groupId)) ||
     Number(inBackupFolder(a)) - Number(inBackupFolder(b)) ||
