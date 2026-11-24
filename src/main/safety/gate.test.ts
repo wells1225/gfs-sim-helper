@@ -38,7 +38,8 @@ const disk = vi.hoisted(() => ({
   whenTempOpens: null as null | (() => Promise<void>),
   noHardLinks: null as null | { code: string; hits: number },
   atTheLastMoment: null as null | (() => Promise<void>),
-  whenCopyIsDated: null as null | (() => Promise<void>)
+  flushFails: null as null | { code: string; folders: boolean; hits: number },
+  log: null as null | string[]
 }))
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -60,6 +61,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       }
       await lastMoment()
       await real.rename(from, to)
+      disk.log?.push(`name ${String(to)}`)
     }) as typeof real.rename,
     link: (async (existing, added) => {
       if (disk.crossDrive && String(existing) === disk.crossDrive.from && !disk.noHardLinks) {
@@ -72,6 +74,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
         throw errno(disk.noHardLinks.code, 'link')
       }
       await real.link(existing, added)
+      disk.log?.push(`name ${String(added)}`)
     }) as typeof real.link,
     realpath: (async (target: string) => {
       if (disk.realpathFails && target.startsWith(disk.realpathFails.under)) {
@@ -88,15 +91,6 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       }
       return await real.readdir(folder, options as undefined)
     }) as unknown as typeof real.readdir,
-    utimes: (async (file, atime, mtime) => {
-      await real.utimes(file, atime, mtime)
-      // The last step of a copy before it gets its name. Every file handle is closed by now.
-      if (disk.whenCopyIsDated) {
-        const meanwhile = disk.whenCopyIsDated
-        disk.whenCopyIsDated = null
-        await meanwhile()
-      }
-    }) as typeof real.utimes,
     stat: (async (target: string, options?: object) => {
       if (disk.statFails && String(target) === disk.statFails.file) {
         disk.statFails.hits += 1
@@ -113,6 +107,24 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     }) as typeof real.unlink,
     open: (async (file, flags, mode) => {
       const handle = await real.open(file, flags, mode)
+      if (disk.log || disk.flushFails) {
+        // A new file is opened with 'wx'. The only other handle the gate flushes is a folder's.
+        const isFolder = flags !== 'wx'
+        const sync = handle.sync.bind(handle)
+        handle.sync = async () => {
+          if (disk.flushFails && disk.flushFails.folders === isFolder) {
+            disk.flushFails.hits += 1
+            throw errno(disk.flushFails.code, 'fsync')
+          }
+          await sync()
+          disk.log?.push(`flush ${String(file)}`)
+        }
+        const utimes = handle.utimes.bind(handle)
+        handle.utimes = async (atime, mtime) => {
+          await utimes(atime, mtime)
+          disk.log?.push(`date ${String(file)}`)
+        }
+      }
       if (disk.whenTempOpens && flags === 'wx') {
         const meanwhile = disk.whenTempOpens
         disk.whenTempOpens = null
@@ -224,9 +236,10 @@ afterEach(async () => {
   disk.unlinkFails = null
   disk.writeFileQuotesItsData = null
   disk.whenTempOpens = null
-  disk.whenCopyIsDated = null
   disk.noHardLinks = null
   disk.atTheLastMoment = null
+  disk.flushFails = null
+  disk.log = null
   for (const root of worlds.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
@@ -1368,6 +1381,35 @@ describe('links', () => {
     for (const place of places) expect(await readdir(join(place, 'Mods'))).toEqual([])
   })
 
+  it('refused means no op ran: a path that changes while the game is asked stops the ops before it too', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    const other = w.inFolder('Mods', 'Other')
+    for (const folder of [sub, other]) {
+      await mkdir(folder, { recursive: true })
+      await writeFile(join(folder, 'same_name.package'), `the one in ${basename(folder)}`)
+    }
+    const from = join(sub, 'same_name.package')
+    const realGame = w.deps.gameState
+    w.deps.gameState = async () => {
+      await rm(sub, { recursive: true })
+      await linkFolder(other, sub)
+      return await realGame()
+    }
+    const before = await snapshotTree(other)
+    // The first two ops are fine on their own. A caller that reads `refused` drops its journal entry, so
+    // they must not have run. (The test below is the other half: once an op has run, the answer is `failed`.)
+    const result = await w.run([
+      { op: 'mkdir', path: w.inData('journal') },
+      { op: 'write', path: w.inData('journal', 'e1.json'), data: '{}', mode: 'create' },
+      { op: 'move', from, to: w.inData('holding', 'same_name.package') }
+    ])
+    expect(result).toEqual(refusedWith({ reason: 'link-escape', path: from }))
+    expect(await exists(w.inData('journal'))).toBe(false)
+    expect(await exists(w.inData('holding'))).toBe(false)
+    expect(await snapshotTree(other)).toEqual(before)
+  })
+
   it('TOCTOU: a folder swapped while an earlier op runs stops the request before the op that would go through it', async () => {
     const w = await makeWorld()
     const sub = w.inFolder('Mods', 'Sub')
@@ -1405,7 +1447,8 @@ describe('links', () => {
     const savesBefore = await snapshotTree(w.inFolder('saves'))
     disk.crossDrive = { from: decoy, hits: 0 }
     let swapped = false
-    disk.whenCopyIsDated = async () => {
+    // Fires when the finished copy is about to get its name. Every file handle is closed by then.
+    disk.atTheLastMoment = async () => {
       await rm(sub, { recursive: true })
       await linkFolder(w.inFolder('saves'), sub)
       swapped = true
@@ -1642,6 +1685,62 @@ describe('doing the ops', () => {
     expect(await w.run([{ op: 'copy', from: source, to: target }])).toMatchObject({ status: 'failed', opsDone: 0 })
     expect(grew).toBe(true)
     expect(await readdir(dirname(target))).toEqual([])
+  })
+
+  it('a write and a copy are on the disk before the gate says done: the file before it gets its name, the folder after', async () => {
+    const w = await makeWorld()
+    const note = w.inData('journal', 'e1.json')
+    const kept = w.inData('backups', 'b1', 'cozy_rug.package')
+    const options = w.inFolder('Options.ini')
+    disk.log = []
+    expect(
+      await w.run([
+        { op: 'write', path: note, data: '{}', mode: 'create' },
+        { op: 'copy', from: w.inFolder(...MOD), to: kept },
+        { op: 'write', path: options, data: 'modsdisabled = 1\n', mode: 'replace' }
+      ])
+    ).toEqual({ status: 'done' })
+    const log = disk.log
+    const tempOf = (did: string, target: string): number =>
+      log.findIndex((entry) => entry.startsWith(`${did} ${target}.`) && entry.endsWith('.sims-helper-tmp'))
+    for (const target of [note, kept, options]) {
+      const flushed = tempOf('flush', target)
+      const named = log.indexOf(`name ${target}`)
+      expect(flushed, `${target} is flushed`).toBeGreaterThanOrEqual(0)
+      expect(named, `${target} gets its name after the flush`).toBeGreaterThan(flushed)
+      // Windows gives Node no way to flush a folder.
+      if (!ON_WINDOWS) {
+        expect(log.indexOf(`flush ${dirname(target)}`, named), `the folder of ${target} is flushed`).toBeGreaterThan(named)
+      }
+    }
+    // The file date a copy keeps is part of what is flushed.
+    expect(tempOf('date', kept)).toBeGreaterThanOrEqual(0)
+    expect(tempOf('flush', kept)).toBeGreaterThan(tempOf('date', kept))
+  })
+
+  it.each(['write', 'copy'] as const)('a %s the disk cannot flush fails, and nothing takes the name', async (kind) => {
+    const w = await makeWorld()
+    const target = w.inData('kept', 'new.bin')
+    const op: WriteOp =
+      kind === 'write'
+        ? { op: 'write', path: target, data: 'x', mode: 'create' }
+        : { op: 'copy', from: w.inFolder(...MOD), to: target }
+    disk.flushFails = { code: 'EIO', folders: false, hits: 0 }
+    const result = await w.run([op], { reason: 'backup' })
+    expect(disk.flushFails.hits, 'the flush was really asked for').toBe(1)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(result.status === 'failed' ? result.detail : '').toContain('EIO')
+    expect(await readdir(dirname(target))).toEqual([])
+  })
+
+  it.skipIf(ON_WINDOWS)('a folder the disk cannot flush fails the op: done is never said for a name that may not last', async () => {
+    const w = await makeWorld()
+    const target = w.inData('kept', 'new.bin')
+    disk.flushFails = { code: 'EIO', folders: true, hits: 0 }
+    const result = await w.run([{ op: 'write', path: target, data: 'x', mode: 'create' }])
+    expect(disk.flushFails.hits, 'the flush was really asked for').toBe(1)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(result.status === 'failed' ? result.detail : '').toContain('EIO')
   })
 
   it('failed reports how many ops ran, and those really happened', async () => {

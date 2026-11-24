@@ -495,6 +495,19 @@ describe('read and write gate lint', () => {
     }
   })
 
+  it('electron-updater loads in main/update/updater.ts and nowhere else', () => {
+    const line = "import { autoUpdater } from 'electron-updater'"
+    expect(sourceProblems('main/update/updater.ts', line, SAMPLE_FILES)).toEqual([])
+    const elsewhere = ['main/update/handlers.ts', 'main/index.ts', 'main/ipc.ts', 'main/safety/gate.ts', 'renderer/App.tsx']
+    for (const file of elsewhere) {
+      expect(sourceProblems(file, line, SAMPLE_FILES), file).not.toEqual([])
+      expect(sourceProblems(file, "const updater = await import('electron-updater')", SAMPLE_FILES), file).not.toEqual([])
+    }
+    const subPath = "import { NsisUpdater } from 'electron-updater/out/NsisUpdater'"
+    expect(sourceProblems('main/update/updater.ts', subPath, SAMPLE_FILES)).toEqual([])
+    expect(sourceProblems('main/update/handlers.ts', subPath, SAMPLE_FILES)).not.toEqual([])
+  })
+
   it('refuses every way to reach a write from a shipped file', () => {
     const refused: [string, string][] = [
       // named, renamed, whole-module and bare imports
