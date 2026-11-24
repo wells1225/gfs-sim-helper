@@ -59,6 +59,7 @@ type FiftyFifty = { round: number; suspects: string[]; cleared: string[]; parked
 | 9 | Backup, journal and undo | 8, G1 | Neon, from a Fable brief | `src/main/safety/` except `gate.ts` |
 | 10 | One-click fixes | 9 | Neon | `src/main/fixes/`, `src/renderer/fixes/` |
 | 11 | Guided 50/50 test | 10 | Neon | `src/main/fiftyfifty/`, `src/renderer/fiftyfifty/` |
+| 12 | Optional: "Ask for help" with AI | 7, G1 | Neon; **Fable** writes `key-store.ts` | `src/main/assist/`, `src/renderer/assist/` |
 
 PRs 4 and 5 are independent and can run at the same time. PR 8 can start once 7 lands. Every other PR waits for
 the one above it.
@@ -320,6 +321,34 @@ Nothing that writes files is built until this gate passes. Tyler does each step 
 - [ ] Perf: none.
 - [ ] Tyler approves the flow before merge.
 
+## PR 12 (optional): "Ask for help" with AI
+
+Tyler asked for this on 2026-11-24. It comes after G1 and PR 7, so her real files show which crashes the rules
+miss. It is optional, and v1 ships without it.
+
+- [ ] Depends on: PR 7 and G1. It does not need PRs 8 to 11.
+- [ ] Files: `src/main/assist/*.ts`, `src/renderer/assist/**` and tests. Fable writes `src/main/assist/key-store.ts`,
+  the only code that stores, reads or sends the key. Fable briefs the rest and Neon builds it.
+- [ ] Change:
+  - **Key setup:** a hidden setup screen opens with a key combination. Tyler types the Anthropic API key once on her
+    PC. Electron `safeStorage` encrypts it with Windows DPAPI, and the encrypted key goes in the app's own data
+    folder. The key is never in the code, the installer, the repo, a log or the "Send to Tyler" zip.
+  - **The button:** **Ask for help** shows only when the rules give no `stop` or `warn` finding, or a crash log
+    names no mod.
+  - **What gets sent:** first the button shows her the exact text it will send, which is the newest log reports, the
+    game version, and the mod group names and file names. It never sends saves, Tray files, her Windows user name or
+    other paths. She clicks **Send** or **Cancel**.
+  - **The answer:** it shows in plain words, labelled as a guess. The answer can point to a fix button, but the AI
+    never runs a fix itself.
+  - **Cost:** Tyler sets a monthly spending cap on the key in the Anthropic console before setup.
+- [ ] Result you see: on the `exceptions` fixture, the button sends the previewed text and shows the answer.
+- [ ] Unit: the key never appears in any log, report zip or renderer message. The text sent matches the preview,
+  byte for byte. With no key stored, the button doesn't appear.
+- [ ] Live: Tyler sets up the key on her PC, and one real question gets an answer. The Anthropic console shows the
+  spending cap.
+- [ ] Perf: none.
+- [ ] Tyler approves the wording and the preview screen before merge.
+
 ---
 
 ## After v1 (not planned in detail)
@@ -327,7 +356,7 @@ Nothing that writes files is built until this gate passes. Tyler does each step 
 - **Conflict scan:** list two packages that hold the same resource key. It is kept apart from crash diagnosis,
   because shared keys are often on purpose (MCCC's author, Fable's report, section 3).
 - **CurseForge API lookups:** only if Tyler gets a personal key and a way to keep it out of the `.exe`.
-- **Auto-update:** needs a public download location, because the repo is private.
+- **Auto-update:** the repo is public now, so GitHub releases can serve updates.
 - **Code signing:** about $10 a month. It removes the SmartScreen warning.
 
 ## What stays unproven
