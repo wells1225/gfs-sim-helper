@@ -46,10 +46,16 @@ const READ_ZONES: readonly Zone[] = ['forbidden', 'mods', 'caches', 'options', '
 // A write to one of these needs the game closed and a verified backup.
 const GUARDED_ZONES: readonly Zone[] = ['mods', 'caches', 'options']
 
+// Letter case as an allow check may ignore it: A to Z and nothing else. Windows keeps its own table for the
+// other letters, and JavaScript lower-casing knows pairs that table does not (the Kelvin sign becomes k).
+const fold = (text: string): string => text.replace(/[A-Z]/g, (letter) => letter.toLowerCase())
+// Wider than Windows itself, and used only to forbid: a name that could be read as saves or Tray is one.
+const looseFold = (text: string): string => text.normalize('NFKC').toUpperCase().toLowerCase()
+
 const FORBIDDEN_NAMES = new Set(['saves', 'tray'])
 const SIMS_FOLDER_NAMES = new Set(LOCALIZED_SIMS_FOLDER_NAMES.map(normalizeSimsFolderName))
 const CACHE_KINDS = new Map<string, 'file' | 'folder'>(
-  CACHE_NAMES.map((name) => [name.replace(/\/$/, '').toLowerCase(), name.endsWith('/') ? 'folder' : 'file'])
+  CACHE_NAMES.map((name) => [fold(name.replace(/\/$/, '')), name.endsWith('/') ? 'folder' : 'file'])
 )
 const REPORT_NAME = /^Sims Helper report \d{8}-\d{6}\.zip$/
 // Names Windows hands to a device, with or without an extension. Spaces before the dot do not save a name:
@@ -57,9 +63,6 @@ const REPORT_NAME = /^Sims Helper report \d{8}-\d{6}\.zip$/
 const DEVICE_NAME = /^(con|prn|aux|nul|conin\$|conout\$|(com|lpt)[0-9\u00b9\u00b2\u00b3]) *(\..*)?$/i
 const CHARS_NO_WINDOWS_NAME_HOLDS = /[<>"|?*\u0000-\u001f]/
 
-const fold = (text: string): string => text.toLowerCase()
-// Wider than Windows itself, and used only to forbid: a name that could be read as saves or Tray is one.
-const looseFold = (text: string): string => text.normalize('NFKC').toUpperCase().toLowerCase()
 
 function isWellFormed(pathApi: PlatformPath, target: unknown): target is string {
   if (typeof target !== 'string' || target === '') return false
@@ -105,9 +108,10 @@ function partsBelow(parts: string[], rootParts: string[] | null, same: (text: st
   return parts.slice(rootParts.length)
 }
 
+/** Only ever used to forbid, so it matches widely. */
 function isInside(pathApi: PlatformPath, target: string, root: string): boolean {
   const parts = looseParts(pathApi, target)
-  return parts !== null && partsBelow(parts, looseParts(pathApi, root), fold) !== null
+  return parts !== null && partsBelow(parts, looseParts(pathApi, root), looseFold) !== null
 }
 
 /**
@@ -260,7 +264,7 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
   for (const place of [dataDir, realData]) {
     const names = (looseParts(nativePath, place) ?? []).slice(1)
     if (names.some((name) => SIMS_FOLDER_NAMES.has(normalizeSimsFolderName(name)))) return outside(dataDir)
-    if (names.some((name) => fold(name).startsWith('onedrive'))) return outside(dataDir)
+    if (names.some((name) => looseFold(name).startsWith('onedrive'))) return outside(dataDir)
     if (cloudRoots.some((root) => isInside(nativePath, place, root))) return outside(dataDir)
   }
 
