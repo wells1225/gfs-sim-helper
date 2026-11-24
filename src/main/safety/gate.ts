@@ -52,8 +52,9 @@ const CACHE_KINDS = new Map<string, 'file' | 'folder'>(
   CACHE_NAMES.map((name) => [name.replace(/\/$/, '').toLowerCase(), name.endsWith('/') ? 'folder' : 'file'])
 )
 const REPORT_NAME = /^Sims Helper report \d{8}-\d{6}\.zip$/
-// Names Windows hands to a device, with or without an extension.
-const DEVICE_NAME = /^(con|prn|aux|nul|conin\$|conout\$|(com|lpt)[0-9\u00b9\u00b2\u00b3])(\..*)?$/i
+// Names Windows hands to a device, with or without an extension. Spaces before the dot do not save a name:
+// 'NUL .package' is still the device.
+const DEVICE_NAME = /^(con|prn|aux|nul|conin\$|conout\$|(com|lpt)[0-9\u00b9\u00b2\u00b3]) *(\..*)?$/i
 const CHARS_NO_WINDOWS_NAME_HOLDS = /[<>"|?*\u0000-\u001f]/
 
 const fold = (text: string): string => text.toLowerCase()
