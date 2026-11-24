@@ -100,6 +100,7 @@ function zoneOf(path: string, folderPath: string | null, dataDir: string | undef
 export function makeTestGate(options: TestGateOptions): TestGate {
   const { fs, dataDir } = options
   const requests: WriteRequest[] = []
+  let running = false
   const gate: TestGate = {
     requests,
     hooks: options.hooks ?? {},
@@ -107,49 +108,61 @@ export function makeTestGate(options: TestGateOptions): TestGate {
       return reason === undefined ? requests.length : requests.filter((r) => r.reason === reason).length
     },
     async run(request) {
-      const index = requests.length
-      requests.push(request)
-      const early = await gate.hooks.beforeRequest?.(request, index)
-      if (early) return early
-
-      let touchesProtected = false
-      for (const op of request.ops) {
-        for (const path of writtenPaths(op)) {
-          const zone = zoneOf(path, request.folderPath, dataDir)
-          if (zone === 'forbidden') return { status: 'refused', refusal: { reason: 'saves-or-tray', path } }
-          if (zone === 'outside') return { status: 'refused', refusal: { reason: 'outside-allowed-area', path } }
-          if (zone === 'protected') touchesProtected = true
-        }
+      // PR 8's gate runs one request at a time. A request made from inside another one (from the game or backup
+      // check, say) would wait for itself for ever there, so here it fails loudly.
+      if (running) throw new Error('the gate was called while another request was still running')
+      running = true
+      try {
+        return await runOne(request)
+      } finally {
+        running = false
       }
-      if (touchesProtected && request.folderPath !== null) {
-        const game = options.gameState ? await options.gameState().catch(() => 'unknown' as const) : 'not-running'
-        if (game === 'running') return { status: 'refused', refusal: { reason: 'game-running' } }
-        if (game === 'unknown') return { status: 'refused', refusal: { reason: 'game-state-unknown' } }
-        if (options.backupStatus) {
-          const status = await options.backupStatus(request.folderPath).catch(
-            (err: unknown): BackupStatus => ({ state: 'unknown', detail: String(err) })
-          )
-          if (status.state !== 'verified') {
-            return { status: 'refused', refusal: { reason: 'no-verified-backup', backup: status.state } }
-          }
-        }
-      }
-
-      for (let i = 0; i < request.ops.length; i += 1) {
-        const op = request.ops[i]!
-        const stop = await gate.hooks.beforeOp?.(op, i, request)
-        if (stop !== undefined) return { status: 'failed', opsDone: i, detail: stop }
-        try {
-          await runOp(fs, op)
-        } catch (err) {
-          return { status: 'failed', opsDone: i, detail: `${op.op}: ${(err as Error).message}` }
-        }
-        await gate.hooks.afterOp?.(op, i, request)
-      }
-      return { status: 'done' }
     }
   }
   return gate
+
+  async function runOne(request: WriteRequest): Promise<GateResult> {
+    const index = requests.length
+    requests.push(request)
+    const early = await gate.hooks.beforeRequest?.(request, index)
+    if (early) return early
+
+    let touchesProtected = false
+    for (const op of request.ops) {
+      for (const path of writtenPaths(op)) {
+        const zone = zoneOf(path, request.folderPath, dataDir)
+        if (zone === 'forbidden') return { status: 'refused', refusal: { reason: 'saves-or-tray', path } }
+        if (zone === 'outside') return { status: 'refused', refusal: { reason: 'outside-allowed-area', path } }
+        if (zone === 'protected') touchesProtected = true
+      }
+    }
+    if (touchesProtected && request.folderPath !== null) {
+      const game = options.gameState ? await options.gameState().catch(() => 'unknown' as const) : 'not-running'
+      if (game === 'running') return { status: 'refused', refusal: { reason: 'game-running' } }
+      if (game === 'unknown') return { status: 'refused', refusal: { reason: 'game-state-unknown' } }
+      if (options.backupStatus) {
+        const status = await options.backupStatus(request.folderPath).catch(
+          (err: unknown): BackupStatus => ({ state: 'unknown', detail: String(err) })
+        )
+        if (status.state !== 'verified') {
+          return { status: 'refused', refusal: { reason: 'no-verified-backup', backup: status.state } }
+        }
+      }
+    }
+
+    for (let i = 0; i < request.ops.length; i += 1) {
+      const op = request.ops[i]!
+      const stop = await gate.hooks.beforeOp?.(op, i, request)
+      if (stop !== undefined) return { status: 'failed', opsDone: i, detail: stop }
+      try {
+        await runOp(fs, op)
+      } catch (err) {
+        return { status: 'failed', opsDone: i, detail: `${op.op}: ${(err as Error).message}` }
+      }
+      await gate.hooks.afterOp?.(op, i, request)
+    }
+    return { status: 'done' }
+  }
 }
 
 async function runOp(fs: TestGateFs, op: WriteOp): Promise<void> {
