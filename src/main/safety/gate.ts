@@ -181,6 +181,19 @@ async function lstatOrNull(target: string): Promise<Stats | null> {
   }
 }
 
+/** Follows links. Null only when nothing is there: any other error is a check that failed. */
+async function statOrNull(target: string): Promise<Stats | null> {
+  try {
+    return await stat(target)
+  } catch (err) {
+    if (isMissing(err)) return null
+    throw err
+  }
+}
+
+/** The name exists and leads nowhere. That is an answer about the path, not a check that failed. */
+class LinkToNowhere extends Error {}
+
 /**
  * Where a path really leads: links, junctions and short 8.3 names resolved on the part that exists, the rest
  * re-attached. Throws on anything but a plainly missing tail. Answers are kept for one check only.
@@ -202,7 +215,7 @@ function makeResolver(): (target: string) => Promise<string> {
       if (!isMissing(err)) throw err
     }
     // It has no real path. If the name still exists, it is a link that leads nowhere: never write through it.
-    if ((await lstatOrNull(target)) !== null) throw new Error('link to nowhere')
+    if ((await lstatOrNull(target)) !== null) throw new LinkToNowhere()
     const parent = nativePath.dirname(target)
     if (parent === target) throw new Error('nothing on this path exists')
     return nativePath.join(await resolveReal(parent), nativePath.basename(target))
@@ -220,6 +233,8 @@ interface Approved {
 
 const shown = (value: unknown): string => (typeof value === 'string' ? value : '')
 const outside = (path: unknown): GateRefusal => ({ reason: 'outside-allowed-area', path: shown(path) })
+// The gate could not find out. It never guesses, and it never blames the path for it.
+const checkFailed = (path: unknown): GateRefusal => ({ reason: 'check-failed', path: shown(path) })
 
 /** A copy of the op with only the fields the gate knows, or null when it is not an op the gate knows. */
 function readOp(op: unknown): WriteOp | null {
@@ -242,6 +257,7 @@ function readOp(op: unknown): WriteOp | null {
 
 /** Checks the whole request. Nothing here changes the disk, and anything it throws refuses. */
 async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Approved | GateRefusal> {
+  if (typeof request !== 'object' || request === null) return outside('')
   const { folderPath } = request
   if (!Array.isArray(request.ops) || (folderPath !== null && typeof folderPath !== 'string')) return outside('')
   const ops: WriteOp[] = []
@@ -260,17 +276,22 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
   // So does a whole drive: every path on it would count as the helper's own.
   if (!isWellFormed(nativePath, dataDir) || isDriveRoot(dataDir)) return outside(dataDir)
   let realData: string
-  const cloudRoots: string[] = []
   try {
     realData = await resolveReal(dataDir)
-    for (const given of paths.oneDriveRoots) {
-      // An environment variable may end in a separator. It is the same folder, and its links are followed too.
-      const root = withoutTrailingSeparators(given)
-      cloudRoots.push(root)
-      if (isWellFormed(nativePath, root)) cloudRoots.push(await resolveReal(root))
+  } catch (err) {
+    return err instanceof LinkToNowhere ? outside(dataDir) : checkFailed(dataDir)
+  }
+  const cloudRoots: string[] = []
+  for (const given of paths.oneDriveRoots) {
+    // An environment variable may end in a separator. It is the same folder, and its links are followed too.
+    const root = withoutTrailingSeparators(given)
+    cloudRoots.push(root)
+    if (!isWellFormed(nativePath, root)) continue
+    try {
+      cloudRoots.push(await resolveReal(root))
+    } catch {
+      return checkFailed(root)
     }
-  } catch {
-    return outside(dataDir)
   }
   if (isDriveRoot(realData)) return outside(dataDir)
   for (const place of [dataDir, realData]) {
@@ -287,18 +308,26 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
   const realForbidden: string[] = []
   if (folderPath !== null) {
     const notSims: GateRefusal = { reason: 'not-a-sims-folder', path: folderPath }
+    if (!isWellFormed(nativePath, folderPath)) return notSims
+    if (!SIMS_FOLDER_NAMES.has(normalizeSimsFolderName(nativePath.basename(folderPath)))) return notSims
     try {
-      if (!isWellFormed(nativePath, folderPath)) return notSims
-      if (!SIMS_FOLDER_NAMES.has(normalizeSimsFolderName(nativePath.basename(folderPath)))) return notSims
-      if (!(await stat(folderPath)).isDirectory()) return notSims
-      if (!(await stat(nativePath.join(folderPath, 'Options.ini'))).isFile()) return notSims
+      if (!(await statOrNull(folderPath))?.isDirectory()) return notSims
+      if (!(await statOrNull(nativePath.join(folderPath, 'Options.ini')))?.isFile()) return notSims
       realFolder = await resolveReal(folderPath)
-      const realNames = (looseParts(nativePath, realFolder) ?? []).slice(1)
-      if (realNames.some((name) => FORBIDDEN_NAMES.has(looseFold(name)))) return notSims
-      // saves or Tray may itself be a link to another drive. Where it leads is forbidden too.
-      for (const name of ['saves', 'Tray']) realForbidden.push(await resolveReal(nativePath.join(folderPath, name)))
     } catch {
-      return notSims
+      return checkFailed(folderPath)
+    }
+    const realNames = (looseParts(nativePath, realFolder) ?? []).slice(1)
+    if (realNames.some((name) => FORBIDDEN_NAMES.has(looseFold(name)))) return notSims
+    // saves or Tray may itself be a link to another drive. Where it leads is forbidden too, and when that
+    // cannot be found out (the drive is not plugged in), nothing is touched.
+    for (const name of ['saves', 'Tray']) {
+      const forbidden = nativePath.join(folderPath, name)
+      try {
+        realForbidden.push(await resolveReal(forbidden))
+      } catch {
+        return checkFailed(forbidden)
+      }
     }
     // A copy of the Sims folder inside app data is a backup, not the game's folder.
     if (isInside(nativePath, folderPath, dataDir) || isInside(nativePath, realFolder, realData)) return notSims
@@ -309,11 +338,11 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
   let desktopDir: string | null = null
   let realDesktop: string | null = null
   if (isWellFormed(nativePath, paths.desktopDir)) {
+    desktopDir = paths.desktopDir
     try {
-      realDesktop = await resolveReal(paths.desktopDir)
-      desktopDir = paths.desktopDir
+      realDesktop = await resolveReal(desktopDir)
     } catch {
-      // no report zone
+      // Only a report is refused, as a check that failed.
     }
   }
   const roots: GateRoots = { folderPath, dataDir, desktopDir }
@@ -332,11 +361,12 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
     const named = sortPath(nativePath, roots, target)
     if (named.zone === 'forbidden') return { reason: 'saves-or-tray', path: target }
     if (!named.wellFormed || !mayWrite(use, named)) return outside(target)
+    if (named.zone === 'report' && realDesktop === null) return checkFailed(target)
     let real: SortedPath | null
     try {
       real = await sortReal(target)
-    } catch {
-      return { reason: 'link-escape', path: target }
+    } catch (err) {
+      return err instanceof LinkToNowhere ? { reason: 'link-escape', path: target } : checkFailed(target)
     }
     if (real === null) return { reason: 'saves-or-tray', path: target }
     if (real.zone !== named.zone || !mayWrite(use, real)) return { reason: 'link-escape', path: target }
@@ -349,8 +379,8 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
     try {
       const real = await sortReal(target)
       if (real !== null && !READ_ZONES.includes(real.zone)) return { reason: 'link-escape', path: target }
-    } catch {
-      return { reason: 'link-escape', path: target }
+    } catch (err) {
+      return err instanceof LinkToNowhere ? { reason: 'link-escape', path: target } : checkFailed(target)
     }
     return null
   }
@@ -390,7 +420,7 @@ export async function runGate(deps: GateDeps, request: WriteRequest): Promise<Ga
   try {
     approved = await checkRequest(deps, request)
   } catch {
-    approved = outside('')
+    approved = checkFailed('')
   }
   if ('reason' in approved) return { status: 'refused', refusal: approved }
 
