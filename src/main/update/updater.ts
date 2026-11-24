@@ -126,6 +126,14 @@ function failReason(error: unknown, step: 'check' | 'download'): FailReason {
   }
 }
 
+/**
+ * electron-updater's autoUpdater, built on first read. Null outside Electron (a unit test, a debug command), where
+ * reading it would load the electron package, which can start a download of Electron itself.
+ */
+function packagedEngine(): UpdateEngine | null {
+  return typeof process.versions['electron'] === 'string' ? electronUpdater.autoUpdater : null
+}
+
 function alwaysOff(why: OffReason): Updater {
   const off: UpdateState = { state: 'off', why }
   return {
@@ -154,7 +162,9 @@ export function createUpdater(input: UpdaterInput, seams: UpdaterSeams = {}): Up
   // The engine is first touched here, after every reason to stay off, and only on an installed Windows app.
   let engine: UpdateEngine
   try {
-    engine = seams.engine ? seams.engine() : electronUpdater.autoUpdater
+    const loaded = seams.engine ? seams.engine() : packagedEngine()
+    if (loaded === null || loaded === undefined) return alwaysOff('not-installed-app')
+    engine = loaded
     lockDown(engine)
     engine.on('download-progress', (info) => {
       if (state.state !== 'downloading') return

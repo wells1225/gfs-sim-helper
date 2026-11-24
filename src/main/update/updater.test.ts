@@ -1,6 +1,6 @@
 // @vitest-environment node
 // Every test drives a fake engine. The real electron-updater is replaced below, so no test reaches GitHub.
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { UpdateState } from '../../shared/model.ts'
 import type { UpdaterInput } from '../ports.ts'
 import { createUpdater, type UpdateEngine, type UpdaterSeams } from './updater.ts'
@@ -640,7 +640,23 @@ describe('install', () => {
 })
 
 describe('the real engine', () => {
+  const insideElectron = (): void => {
+    Object.defineProperty(process.versions, 'electron', { value: '45.4.1', configurable: true, enumerable: true })
+  }
+  afterEach(() => {
+    Reflect.deleteProperty(process.versions, 'electron')
+  })
+
+  it('is never read outside Electron, where reading it would load Electron itself', async () => {
+    packaged.engine = fakeEngine().engine
+    const updater = createUpdater(input())
+    expect(updater.state()).toEqual({ state: 'off', why: 'not-installed-app' })
+    expect(await updater.check()).toEqual({ state: 'off', why: 'not-installed-app' })
+    expect(packaged.reads).toBe(0)
+  })
+
   it('is electron-updater’s autoUpdater, read once, and only for an installed app', async () => {
+    insideElectron()
     const fake = fakeEngine()
     packaged.engine = fake.engine
     fake.check.mockResolvedValue(found('0.3.0'))
@@ -658,11 +674,13 @@ describe('the real engine', () => {
     expect(packaged.reads).toBe(1)
   })
 
-  it('leaves updates off when electron-updater cannot start, as outside Electron', () => {
+  it('leaves updates off, and does not throw, when electron-updater cannot start or is missing from the build', () => {
+    insideElectron()
     packaged.broken = true
     expect(createUpdater(input()).state()).toEqual({ state: 'off', why: 'not-installed-app' })
     packaged.broken = false
     packaged.engine = undefined
     expect(createUpdater(input()).state()).toEqual({ state: 'off', why: 'not-installed-app' })
+    expect(packaged.reads).toBe(2)
   })
 })
