@@ -12,7 +12,7 @@ import { Switch } from '../components/ui/switch.tsx'
 import { useNav } from '../nav.tsx'
 import { useSession } from '../session.tsx'
 import { useOptionalApi } from './optional-api.ts'
-import { formatBytes, formatEntryTimestamp, progressCopy, refusalMessage } from './words.ts'
+import { UNEXPECTED_COPY, formatBytes, formatEntryTimestamp, progressCopy, refusalMessage } from './words.ts'
 
 interface ModListItem {
   groupId: string
@@ -40,7 +40,7 @@ export function ModsScreen() {
     targetEnabled: boolean
     entryId?: string
     label: string
-    refusal: FixRefusal
+    refusal: FixRefusal | 'unexpected' // 'unexpected': the call failed with an error
   } | null>(null)
 
   const mountedRef = useRef(true)
@@ -177,7 +177,7 @@ export function ModsScreen() {
               ...prev.filter((d) => d.groupId !== item.groupId)
             ])
             toast(`Set aside ${item.label}`, {
-              description: 'Moved safely out of Mods — you can turn it back on anytime.',
+              description: 'Moved safely out of Mods. You can turn it back on anytime.',
               action: {
                 label: 'Undo',
                 onClick: () => {
@@ -238,6 +238,16 @@ export function ModsScreen() {
             description: outcome.detail || 'Open History to review what moved.'
           })
           await loadDisabled()
+        }
+      } catch {
+        if (mountedRef.current) {
+          setRefusalState({
+            groupId: item.groupId,
+            targetEnabled: item.targetEnabled,
+            entryId: item.entryId,
+            label: item.label,
+            refusal: 'unexpected'
+          })
         }
       } finally {
         if (mountedRef.current) {
@@ -310,7 +320,8 @@ export function ModsScreen() {
       )}
 
       {refusalState && (() => {
-        const copy = refusalMessage(refusalState.refusal)
+        const copy =
+          refusalState.refusal === 'unexpected' ? UNEXPECTED_COPY : refusalMessage(refusalState.refusal)
         const variant =
           copy.tone === 'destructive' ? 'destructive' : copy.tone === 'info' ? 'info' : 'warn'
         const Icon =

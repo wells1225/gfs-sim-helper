@@ -193,7 +193,7 @@ describe('FindingActions', () => {
     await waitFor(() => {
       expect(api.calls.some((c) => c.channel === 'journal:undo')).toBe(true)
     })
-    expect(await screen.findByText('Undone — put back the way it was.')).toBeInTheDocument()
+    expect(await screen.findByText('Undone. Put back the way it was.')).toBeInTheDocument()
 
     // Check again clears scan and navigates to check-up
     await user.click(screen.getByRole('button', { name: 'Check again' }))
@@ -429,5 +429,138 @@ describe('ModsScreen', () => {
       'aria-checked',
       'false'
     )
+  })
+})
+
+describe('review: retries, failures and focus', () => {
+  const doneEntry = sampleJournalEntry({
+    id: 'entry-fix-9',
+    action: 'turn-mods-on',
+    summary: 'Turned mods and script mods back on',
+    status: 'done',
+    undo: 'can-undo'
+  })
+
+  it('Try again after a refused Undo retries the Undo, not the fix', async () => {
+    const user = userEvent.setup()
+    let undoAttempt = 0
+    const api = fakeApi({
+      'fix:apply': { status: 'done', entry: doneEntry },
+      'journal:undo': () => {
+        undoAttempt += 1
+        if (undoAttempt === 1) {
+          return { status: 'refused', refusal: { why: 'gate', refusal: { reason: 'game-running' } } }
+        }
+        return { status: 'done', entry: { ...doneEntry, status: 'undone', undoneAt: '2026-11-24T12:40:00.000Z' } }
+      }
+    })
+
+    render(
+      <Harness api={api}>
+        <FindingActions finding={sampleFinding()} />
+      </Harness>
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Turn mods back on' }))
+    const undoButtons = await screen.findAllByRole('button', { name: 'Undo' })
+    await user.click(undoButtons[0]!)
+    await user.click(await screen.findByRole('button', { name: 'Try again' }))
+
+    await waitFor(() => expect(undoAttempt).toBe(2))
+    expect(api.calls.filter((c) => c.channel === 'fix:apply')).toHaveLength(1)
+  })
+
+  it('a fix that fails with an error shows a calm message and Try again instead of a stuck progress bar', async () => {
+    const user = userEvent.setup()
+    let attempt = 0
+    const api = fakeApi({
+      'fix:apply': () => {
+        attempt += 1
+        if (attempt === 1) throw new Error('journal entry could not be written')
+        return { status: 'done', entry: doneEntry }
+      }
+    })
+
+    render(
+      <Harness api={api}>
+        <FindingActions finding={sampleFinding()} />
+      </Harness>
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Turn mods back on' }))
+    expect(await screen.findByText('Something went wrong')).toBeInTheDocument()
+    expect(screen.queryByText('Making a safety copy first…')).not.toBeInTheDocument()
+    expect(screen.queryByText(/journal entry could not be written/)).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }))
+    expect((await screen.findAllByText('Turned mods and script mods back on')).length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('keeps keyboard focus on the card after the clicked button goes away', async () => {
+    const user = userEvent.setup()
+    const api = fakeApi({ 'fix:apply': { status: 'done', entry: doneEntry } })
+
+    render(
+      <Harness api={api}>
+        <FindingActions finding={sampleFinding()} />
+      </Harness>
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Turn mods back on' }))
+    await screen.findByRole('button', { name: 'Check again' })
+    expect(document.activeElement).not.toBe(document.body)
+    expect(screen.getByRole('status')).toHaveTextContent('Turned mods and script mods back on')
+  })
+
+  it('History shows a calm message and Try again when an undo fails with an error', async () => {
+    const user = userEvent.setup()
+    let attempt = 0
+    const api = fakeApi({
+      'journal:list': [doneEntry],
+      'journal:undo': () => {
+        attempt += 1
+        if (attempt === 1) throw new Error('boom')
+        return { status: 'done', entry: { ...doneEntry, status: 'undone', undoneAt: '2026-11-24T12:40:00.000Z' } }
+      }
+    })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'history' }}>
+        <HistoryScreen />
+      </Harness>
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Undo' }))
+    expect(await screen.findByText('Something went wrong')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument())
+    expect(attempt).toBe(2)
+  })
+
+  it('Your mods shows a calm message and Try again when a switch fails with an error', async () => {
+    const user = userEvent.setup()
+    let attempt = 0
+    const api = fakeApi({
+      'groups:disabled': [],
+      'fix:apply': () => {
+        attempt += 1
+        if (attempt === 1) throw new Error('boom')
+        return {
+          status: 'done',
+          entry: sampleJournalEntry({ id: 'd-1', action: 'disable-group', groupId: 'dir:hair', status: 'done' })
+        }
+      }
+    })
+
+    render(
+      <Harness api={api} initialScan={sampleScan()} initialRoute={{ screen: 'mods' }}>
+        <ModsScreen />
+      </Harness>
+    )
+
+    await user.click(await screen.findByRole('switch', { name: 'Set Hair aside' }))
+    expect(await screen.findByText('Something went wrong')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('switch', { name: 'Turn Hair back on' })).toBeInTheDocument()
   })
 })

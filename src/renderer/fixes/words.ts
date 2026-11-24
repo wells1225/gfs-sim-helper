@@ -73,7 +73,7 @@ function gateRefusalMessage(refusal: GateRefusal): RefusalCopy {
     case 'no-verified-backup':
       return {
         title: 'A safety copy is needed first',
-        detail: 'A verified safety copy is needed before any file moves. Nothing was changed — please try again.',
+        detail: 'A verified safety copy is needed before any file moves. Nothing was changed, so please try again.',
         canRetry: true,
         tone: 'warn'
       }
@@ -136,6 +136,14 @@ function backupRefusalMessage(reason: BackupRefusal | 'backup-failed'): RefusalC
         tone: 'warn'
       }
   }
+}
+
+/** Shown when a call fails with an error instead of an answer. The error text itself is never shown. */
+export const UNEXPECTED_COPY: RefusalCopy = {
+  title: 'Something went wrong',
+  detail: 'Sims Helper could not finish that. Your saves are safe, and History shows anything that changed. Try again.',
+  canRetry: true,
+  tone: 'warn'
 }
 
 export function refusalMessage(refusal: FixRefusal): RefusalCopy {

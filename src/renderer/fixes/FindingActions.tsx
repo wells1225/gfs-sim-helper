@@ -1,21 +1,39 @@
 import { AlertTriangle, CheckCircle2, Info, RotateCcw, ShieldAlert, Undo2 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import type { Finding, FixId, FixRefusal, JournalEntry, Progress } from '../../shared/model.ts'
+import type { Finding, FixId, FixOutcome, FixRefusal, JournalEntry, Progress } from '../../shared/model.ts'
 import { useApi } from '../api.tsx'
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert.tsx'
 import { Button } from '../components/ui/button.tsx'
 import { Progress as ProgressBar } from '../components/ui/progress.tsx'
 import { useNav } from '../nav.tsx'
 import { useSession } from '../session.tsx'
-import { FIX_BUTTON_LABEL, progressCopy, refusalMessage } from './words.ts'
+import { FIX_BUTTON_LABEL, UNEXPECTED_COPY, progressCopy, refusalMessage, type RefusalCopy } from './words.ts'
+
+/** What "Try again" repeats: the fix itself, or the undo of one entry. */
+type Retry = { kind: 'fix'; fix: FixId } | { kind: 'undo'; entryId: string; summary: string }
 
 type ActionState =
   | { phase: 'idle' }
   | { phase: 'running'; fix: FixId }
   | { phase: 'done'; entry: JournalEntry; undone: boolean }
-  | { phase: 'refused'; fix: FixId; refusal: FixRefusal }
+  | { phase: 'refused'; retry: Retry; refusal: FixRefusal }
+  | { phase: 'error'; retry: Retry }
   | { phase: 'stopped-part-way'; entry: JournalEntry; detail: string }
+
+function announcement(state: ActionState, undoBusy: boolean): string {
+  if (undoBusy) return 'Putting files back'
+  switch (state.phase) {
+    case 'running':
+      return 'Making a safety copy first'
+    case 'done':
+      return state.undone ? 'Undo finished. Everything is back the way it was.' : `Done: ${state.entry.summary}`
+    case 'stopped-part-way':
+      return 'This fix stopped partway through'
+    default:
+      return ''
+  }
+}
 
 export function FindingActions({ finding }: { finding: Finding }) {
   const api = useApi()
@@ -26,6 +44,7 @@ export function FindingActions({ finding }: { finding: Finding }) {
   const [progress, setProgress] = useState<Progress | null>(null)
   const [undoBusy, setUndoBusy] = useState(false)
   const mountedRef = useRef(true)
+  const cardRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     mountedRef.current = true
@@ -35,6 +54,15 @@ export function FindingActions({ finding }: { finding: Finding }) {
   }, [])
 
   const isRunning = state.phase === 'running' || undoBusy
+
+  // The clicked button goes away when the card changes, so keep keyboard focus on the card.
+  useEffect(() => {
+    if (state.phase === 'idle') return
+    const active = document.activeElement
+    if (!active || active === document.body) {
+      cardRef.current?.focus()
+    }
+  }, [state, undoBusy])
 
   useEffect(() => {
     if (!isRunning) {
@@ -56,43 +84,72 @@ export function FindingActions({ finding }: { finding: Finding }) {
   const handleUndo = useCallback(
     async (entryId: string, originalSummary: string) => {
       setUndoBusy(true)
+      const retry: Retry = { kind: 'undo', entryId, summary: originalSummary }
+      let outcome: FixOutcome
       try {
-        const outcome = await api.invoke('journal:undo', { entryId })
-        if (!mountedRef.current) return
-        if (outcome.status === 'done') {
-          setState({ phase: 'done', entry: outcome.entry, undone: true })
-          toast('Undone', { description: `Put everything back for: ${originalSummary}` })
-        } else if (outcome.status === 'refused') {
-          setState({
-            phase: 'refused',
-            fix: finding.fixes[0]?.fix ?? 'set-aside-files',
-            refusal: outcome.refusal
-          })
+        outcome = await api.invoke('journal:undo', { entryId })
+      } catch {
+        if (mountedRef.current) {
+          setState({ phase: 'error', retry })
         } else {
-          setState({
-            phase: 'stopped-part-way',
-            entry: outcome.entry,
-            detail: outcome.detail
+          toast.warning(UNEXPECTED_COPY.title, {
+            description: UNEXPECTED_COPY.detail
           })
         }
+        return
       } finally {
         if (mountedRef.current) {
           setUndoBusy(false)
         }
       }
+
+      if (outcome.status === 'done') {
+        toast('Undone', {
+          description: `Put everything back for: ${originalSummary}`
+        })
+        if (mountedRef.current) setState({ phase: 'done', entry: outcome.entry, undone: true })
+        return
+      }
+      if (outcome.status === 'refused') {
+        if (mountedRef.current) {
+          setState({ phase: 'refused', retry, refusal: outcome.refusal })
+        } else {
+          // The card is gone (Undo came from the toast after she left the screen), so tell her here.
+          const copy = refusalMessage(outcome.refusal)
+          toast.warning(copy.title, { description: copy.detail })
+        }
+        return
+      }
+      if (mountedRef.current) {
+        setState({
+          phase: 'stopped-part-way',
+          entry: outcome.entry,
+          detail: outcome.detail
+        })
+      } else {
+        toast.warning('Undo stopped partway through', {
+          description: 'Open History to see what moved.'
+        })
+      }
     },
-    [api, finding.fixes]
+    [api]
   )
 
   const runFix = useCallback(
     async (fix: FixId) => {
       setProgress(null)
       setState({ phase: 'running', fix })
-      const outcome = await api.invoke('fix:apply', {
-        via: 'finding',
-        findingId: finding.id,
-        fix
-      })
+      let outcome: FixOutcome
+      try {
+        outcome = await api.invoke('fix:apply', {
+          via: 'finding',
+          findingId: finding.id,
+          fix
+        })
+      } catch {
+        if (mountedRef.current) setState({ phase: 'error', retry: { kind: 'fix', fix } })
+        return
+      }
       if (!mountedRef.current) return
 
       if (outcome.status === 'done') {
@@ -117,7 +174,11 @@ export function FindingActions({ finding }: { finding: Finding }) {
       }
 
       if (outcome.status === 'refused') {
-        setState({ phase: 'refused', fix, refusal: outcome.refusal })
+        setState({
+          phase: 'refused',
+          retry: { kind: 'fix', fix },
+          refusal: outcome.refusal
+        })
         return
       }
 
@@ -130,68 +191,30 @@ export function FindingActions({ finding }: { finding: Finding }) {
     [api, finding.id, handleUndo]
   )
 
+  const retry = useCallback(
+    (target: Retry) => {
+      if (target.kind === 'fix') void runFix(target.fix)
+      else void handleUndo(target.entryId, target.summary)
+    },
+    [handleUndo, runFix]
+  )
+
   if (finding.fixes.length === 0) {
     return null
   }
 
-  if (state.phase === 'running' || undoBusy) {
-    const copy = progressCopy(progress)
-    return (
-      <div
-        aria-live="polite"
-        className="flex flex-col gap-2 rounded-lg border border-border bg-muted/50 px-3.5 py-3"
-      >
-        <div className="flex items-center justify-between gap-2 text-sm font-medium text-foreground">
-          <span>{undoBusy && !progress ? 'Putting files back…' : copy.heading}</span>
-          {copy.detail && <span className="tabular-nums text-muted-foreground">{copy.detail}</span>}
-        </div>
-        <ProgressBar value={copy.percent} aria-label={copy.heading} />
-      </div>
-    )
-  }
+  return (
+    <div ref={cardRef} tabIndex={-1} className="outline-none">
+      <p role="status" className="sr-only">
+        {announcement(state, undoBusy)}
+      </p>
+      {renderBody()}
+    </div>
+  )
 
-  if (state.phase === 'done') {
-    return (
-      <div
-        aria-live="polite"
-        className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-severity-ok-border bg-severity-ok-bg px-3.5 py-2.5 text-severity-ok"
-      >
-        <div className="flex items-center gap-2 text-[0.9375rem] font-medium">
-          <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
-          <span>
-            {state.undone ? 'Undone — put back the way it was.' : state.entry.summary}
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {!state.undone && state.entry.undo === 'can-undo' && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => void handleUndo(state.entry.id, state.entry.summary)}
-            >
-              <Undo2 className="size-4" aria-hidden="true" />
-              Undo
-            </Button>
-          )}
-          <Button variant="outline" size="sm" onClick={handleCheckAgain}>
-            <RotateCcw className="size-4" aria-hidden="true" />
-            Check again
-          </Button>
-        </div>
-      </div>
-    )
-  }
-
-  if (state.phase === 'refused') {
-    const copy = refusalMessage(state.refusal)
-    const variant =
-      copy.tone === 'destructive' ? 'destructive' : copy.tone === 'info' ? 'info' : 'warn'
-    const Icon =
-      copy.tone === 'destructive' ? ShieldAlert : copy.tone === 'info' ? Info : AlertTriangle
-    const showCheckAgain =
-      state.refusal.why === 'out-of-date' && state.refusal.detail !== 'nothing-to-do'
-
+  function renderNotice(copy: RefusalCopy, target: Retry, showCheckAgain: boolean) {
+    const variant = copy.tone === 'destructive' ? 'destructive' : copy.tone === 'info' ? 'info' : 'warn'
+    const Icon = copy.tone === 'destructive' ? ShieldAlert : copy.tone === 'info' ? Info : AlertTriangle
     return (
       <Alert variant={variant}>
         <div className="flex items-start gap-2.5">
@@ -202,7 +225,7 @@ export function FindingActions({ finding }: { finding: Finding }) {
             {(copy.canRetry || showCheckAgain) && (
               <div className="flex flex-wrap items-center gap-2 pt-0.5">
                 {copy.canRetry && (
-                  <Button variant="outline" size="sm" onClick={() => void runFix(state.fix)}>
+                  <Button variant="outline" size="sm" onClick={() => retry(target)}>
                     Try again
                   </Button>
                 )}
@@ -220,44 +243,96 @@ export function FindingActions({ finding }: { finding: Finding }) {
     )
   }
 
-  if (state.phase === 'stopped-part-way') {
-    return (
-      <Alert variant="warn">
-        <div className="flex items-start gap-2.5">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-          <div className="flex flex-1 flex-col gap-2">
-            <AlertTitle>This fix stopped partway through</AlertTitle>
-            <AlertDescription>
-              {state.detail || 'Not every file finished moving. You can undo what moved so far.'}
-            </AlertDescription>
-            <div className="flex flex-wrap items-center gap-2 pt-0.5">
-              {state.entry.undo === 'can-undo' && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void handleUndo(state.entry.id, state.entry.summary)}
-                >
-                  <Undo2 className="size-4" aria-hidden="true" />
-                  Undo
-                </Button>
-              )}
-              <Button variant="ghost" size="sm" onClick={() => go({ screen: 'history' })}>
-                Open History
+  function renderBody() {
+    if (state.phase === 'running' || undoBusy) {
+      const copy = progressCopy(progress)
+      return (
+        <div className="flex flex-col gap-2 rounded-lg border border-border bg-muted/50 px-3.5 py-3">
+          <div className="flex items-center justify-between gap-2 text-sm font-medium text-foreground">
+            <span>{undoBusy && !progress ? 'Putting files back…' : copy.heading}</span>
+            {copy.detail && <span className="tabular-nums text-muted-foreground">{copy.detail}</span>}
+          </div>
+          <ProgressBar value={copy.percent} aria-label={copy.heading} />
+        </div>
+      )
+    }
+
+    if (state.phase === 'done') {
+      return (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-severity-ok-border bg-severity-ok-bg px-3.5 py-2.5 text-severity-ok">
+          <div className="flex items-center gap-2 text-[0.9375rem] font-medium">
+            <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
+            <span>{state.undone ? 'Undone. Put back the way it was.' : state.entry.summary}</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {!state.undone && state.entry.undo === 'can-undo' && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void handleUndo(state.entry.id, state.entry.summary)}
+              >
+                <Undo2 className="size-4" aria-hidden="true" />
+                Undo
               </Button>
-            </div>
+            )}
+            <Button variant="outline" size="sm" onClick={handleCheckAgain}>
+              <RotateCcw className="size-4" aria-hidden="true" />
+              Check again
+            </Button>
           </div>
         </div>
-      </Alert>
+      )
+    }
+
+    if (state.phase === 'refused') {
+      const showCheckAgain = state.refusal.why === 'out-of-date' && state.refusal.detail !== 'nothing-to-do'
+      return renderNotice(refusalMessage(state.refusal), state.retry, showCheckAgain)
+    }
+
+    if (state.phase === 'error') {
+      return renderNotice(UNEXPECTED_COPY, state.retry, false)
+    }
+
+    if (state.phase === 'stopped-part-way') {
+      return (
+        <Alert variant="warn">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <div className="flex flex-1 flex-col gap-2">
+              <AlertTitle>This fix stopped partway through</AlertTitle>
+              <AlertDescription>
+                {state.detail || 'Not every file finished moving. You can undo what moved so far.'}
+              </AlertDescription>
+              <div className="flex flex-wrap items-center gap-2 pt-0.5">
+                {state.entry.undo === 'can-undo' && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleUndo(state.entry.id, state.entry.summary)}
+                  >
+                    <Undo2 className="size-4" aria-hidden="true" />
+                    Undo
+                  </Button>
+                )}
+                <Button variant="ghost" size="sm" onClick={() => go({ screen: 'history' })}>
+                  Open History
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Alert>
+      )
+    }
+
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        {finding.fixes.map((req) => (
+          <Button key={req.fix} size="sm" onClick={() => void runFix(req.fix)}>
+            {FIX_BUTTON_LABEL[req.fix]}
+          </Button>
+        ))}
+      </div>
     )
   }
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      {finding.fixes.map((req) => (
-        <Button key={req.fix} size="sm" onClick={() => void runFix(req.fix)}>
-          {FIX_BUTTON_LABEL[req.fix]}
-        </Button>
-      ))}
-    </div>
-  )
 }

@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import type { FixRefusal, JournalEntry, Progress } from '../../shared/model.ts'
+import type { FixOutcome, FixRefusal, JournalEntry, Progress } from '../../shared/model.ts'
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert.tsx'
 import { Badge } from '../components/ui/badge.tsx'
 import { Button } from '../components/ui/button.tsx'
@@ -21,7 +21,13 @@ import { Separator } from '../components/ui/separator.tsx'
 import { useNav } from '../nav.tsx'
 import { groupHistoryEntries, type HistoryRow } from './history-groups.ts'
 import { useOptionalApi } from './optional-api.ts'
-import { formatEntryTimestamp, formatStepSummary, progressCopy, refusalMessage } from './words.ts'
+import {
+  UNEXPECTED_COPY,
+  formatEntryTimestamp,
+  formatStepSummary,
+  progressCopy,
+  refusalMessage
+} from './words.ts'
 
 export function HistoryScreen() {
   const api = useOptionalApi()
@@ -35,7 +41,7 @@ export function HistoryScreen() {
   const [errorState, setErrorState] = useState<{
     entryId: string
     summary: string
-    refusal: FixRefusal
+    refusal: FixRefusal | 'unexpected' // 'unexpected': the call failed with an error
   } | null>(null)
   const [partWayMessage, setPartWayMessage] = useState<string | null>(null)
 
@@ -100,7 +106,15 @@ export function HistoryScreen() {
       setUndoingId(entry.id)
 
       try {
-        const outcome = await api.invoke('journal:undo', { entryId: entry.id })
+        let outcome: FixOutcome
+        try {
+          outcome = await api.invoke('journal:undo', { entryId: entry.id })
+        } catch {
+          if (mountedRef.current) {
+            setErrorState({ entryId: entry.id, summary: entry.summary, refusal: 'unexpected' })
+          }
+          return
+        }
         if (!mountedRef.current) return
 
         if (outcome.status === 'done') {
@@ -189,7 +203,8 @@ export function HistoryScreen() {
       )}
 
       {errorState && (() => {
-        const copy = refusalMessage(errorState.refusal)
+        const copy =
+          errorState.refusal === 'unexpected' ? UNEXPECTED_COPY : refusalMessage(errorState.refusal)
         const variant =
           copy.tone === 'destructive' ? 'destructive' : copy.tone === 'info' ? 'info' : 'warn'
         const Icon =
