@@ -442,6 +442,22 @@ describe('the Sims folder', () => {
     })
   })
 
+  it('refuses a Sims-named folder link whose real target is not a Sims folder', async () => {
+    const w = await makeWorld()
+    const realTarget = join(w.root, 'pc', 'NotASimsFolder')
+    await mkdir(join(realTarget, 'Mods'), { recursive: true })
+    await writeFile(join(realTarget, 'Options.ini'), 'modsdisabled = 0\n')
+    const linkParent = join(w.root, 'pc', 'Alias')
+    await mkdir(linkParent, { recursive: true })
+    const fakeSimsLink = join(linkParent, 'The Sims 4')
+    await linkFolder(realTarget, fakeSimsLink)
+    await expectRefusal(
+      w,
+      () => w.run([{ op: 'mkdir', path: join(fakeSimsLink, 'Mods', 'New') }], { folderPath: fakeSimsLink }),
+      { reason: 'not-a-sims-folder', path: fakeSimsLink }
+    )
+  })
+
   it.runIf(ON_WINDOWS)('refuses C:\\Windows', async () => {
     const w = await makeWorld()
     await expectRefusal(
