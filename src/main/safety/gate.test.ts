@@ -442,20 +442,48 @@ describe('the Sims folder', () => {
     })
   })
 
+  // Players move the folder to another drive and leave a link behind. The real folder may have any name.
   it('refuses a Sims-named folder link whose real target is not a Sims folder', async () => {
     const w = await makeWorld()
     const realTarget = join(w.root, 'pc', 'NotASimsFolder')
     await mkdir(join(realTarget, 'Mods'), { recursive: true })
-    await writeFile(join(realTarget, 'Options.ini'), 'modsdisabled = 0\n')
     const linkParent = join(w.root, 'pc', 'Alias')
     await mkdir(linkParent, { recursive: true })
-    const fakeSimsLink = join(linkParent, 'The Sims 4')
-    await linkFolder(realTarget, fakeSimsLink)
-    await expectRefusal(
-      w,
-      () => w.run([{ op: 'mkdir', path: join(fakeSimsLink, 'Mods', 'New') }], { folderPath: fakeSimsLink }),
-      { reason: 'not-a-sims-folder', path: fakeSimsLink }
-    )
+    const simsLink = join(linkParent, 'The Sims 4')
+    await linkFolder(realTarget, simsLink)
+    const made = join(simsLink, 'Mods', 'New')
+    await expectRefusal(w, () => w.run([{ op: 'mkdir', path: made }], { folderPath: simsLink }), {
+      reason: 'not-a-sims-folder',
+      path: simsLink
+    })
+
+    // Options.ini is what makes it one, whatever the real folder is called.
+    await writeFile(join(realTarget, 'Options.ini'), 'modsdisabled = 0\n')
+    expect(await w.run([{ op: 'mkdir', path: made }], { folderPath: simsLink })).toEqual({ status: 'done' })
+    expect((await stat(join(realTarget, 'Mods', 'New'))).isDirectory()).toBe(true)
+    expect(w.asked).toEqual([`backup ${simsLink}`, 'game'])
+  })
+
+  it('refuses a Sims-named folder link whose real target is inside saves or Tray', async () => {
+    for (const forbidden of ['saves', 'Tray']) {
+      const w = await makeWorld()
+      const realTarget = w.inFolder(forbidden, 'Nested')
+      await mkdir(join(realTarget, 'Mods'), { recursive: true })
+      await writeFile(join(realTarget, 'Options.ini'), 'modsdisabled = 0\n')
+      const linkParent = join(w.root, 'pc', 'Alias')
+      await mkdir(linkParent, { recursive: true })
+      const simsLink = join(linkParent, 'The Sims 4')
+      await linkFolder(realTarget, simsLink)
+      for (const op of [
+        { op: 'mkdir', path: join(simsLink, 'Mods', 'New') },
+        { op: 'write', path: join(simsLink, 'Options.ini'), data: 'x', mode: 'replace' }
+      ] satisfies WriteOp[]) {
+        await expectRefusal(w, () => w.run([op], { folderPath: simsLink }), {
+          reason: 'not-a-sims-folder',
+          path: simsLink
+        })
+      }
+    }
   })
 
   it.runIf(ON_WINDOWS)('refuses C:\\Windows', async () => {
