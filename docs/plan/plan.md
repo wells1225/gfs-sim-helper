@@ -16,7 +16,7 @@ tools and the stack. Sol covered crash causes and rules. Grok covered posts on X
 | Stack | Electron, TypeScript, React with Vite, Vitest, Playwright for Electron | One language from the package reader to the UI. Chromium renders the same on the Mac and on Windows. Neon's report, section 5. |
 | Installer | electron-builder NSIS, **assisted** wizard (`oneClick: false`), unsigned | Tyler asked for a wizard. The NSIS default is one-click, which has no pages for a finish-page note. |
 | Build machine | GitHub Actions `windows-latest` | Builds the `.exe` and runs every test on real Windows. Tyler works on a Mac. |
-| Delivery | A Google Drive link to the `.exe` | Gmail blocks `.exe` attachments, zipped ones too. The repo is private, so she cannot use a GitHub release link. |
+| Delivery | First install: a Google Drive link to the `.exe`. Later versions: the in-app Update button (plan PR 13) | Gmail blocks `.exe` attachments, zipped ones too. The repo is public now, so updates come from GitHub Releases. |
 | Beside PlumbBuddy, not a fork | Own app | PlumbBuddy (MIT, C#) has no crash-log explainer, no CurseForge awareness and no guided 50/50. We borrow its rules and cite it. |
 | Package reader | Our own DBPF index reader, about 60 lines, written from the spec | We need only resource keys. Fable and Neon disagree on whether `@s4tk/models` is maintained. |
 | CurseForge API | Not in v1 | The key cannot ship inside an `.exe`, and the terms forbid saving API data to disk. Neon's report, section 3. |
