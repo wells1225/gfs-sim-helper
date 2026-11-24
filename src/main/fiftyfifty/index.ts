@@ -68,7 +68,7 @@ async function saveOrProblem(deps: FiftyDeps, state: FiftyFifty): Promise<FiftyR
   return problem ? withState(problem, state) : { status: 'ok', state }
 }
 
-export async function start(deps: FiftyDeps, scan: Scan): Promise<FiftyResult> {
+export async function start(deps: FiftyDeps, scan: Scan | null): Promise<FiftyResult> {
   if (!scan) return { status: 'refused', refusal: { why: 'out-of-date', detail: 'no-scan' } }
   if (scan.inventory.groups.length === 0) return NO_SESSION
 

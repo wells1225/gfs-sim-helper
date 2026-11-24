@@ -212,7 +212,7 @@ async function playToFound(deps: FiftyDeps, badId: string): Promise<FiftyFifty> 
 describe('start', () => {
   it('refuses without a scan or without a group', async () => {
     const deps = makeDeps()
-    expect(await start(deps, null as unknown as Scan)).toEqual({
+    expect(await start(deps, null)).toEqual({
       status: 'refused',
       refusal: { why: 'out-of-date', detail: 'no-scan' }
     })
