@@ -50,7 +50,8 @@ export interface CreateContextInput {
   updater?: Updater | ((seams: { busy: () => boolean }) => Updater)
 }
 
-const UPDATES_OFF: UpdateState = { state: 'off', why: 'switched-off' }
+// Only tests reach this: index.ts always passes an updater, which knows the real version.
+const UPDATES_OFF: UpdateState = { state: 'off', why: 'switched-off', current: '0.0.0' }
 
 const NO_UPDATER: Updater = {
   state: () => UPDATES_OFF,

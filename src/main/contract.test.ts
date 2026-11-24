@@ -342,7 +342,7 @@ describe('auto-update contract (PR 13)', () => {
   })
 
   it('has updates off when no updater is passed in, and uses the one passed in', async () => {
-    expect(makeContext().updater.state()).toEqual({ state: 'off', why: 'switched-off' })
+    expect(makeContext().updater.state()).toEqual({ state: 'off', why: 'switched-off', current: '0.0.0' })
     const idle: UpdateState = { state: 'idle', current: '0.2.0', checkedAt: null, justUpdated: false }
     const refused: UpdateInstall = { status: 'refused', why: 'not-ready' }
     const updater: Updater = {
@@ -358,7 +358,7 @@ describe('auto-update contract (PR 13)', () => {
 
   it('hands a factory updater the same busy() as the context, so install refuses mid-change', async () => {
     let seenBusy: (() => boolean) | null = null
-    const off: UpdateState = { state: 'off', why: 'switched-off' }
+    const off: UpdateState = { state: 'off', why: 'switched-off', current: '0.2.0' }
     const ctx = makeContext((seams) => {
       seenBusy = seams.busy
       return { state: () => off, check: async () => off, download: async () => off, install: () => ({ status: 'refused', why: 'not-ready' }) }
@@ -396,7 +396,7 @@ describe('auto-update contract (PR 13)', () => {
         { busy: () => false }
       )
       const state = updater.state()
-      expect(state).toMatchObject({ state: 'off' })
+      expect(state).toMatchObject({ state: 'off', current: '0.2.0' })
       expect(state.state === 'off' ? state.why : null).not.toBe('not-installed-app')
       expect((await updater.check()).state).toBe('off')
       expect(updater.install()).toEqual({ status: 'refused', why: 'not-ready' })
