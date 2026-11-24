@@ -11,7 +11,7 @@ import { fakeApi, type FakeApiAnswers } from '../testing/fake-api.ts'
 import { FiftyEntry } from './FiftyEntry.tsx'
 import { FiftyFiftyScreen } from './FiftyFiftyScreen.tsx'
 import { ResumeBanner } from './ResumeBanner.tsx'
-import { refusalWords } from './words.ts'
+import { PART_WAY, refusalWords } from './words.ts'
 
 afterEach(() => {
   cleanup()
@@ -203,6 +203,24 @@ describe('FiftyFiftyScreen', () => {
     expect(refusalWords({ why: 'backup', reason: 'game-state-unknown' })).toMatch(/Close the game/)
   })
 
+  it('a safety check that could not finish asks her to try again, not to send a report', () => {
+    const words = refusalWords({ why: 'gate', refusal: { reason: 'check-failed', path: 'C:\\x' } })
+    expect(words).toMatch(/safety check/)
+    expect(words).toMatch(/click Try again/)
+    expect(words).not.toMatch(/report/)
+  })
+
+  it('files that changed during the test point her to stopping, not to a check-up that cannot help', () => {
+    const words = refusalWords({ why: 'out-of-date', detail: 'file-changed' })
+    expect(words).toMatch(/Stop the test/)
+    expect(words).not.toMatch(/nothing was moved/)
+    expect(words).not.toMatch(/Run the check-up again/)
+  })
+
+  it('a half-done move also says where to put the mods back', () => {
+    expect(PART_WAY).toMatch(/History/)
+  })
+
   it('a round that is saved but not set up has its own button', async () => {
     const { api, user } = setup(<FiftyFiftyScreen />, {
       'fifty:get': round({ round: 2, phase: 'ready-to-test' }),
@@ -380,6 +398,20 @@ describe('ResumeBanner', () => {
     await user.click(screen.getByRole('button', { name: 'Put everything back and stop' }))
     await waitFor(() => expect(screen.queryByText(/50\/50 test in progress/)).not.toBeInTheDocument())
     expect(channels(api)).toContain('fifty:stop')
+  })
+
+  it('a refused or half-done stop never names a Try again button the banner does not have', async () => {
+    const refused: FiftyResult = { status: 'refused', refusal: { why: 'gate', refusal: { reason: 'game-running' } } }
+    const partWay: FiftyResult = { status: 'stopped-part-way', state: r2, detail: 'x' }
+    for (const [result, says] of [[refused, /The Sims 4 is still open/], [partWay, /Some mods were moved but not all/]] as const) {
+      const { user } = setup(<ResumeBanner />, { 'fifty:get': r2, 'fifty:stop': result }, { route: { screen: 'about' } })
+      await user.click(await screen.findByRole('button', { name: 'Put everything back and stop' }))
+      await user.click(screen.getAllByRole('button', { name: 'Put everything back and stop' }).at(-1)!)
+      const problem = await screen.findByText(says)
+      expect(problem).not.toHaveTextContent(/Try again/)
+      expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument()
+      cleanup()
+    }
   })
 
   it('shows nothing with no session, on the 50/50 screen, or when the call fails', async () => {

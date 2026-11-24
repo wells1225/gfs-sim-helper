@@ -5,7 +5,10 @@ import { Button } from '../components/ui/button.tsx'
 import { useNav } from '../nav.tsx'
 import { StopDialog } from './StopDialog.tsx'
 import { useOptionalApi } from './use-optional-api.ts'
-import { isUncertainResult, PART_WAY, refusalWords, roundOf, STOP_CONFIRM } from './words.ts'
+import { isUncertainResult, partWayWords, refusalWords, roundOf, STOP_CONFIRM } from './words.ts'
+
+/** The banner has no Try again button: its stop button is the way to try again. */
+const AGAIN = `click ${STOP_CONFIRM} again`
 
 export function ResumeBanner() {
   const api = useOptionalApi()
@@ -42,7 +45,7 @@ export function ResumeBanner() {
       const result = await api.invoke('fifty:stop')
       setAsking(false)
       if (result.status === 'ok') setState(null)
-      else setProblem(result.status === 'refused' ? refusalWords(result.refusal) : PART_WAY)
+      else setProblem(result.status === 'refused' ? refusalWords(result.refusal, AGAIN) : partWayWords(AGAIN))
     } catch {
       setAsking(false)
       setProblem('Something went wrong. Please try again.')

@@ -49,32 +49,40 @@ export const STOP_CONFIRM = 'Put everything back and stop'
 export const ALL_BACK = 'All your mods are back in place.'
 export const CURSEFORGE_OPEN =
   'CurseForge still looks open. Close it, and check the little arrow by the clock in case it is still running there.'
-export const PART_WAY = 'Some mods were moved but not all. Click Try again to finish moving them.'
+/** `again` names the way to retry where the words are shown: the 50/50 screen has a Try again button, the banner does not. */
+export function partWayWords(again = 'click Try again'): string {
+  return `Some mods were moved but not all. To finish moving them, ${again}. If that does not finish it, you can put them back from History.`
+}
+export const PART_WAY = partWayWords()
 
-/** One plain sentence per refusal. Nothing was changed in any of these cases. */
-export function refusalWords(refusal: FixRefusal): string {
+/** One plain sentence or two per refusal. */
+export function refusalWords(refusal: FixRefusal, again = 'click Try again'): string {
+  const gameOpen = `The Sims 4 is still open. Save and close the game, then ${again}.`
+  const gameUnknown = `We couldn't tell whether The Sims 4 is open, so nothing was moved. Close the game, then ${again}.`
   switch (refusal.why) {
     case 'gate':
       switch (refusal.refusal.reason) {
         case 'game-running':
-          return 'The Sims 4 is still open. Save and close the game, then click Try again.'
+          return gameOpen
         case 'game-state-unknown':
-          return "We couldn't tell whether The Sims 4 is open, so nothing was moved. Close the game, then click Try again."
+          return gameUnknown
         case 'no-verified-backup':
-          return 'We need a fresh safety copy before moving mods. Click Try again to make one.'
+          return `We need a fresh safety copy before moving mods, so nothing was moved. Please ${again}.`
+        case 'check-failed':
+          return `Something got in the way of a safety check, so nothing was moved. Wait a moment, then ${again}.`
         default:
           return "Something about this folder doesn't look safe to change, so nothing was moved. Send a report to Tyler."
       }
     case 'backup':
       switch (refusal.reason) {
         case 'game-running':
-          return 'The Sims 4 is still open. Save and close the game, then click Try again.'
+          return gameOpen
         case 'game-state-unknown':
-          return "We couldn't tell whether The Sims 4 is open, so nothing was moved. Close the game, then click Try again."
+          return gameUnknown
         case 'not-enough-space':
           return "There isn't enough free space to make a safety copy first, so nothing was moved."
         case 'backup-already-running':
-          return 'A safety copy is already being made. Wait a moment, then click Try again.'
+          return `A safety copy is already being made. Wait a moment, then ${again}.`
         default:
           return "We couldn't make a safety copy first, so nothing was moved. Send a report to Tyler."
       }
@@ -83,7 +91,8 @@ export function refusalWords(refusal: FixRefusal): string {
         case 'no-scan':
           return 'Run the check-up first, then start the 50/50 test.'
         case 'file-changed':
-          return 'Your mods changed since the check-up, so nothing was moved. Run the check-up again.'
+          // Only a round being set up gets this, and a new check-up does not change the groups the test saved.
+          return "Some of your mod files changed since the test started, so we can't set up this round. Stop the test to put your mods back, then run the check-up and start a new test."
         default:
           return 'There is nothing to do right now. Run the check-up again.'
       }
