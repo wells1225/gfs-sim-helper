@@ -30,6 +30,7 @@ const disk = vi.hoisted(() => ({
   crossDrive: null as null | { from: string; hits: number },
   corruptNewFiles: null as null | { hits: number },
   realpathFails: null as null | { under: string; code: string; hits: number },
+  beforeRealpath: null as null | ((target: string) => Promise<void>),
   statFails: null as null | { file: string; code: string; hits: number },
   readdirFails: null as null | { under: string; code: string; hits: number },
   foldersRead: [] as string[],
@@ -77,6 +78,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       disk.log?.push(`name ${String(added)}`)
     }) as typeof real.link,
     realpath: (async (target: string) => {
+      await disk.beforeRealpath?.(target)
       if (disk.realpathFails && target.startsWith(disk.realpathFails.under)) {
         disk.realpathFails.hits += 1
         throw errno(disk.realpathFails.code, 'realpath')
@@ -230,6 +232,7 @@ afterEach(async () => {
   disk.crossDrive = null
   disk.corruptNewFiles = null
   disk.realpathFails = null
+  disk.beforeRealpath = null
   disk.statFails = null
   disk.readdirFails = null
   disk.foldersRead = []
@@ -580,19 +583,78 @@ describe('the Sims folder', () => {
     expect((await stat(made)).isDirectory()).toBe(true)
   })
 
-  it('refuses a folder with Options.ini whose name is not a Sims folder name', async () => {
+  // PR 3 hands over the real path. A folder moved to D:\\SimsData and reached by a link arrives under that name.
+  it('accepts a folder with Options.ini whatever its name', async () => {
+    const w = await makeWorld()
+    const moved = join(w.root, 'pc', 'OtherDrive', 'SimsData')
+    await mkdir(join(moved, 'Mods'), { recursive: true })
+    await writeFile(join(moved, 'Options.ini'), 'modsdisabled = 0\n')
+    const made = join(moved, 'Mods', 'New')
+    expect(await w.run([{ op: 'mkdir', path: made }], { folderPath: moved })).toEqual({ status: 'done' })
+    expect((await stat(made)).isDirectory()).toBe(true)
+    expect(w.asked).toEqual([`backup ${moved}`, 'game'])
+    // Its saves and Tray are as closed as any.
+    const save = join(moved, 'saves', 'Slot_00000002.save')
+    await mkdir(dirname(save), { recursive: true })
+    await writeFile(save, 'a save')
+    for (const op of [
+      { op: 'remove', path: save },
+      { op: 'write', path: join(moved, 'Tray', 'x.trayitem'), data: 'x', mode: 'create' }
+    ] satisfies WriteOp[]) {
+      await expectRefusal(w, () => w.run([op], { folderPath: moved }), { reason: 'saves-or-tray', path: op.path })
+    }
+  })
+
+  it('refuses a folder without Options.ini, whatever its name', async () => {
     const w = await makeWorld()
     const fake = join(w.root, 'pc', 'Windows')
     await mkdir(join(fake, 'Mods'), { recursive: true })
-    await writeFile(join(fake, 'Options.ini'), 'modsdisabled = 0\n')
-    await expectRefusal(w, () => w.run([{ op: 'mkdir', path: join(fake, 'Mods', 'New') }], { folderPath: fake }), {
-      reason: 'not-a-sims-folder',
-      path: fake
-    })
+    await rm(w.inFolder('Options.ini'))
+    for (const folderPath of [fake, w.folder]) {
+      await expectRefusal(
+        w,
+        () => w.run([{ op: 'mkdir', path: join(folderPath, 'Mods', 'New') }], { folderPath }),
+        { reason: 'not-a-sims-folder', path: folderPath }
+      )
+    }
+  })
+
+  it('refuses a folder with Options.ini that sits inside a saves or Tray folder, under any name', async () => {
+    for (const forbidden of ['saves', 'Tray']) {
+      const w = await makeWorld()
+      for (const name of ['Nested', 'The Sims 4']) {
+        const inside = join(w.root, 'pc', 'OtherDrive', forbidden, 'deeper', name)
+        await mkdir(join(inside, 'Mods'), { recursive: true })
+        await writeFile(join(inside, 'Options.ini'), 'modsdisabled = 0\n')
+        for (const op of [
+          { op: 'mkdir', path: join(inside, 'Mods', 'New') },
+          { op: 'write', path: join(inside, 'Options.ini'), data: 'x', mode: 'replace' }
+        ] satisfies WriteOp[]) {
+          await expectRefusal(w, () => w.run([op], { folderPath: inside }), {
+            reason: 'not-a-sims-folder',
+            path: inside
+          })
+        }
+      }
+    }
+  })
+
+  it('a folder named saves or Tray is never the Sims folder', async () => {
+    const w = await makeWorld()
+    for (const name of ['saves', 'Tray']) {
+      const folderPath = w.inFolder(name)
+      await writeFile(join(folderPath, 'Options.ini'), 'modsdisabled = 0\n')
+      await mkdir(join(folderPath, 'Mods'), { recursive: true })
+      await expectRefusal(
+        w,
+        () => w.run([{ op: 'mkdir', path: join(folderPath, 'Mods', 'New') }], { folderPath }),
+        { reason: 'not-a-sims-folder', path: folderPath }
+      )
+    }
   })
 
   // Players move the folder to another drive and leave a link behind. The real folder may have any name.
-  it('refuses a Sims-named folder link whose real target is not a Sims folder', async () => {
+  it('a folder link needs Options.ini in its real target, whatever either is called', async () => {
     const w = await makeWorld()
     const realTarget = join(w.root, 'pc', 'NotASimsFolder')
     await mkdir(join(realTarget, 'Mods'), { recursive: true })
@@ -613,7 +675,7 @@ describe('the Sims folder', () => {
     expect(w.asked).toEqual([`backup ${simsLink}`, 'game'])
   })
 
-  it('refuses a Sims-named folder link whose real target is inside saves or Tray', async () => {
+  it('refuses a folder link whose real target is inside saves or Tray', async () => {
     for (const forbidden of ['saves', 'Tray']) {
       const w = await makeWorld()
       const realTarget = w.inFolder(forbidden, 'Nested')
@@ -1408,6 +1470,47 @@ describe('links', () => {
     expect(await exists(w.inData('journal'))).toBe(false)
     expect(await exists(w.inData('holding'))).toBe(false)
     expect(await snapshotTree(other)).toEqual(before)
+  })
+
+  it('refused, not failed, when the look right before the first op finds a path changed: nothing ran', async () => {
+    const w = await makeWorld()
+    const sub = w.inData('sub')
+    await mkdir(sub, { recursive: true })
+    const target = join(sub, 'Slot_00000002.save')
+    const savesBefore = await snapshotTree(w.inFolder('saves'))
+    // No guarded zone, so the game is not asked: the second look at the path is the one before the first op.
+    let looks = 0
+    disk.beforeRealpath = async (asked) => {
+      if (asked !== target) return
+      looks += 1
+      if (looks !== 2) return
+      await rm(sub, { recursive: true })
+      await linkFolder(w.inFolder('saves'), sub)
+    }
+    const result = await w.run([
+      { op: 'write', path: target, data: 'corrupted', mode: 'replace' },
+      { op: 'mkdir', path: w.inData('never') }
+    ])
+    expect(looks, 'the path was looked at a second time').toBeGreaterThanOrEqual(2)
+    expect(result).toEqual(refusedWith({ reason: 'saves-or-tray', path: target }))
+    expect(await snapshotTree(w.inFolder('saves'))).toEqual(savesBefore)
+    expect(await exists(w.inData('never'))).toBe(false)
+  })
+
+  it('refused with check-failed when the look right before the first op cannot be made', async () => {
+    const w = await makeWorld()
+    const target = w.inData('journal', 'e1.json')
+    let looks = 0
+    disk.beforeRealpath = async (asked) => {
+      if (asked !== target) return
+      looks += 1
+      if (looks === 2) disk.realpathFails = { under: target, code: 'EIO', hits: 0 }
+    }
+    const before = await snapshotTree(w.root)
+    const result = await w.run([{ op: 'write', path: target, data: '{}', mode: 'create' }])
+    expect(disk.realpathFails?.hits, 'the injected error was really hit').toBe(1)
+    expect(result).toEqual(refusedWith({ reason: 'check-failed', path: target }))
+    expect(await snapshotTree(w.root)).toEqual(before)
   })
 
   it('TOCTOU: a folder swapped while an earlier op runs stops the request before the op that would go through it', async () => {
