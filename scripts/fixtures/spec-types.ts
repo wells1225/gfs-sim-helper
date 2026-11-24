@@ -134,7 +134,7 @@ export interface UserFolderSpec {
    */
   gameVersionBinaryPrefix?: boolean
   options: OptionsIniSpec
-  /** If true, no Options.ini is written: a look-alike folder the game never started in. */
+  /** If true, no Options.ini is written. Everything else in the folder (saves, Tray, Mods) still is. */
   omitOptionsIni?: boolean
   optionsMtime?: string
   /** Number of subfolder levels allowed in Resource.cfg (default 5). */

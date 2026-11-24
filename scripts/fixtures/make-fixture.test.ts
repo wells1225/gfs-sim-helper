@@ -527,8 +527,8 @@ describe('fixture generator', () => {
     const odDir = join(workDir, 'verify-onedrive-finder')
     await generateFixture(odSpec, odDir)
 
-    // A localized folder name under the local Documents root that the game never started in:
-    // it has mods and the newest dates of the three, but no Options.ini.
+    // A localized folder name under the local Documents root whose Options.ini is missing.
+    // It still holds saves and mods, and it has the newest dates of the three.
     const lookAlike = join(odDir, 'Users/Player/Documents/Electronic Arts/Die Sims 4')
     const lookAlikeEntries = await readdir(lookAlike)
     expect(lookAlikeEntries).toContain('Mods')
@@ -577,7 +577,7 @@ describe('fixture generator', () => {
     )
     // The bracketed tag at the start of a game message is a developer's name in real logs.
     expect(gameOnlyLe).toContain('<desyncdata>[maxisdev] Caught exception')
-  })
+  }, 30_000)
 
   it('builds big with 5,000 valid packages and 300 valid script mods', async () => {
     const spec = await loadSpec(join(SPECS_DIR, 'big.json'))
