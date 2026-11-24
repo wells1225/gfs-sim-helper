@@ -75,6 +75,49 @@ describe('planReport', () => {
       'scan.json'
     ])
   })
+
+  it('removes a user name that is also part of longer words only where it is her folder', () => {
+    const redact = makeRedactor({ USERNAME: 'Ann', USERPROFILE: 'C:\\Users\\Ann' })
+    const base = sampleScan()
+    const folderPath = 'C:\\Users\\Ann\\Documents\\Electronic Arts\\The Sims 4'
+    const scan = sampleScan({
+      folder: { ...base.folder, path: folderPath },
+      inventory: {
+        ...base.inventory,
+        modsDir: `${folderPath}\\Mods`,
+        curseForge: {
+          status: 'found',
+          file: 'C:\\Users\\Ann\\AppData\\Roaming\\CurseForge\\agent\\GameInstances\\AddonGameInstance.json',
+          addons: []
+        }
+      },
+      logs: [
+        {
+          ...base.logs[0]!,
+          file: 'Annabelle_lastException.txt',
+          message: 'Annual event failed in C:/Users/Ann/Documents/Electronic Arts/The Sims 4/Mods/Annabelle.ts4script'
+        }
+      ]
+    })
+
+    const plan = planReport(scan, redact)
+    expect(plan.map((e) => e.name)).toEqual([
+      'Annabelle_lastException.txt',
+      'Options.ini',
+      'GameVersion.txt',
+      'scan.json',
+      'AddonGameInstance.json'
+    ])
+    const fileSources = plan.flatMap((e) => ('file' in e.source ? [e.source.file] : []))
+    expect(fileSources[0]).toBe(`${folderPath}\\Annabelle_lastException.txt`)
+
+    const json = JSON.stringify(plan.find((e) => e.name === 'scan.json')!.source)
+    expect(json).not.toMatch(/[\\/]Ann(?=[\\/"])/)
+    expect(json).toContain('<user>')
+    expect(json).toContain('Annual event failed')
+    expect(json).toContain('Mods/Annabelle.ts4script')
+    expect(json).toContain('Annabelle_lastException.txt')
+  })
 })
 
 describe('buildReport', () => {
