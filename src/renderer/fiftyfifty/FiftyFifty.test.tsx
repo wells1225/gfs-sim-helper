@@ -2,8 +2,8 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { FiftyFifty, FiftyResult, Scan } from '../../shared/model.ts'
-import { sampleFiftyFifty, sampleFinding, sampleScan } from '../../shared/testing/sample.ts'
+import type { FiftyFifty, FiftyResult, JournalEntry, Scan } from '../../shared/model.ts'
+import { sampleFiftyFifty, sampleFinding, sampleJournalEntry, sampleScan } from '../../shared/testing/sample.ts'
 import { ApiProvider } from '../api.tsx'
 import { NavProvider, useNav, type Route } from '../nav.tsx'
 import { SessionProvider } from '../session.tsx'
@@ -53,6 +53,21 @@ const controlRound = (overrides: Partial<FiftyFifty> = {}) =>
     history: [],
     ...overrides
   })
+const SESSION = sampleFiftyFifty().id
+/** A journal entry of this test session for one group: `status` says whether its files are back. */
+const moved = (groupId: string, groupLabel: string, status: JournalEntry['status'], sessionId = SESSION): JournalEntry =>
+  sampleJournalEntry({
+    id: `j-${groupId}-${sessionId}`,
+    action: 'disable-group',
+    groupId,
+    groupLabel,
+    status,
+    origin: { by: 'fifty-fifty', sessionId, round: 1 }
+  })
+/** What Electron hands the screen when main's fifty:get fails on a damaged progress file. */
+const damagedGet = () =>
+  Promise.reject(new Error("Error invoking remote method 'fifty:get': Error: fifty-progress-damaged"))
+const GAME_OPEN: FiftyResult = { status: 'refused', refusal: { why: 'gate', refusal: { reason: 'game-running' } } }
 const channels = (api: { calls: { channel: string }[] }) => api.calls.map((c) => c.channel)
 
 describe('FiftyFiftyScreen', () => {
@@ -100,7 +115,8 @@ describe('FiftyFiftyScreen', () => {
     })
     const { user } = setup(<FiftyFiftyScreen />, {
       'fifty:get': controlRound(),
-      'fifty:answer': ok(stoppedControl)
+      'fifty:answer': ok(stoppedControl),
+      'journal:list': []
     })
     await user.click(await screen.findByRole('button', { name: "I've tested it" }))
     await user.click(screen.getByRole('button', { name: 'It still crashed' }))
@@ -307,7 +323,8 @@ describe('FiftyFiftyScreen', () => {
       'fifty:finish': (req) => {
         finishes.push(req.keep)
         return ok({ ...found, phase: 'stopped' })
-      }
+      },
+      'journal:list': [moved('dir:hair', 'Hair', 'done'), moved('cf:901234', 'Wicked Wardrobe', 'undone')]
     })
     expect(await screen.findByRole('heading', { name: 'We found the most likely cause' })).toBeInTheDocument()
     expect(screen.getByText(/Hair/, { selector: 'strong' })).toBeInTheDocument()
@@ -315,7 +332,7 @@ describe('FiftyFiftyScreen', () => {
     expect(screen.getByText(/already put your other mods back/i)).toBeInTheDocument()
     expect(screen.queryByText(/still set aside from the last round/i)).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Keep Hair set aside' }))
-    expect(await screen.findByText(/Hair is set aside/)).toBeInTheDocument()
+    expect(await screen.findByText(/Hair is set aside\. Everything else is back in your Mods folder/)).toBeInTheDocument()
     expect(finishes).toEqual(['keep-set-aside'])
   })
 
@@ -337,7 +354,8 @@ describe('FiftyFiftyScreen', () => {
       'fifty:finish': (req) => {
         finishes.push(req.keep)
         return ok({ ...found, phase: 'stopped', parked: [] })
-      }
+      },
+      'journal:list': []
     })
     await user.click(await screen.findByRole('button', { name: 'Put everything back' }))
     expect(await screen.findByText('All your mods are back in place.')).toBeInTheDocument()
@@ -347,7 +365,14 @@ describe('FiftyFiftyScreen', () => {
   it('stopping asks once, then puts everything back', async () => {
     const { api, user } = setup(<FiftyFiftyScreen />, {
       'fifty:get': round(),
-      'fifty:stop': ok({ ...round(), phase: 'stopped', parked: [] })
+      'fifty:stop': ok({ ...round(), phase: 'stopped', parked: [] }),
+      // Not this session's, hers, already back, or a cache clear: none of these is a mod the test left out.
+      'journal:list': [
+        moved('dir:hair', 'Hair', 'undone'),
+        moved('dir:old', 'Old test', 'needs-attention', 'another-session'),
+        sampleJournalEntry({ id: 'hers', action: 'disable-group', groupId: 'dir:hers', groupLabel: 'Hers' }),
+        sampleJournalEntry({ id: 'cache', action: 'clear-caches', origin: { by: 'fifty-fifty', sessionId: SESSION, round: 1 } })
+      ]
     })
     await user.click(await screen.findByRole('button', { name: 'Stop the test' }))
     expect(screen.getByText('Stop the 50/50 test and put all your mods back?')).toBeInTheDocument()
@@ -418,7 +443,7 @@ describe('ResumeBanner', () => {
   it('puts everything back and stops after asking once', async () => {
     const { api, user } = setup(
       <ResumeBanner />,
-      { 'fifty:get': r2, 'fifty:stop': ok({ ...r2, phase: 'stopped' }) },
+      { 'fifty:get': r2, 'fifty:stop': ok({ ...r2, phase: 'stopped' }), 'journal:list': [] },
       { route: { screen: 'about' } }
     )
     await user.click(await screen.findByRole('button', { name: 'Put everything back and stop' }))
@@ -426,6 +451,24 @@ describe('ResumeBanner', () => {
     await user.click(screen.getByRole('button', { name: 'Put everything back and stop' }))
     await waitFor(() => expect(screen.queryByText(/50\/50 test in progress/)).not.toBeInTheDocument())
     expect(channels(api)).toContain('fifty:stop')
+    expect(screen.queryByText(/50\/50/)).not.toBeInTheDocument()
+  })
+
+  it('a stop that left a mod out says which one and points to History instead of vanishing', async () => {
+    const { user } = setup(
+      <ResumeBanner />,
+      {
+        'fifty:get': r2,
+        'fifty:stop': ok({ ...r2, phase: 'stopped' }),
+        'journal:list': [moved('dir:hair', 'Hair', 'needs-attention')]
+      },
+      { route: { screen: 'about' } }
+    )
+    await user.click(await screen.findByRole('button', { name: 'Put everything back and stop' }))
+    await user.click(screen.getAllByRole('button', { name: 'Put everything back and stop' }).at(-1)!)
+    expect(await screen.findByText(/not back in your Mods folder yet: Hair\./)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Open History' }))
+    expect(screen.getByTestId('route')).toHaveTextContent('history')
   })
 
   it('a refused or half-done stop never names a Try again button the banner does not have', async () => {
@@ -506,5 +549,132 @@ describe('FiftyEntry', () => {
     expect(screen.queryByRole('button', { name: 'Find it with the 50/50 test' })).not.toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /Try the 50\/50 test/ }))
     expect(screen.getByTestId('route')).toHaveTextContent('fifty-fifty')
+  })
+})
+
+describe('a stop never says every mod is back while one is not', () => {
+  const stopped = ok({ ...round(), phase: 'stopped', parked: [] })
+  async function stopWith(journal: JournalEntry[] | (() => Promise<JournalEntry[]>)) {
+    const made = setup(<FiftyFiftyScreen />, { 'fifty:get': round(), 'fifty:stop': stopped, 'journal:list': journal })
+    await made.user.click(await screen.findByRole('button', { name: 'Stop the test' }))
+    await made.user.click(screen.getByRole('button', { name: 'Put everything back and stop' }))
+    expect(await screen.findByRole('heading', { name: 'The 50/50 test is stopped' })).toBeInTheDocument()
+    return made
+  }
+
+  it('names the mods that still need putting back and opens History', async () => {
+    const { user } = await stopWith([
+      moved('dir:hair', 'Hair', 'needs-attention'),
+      moved('cf:901234', 'Wicked Wardrobe', 'in-progress'),
+      moved('dir:buildbuy', 'BuildBuy', 'undone')
+    ])
+    expect(screen.queryByText(/All your mods are back in place/)).not.toBeInTheDocument()
+    expect(screen.getByText(/not back in your Mods folder yet: Hair and Wicked Wardrobe\./)).toHaveTextContent(
+      /Open History to put them back/
+    )
+    await user.click(screen.getByRole('button', { name: 'Open History' }))
+    expect(screen.getByTestId('route')).toHaveTextContent('history')
+  })
+
+  it('a mod of this session that is still set aside counts too', async () => {
+    await stopWith([moved('dir:hair', 'Hair', 'done')])
+    expect(screen.queryByText(/All your mods are back in place/)).not.toBeInTheDocument()
+    expect(screen.getByText(/not back in your Mods folder yet: Hair\./)).toBeInTheDocument()
+  })
+
+  it('makes no promise when History cannot be read', async () => {
+    await stopWith(() => Promise.reject(new Error('not implemented: journal:list')))
+    expect(screen.queryByText(/All your mods are back in place/)).not.toBeInTheDocument()
+    expect(screen.getByText(/couldn't check that every mod is back/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open History' })).toBeInTheDocument()
+  })
+
+  it('keeping the cause set aside still names another mod that is not back', async () => {
+    const found = sampleFiftyFifty({ phase: 'found', culprit: 'dir:hair', parked: ['dir:hair'], suspects: ['dir:hair'] })
+    const { user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': found,
+      'fifty:finish': ok({ ...found, phase: 'stopped' }),
+      'journal:list': [moved('dir:hair', 'Hair', 'done'), moved('cf:901234', 'Wicked Wardrobe', 'needs-attention')]
+    })
+    await user.click(await screen.findByRole('button', { name: 'Keep Hair set aside' }))
+    expect(await screen.findByText(/Hair is set aside\./)).toBeInTheDocument()
+    expect(screen.queryByText(/Everything else is back/)).not.toBeInTheDocument()
+    expect(screen.getByText(/not back in your Mods folder yet: Wicked Wardrobe\./)).toBeInTheDocument()
+  })
+
+  it('a crashed control round does not say all back while one is not', async () => {
+    const all = ['cf:901234', 'dir:hair', 'dir:buildbuy', 'file:shoes.package']
+    const ended = controlRound({ phase: 'stopped', suspects: [], parked: [], cleared: all, history: [{ round: 0, parked: all, answer: 'crashed' }] })
+    const { user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': controlRound(),
+      'fifty:answer': ok(ended),
+      'journal:list': [moved('dir:hair', 'Hair', 'needs-attention')]
+    })
+    await user.click(await screen.findByRole('button', { name: "I've tested it" }))
+    await user.click(screen.getByRole('button', { name: 'It still crashed' }))
+    expect(await screen.findByRole('heading', { name: 'Mods are unlikely to be the cause' })).toBeInTheDocument()
+    expect(screen.queryByText(/All your mods are back in place/)).not.toBeInTheDocument()
+    expect(screen.getByText(/not back in your Mods folder yet: Hair\./)).toBeInTheDocument()
+  })
+})
+
+describe('a damaged progress file', () => {
+  const TITLE = "The 50/50 test's progress file is damaged"
+
+  it('shows a calm banner with one button that puts everything back, then goes away', async () => {
+    let fixed = false
+    const { api, user } = setup(
+      <ResumeBanner />,
+      {
+        'fifty:get': () => (fixed ? null : damagedGet()),
+        'fifty:stop': () => ((fixed = true), ok(null)),
+        'journal:list': []
+      },
+      { route: { screen: 'about' } }
+    )
+    expect(await screen.findByText(TITLE)).toBeInTheDocument()
+    expect(screen.getAllByRole('button')).toHaveLength(1)
+    await user.click(screen.getByRole('button', { name: 'Put everything back and stop' }))
+    await waitFor(() => expect(screen.queryByText(TITLE)).not.toBeInTheDocument())
+    expect(channels(api)).toEqual(['fifty:get', 'fifty:stop', 'journal:list'])
+    expect(screen.queryByText(/50\/50/)).not.toBeInTheDocument()
+  })
+
+  it('stays and explains when putting back is refused or does not finish', async () => {
+    const notFinished = () => Promise.reject(new Error('The 50/50 put-back stopped part way'))
+    for (const [stop, says] of [[GAME_OPEN, /The Sims 4 is still open\. Save and close the game, then click Put everything back and stop again\./], [notFinished, /couldn't finish putting your mods back/]] as const) {
+      const { user } = setup(<ResumeBanner />, { 'fifty:get': damagedGet, 'fifty:stop': stop }, { route: { screen: 'about' } })
+      await user.click(await screen.findByRole('button', { name: 'Put everything back and stop' }))
+      expect(await screen.findByText(says)).toBeInTheDocument()
+      expect(screen.getByText(TITLE)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Put everything back and stop' })).toBeEnabled()
+      cleanup()
+    }
+  })
+
+  it('names a mod that is still not back after the file is removed', async () => {
+    const { user } = setup(
+      <ResumeBanner />,
+      { 'fifty:get': damagedGet, 'fifty:stop': ok(null), 'journal:list': [moved('dir:hair', 'Hair', 'needs-attention', 'any-session')] },
+      { route: { screen: 'about' } }
+    )
+    await user.click(await screen.findByRole('button', { name: 'Put everything back and stop' }))
+    expect(await screen.findByText(/not back in your Mods folder yet: Hair\./)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Put everything back and stop' })).not.toBeInTheDocument()
+  })
+
+  it('takes the place of the intro on the 50/50 screen, and the intro comes back once it is fixed', async () => {
+    let fixed = false
+    const { api, user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': () => (fixed ? null : damagedGet()),
+      'fifty:stop': () => ((fixed = true), ok(null)),
+      'journal:list': []
+    })
+    expect(await screen.findByText(TITLE)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start the 50/50 test' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Put everything back and stop' }))
+    expect(await screen.findByRole('button', { name: 'Start the 50/50 test' })).toBeInTheDocument()
+    expect(screen.queryByText(TITLE)).not.toBeInTheDocument()
+    expect(channels(api)).not.toContain('fifty:start')
   })
 })
