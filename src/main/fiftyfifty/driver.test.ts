@@ -8,14 +8,26 @@ import type {
   FiftyFifty,
   FixOutcome,
   FixRefusal,
+  JournalEntry,
   JournalOrigin,
   ModGroup,
   Scan
 } from '../../shared/model.ts'
 import { sampleJournalEntry, sampleScan } from '../../shared/testing/sample.ts'
 import type { Host } from '../locate/host.ts'
-import type { AppPaths, Fixes, Gate, GateResult, GroupsOutcome, WriteRequest } from '../ports.ts'
-import { beginRound, finish, giveAnswer, loadState, start, stop, type FiftyDeps } from './index.ts'
+import type { AppPaths, Fixes, Gate, GateResult, GroupsOutcome, Safety, WriteRequest } from '../ports.ts'
+import {
+  beginRound,
+  finish,
+  getState,
+  giveAnswer,
+  loadState,
+  PROGRESS_DAMAGED,
+  start,
+  stop,
+  type FiftyDeps
+} from './index.ts'
+import { readSaved } from './store.ts'
 import { makeGroups } from './testing.ts'
 
 const FOLDER = 'C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4'
@@ -29,6 +41,8 @@ class FakeFixes implements Fixes {
   refuseNext: FixRefusal | null = null
   partWayAfter: number | null = null
   cacheOutcome: FixOutcome | null = null
+  /** What safety.listJournal answers; null makes it throw. */
+  journal: JournalEntry[] | null = []
   private n = 0
 
   async apply(): Promise<FixOutcome> {
@@ -142,8 +156,15 @@ function makeDeps(): FiftyDeps {
     fileVersion: async () => undefined
   }
   let ids = 0
+  const safety = {
+    listJournal: async () => {
+      if (!fixes.journal) throw new Error('journal unreadable')
+      return fixes.journal
+    }
+  } as unknown as Safety
   return {
     fixes,
+    safety,
     gate,
     paths,
     host,
@@ -463,12 +484,11 @@ describe('restart and repeat', () => {
   })
 
   it('a corrupt state file loads as no session', async () => {
-    await mkdir(paths.stateDir, { recursive: true })
+    const base = stateOf(await start(makeDeps(), scanWith(makeGroups(2))))
     await writeFile(join(paths.stateDir, 'fiftyfifty.json'), '{"phase": "awaiting')
     expect(await loadState(makeDeps())).toBeNull()
     await writeFile(join(paths.stateDir, 'fiftyfifty.json'), '{"phase": "dancing"}')
     expect(await loadState(makeDeps())).toBeNull()
-    const base = stateOf(await start(makeDeps(), scanWith(makeGroups(2))))
     await writeFile(join(paths.stateDir, 'fiftyfifty.json'), JSON.stringify({ ...base, round: -1 }))
     expect(await loadState(makeDeps())).toBeNull()
     await writeFile(join(paths.stateDir, 'fiftyfifty.json'), JSON.stringify({ ...base, history: [null] }))
@@ -677,5 +697,116 @@ describe('stop puts every file back', () => {
     await stop(deps)
     expect(fixes.asideIds()).toEqual([])
     expect(await loadState(deps)).toBeNull()
+  })
+})
+
+describe('a damaged progress file', () => {
+  const file = () => join(paths.stateDir, 'fiftyfifty.json')
+  const testEntry = (groupId: string) =>
+    sampleJournalEntry({
+      id: `j-${groupId}`,
+      action: 'disable-group',
+      groupId,
+      folderPath: FOLDER,
+      origin: { by: 'fifty-fifty', sessionId: 's1', round: 1 }
+    })
+
+  /** Two groups the test set aside and one she set aside herself, with the journal that goes with them. */
+  function seedAside(): void {
+    for (const [id, origin] of [['dir:g0', 'fifty-fifty'], ['dir:g1', 'fifty-fifty'], ['dir:hers', 'fix']] as const) {
+      fixes.aside.set(id, { groupId: id, label: id, entryId: `j-${id}`, at: '2026-11-24T12:00:00.000Z', origin })
+    }
+    fixes.journal = [testEntry('dir:g0'), testEntry('dir:g1'), sampleJournalEntry({ id: 'j-dir:hers', groupId: 'dir:hers' })]
+  }
+
+  async function damage(text = '{"phase": "awaiting'): Promise<void> {
+    await mkdir(paths.stateDir, { recursive: true })
+    await writeFile(file(), text)
+  }
+
+  // PR 10 refuses her switches for every one of these, so each must count as damaged here: otherwise she is stuck.
+  it.each([
+    ['cut-off JSON', '{"phase": "awaiting'],
+    ['an empty file', ''],
+    ['null', 'null'],
+    ['a list', '[]'],
+    ['an empty object', '{}'],
+    ['a phase nobody knows', '{"phase": "dancing"}'],
+    ['a running phase without the rest', '{"phase": "awaiting-answer"}']
+  ])('%s counts as damaged, not as no session', async (_name, text) => {
+    await damage(text)
+    expect((await readSaved(makeDeps())).kind).toBe('damaged')
+    expect(await loadState(makeDeps())).toBeNull()
+  })
+
+  it('a file that is there but cannot be read counts as damaged; no file is no session', async () => {
+    expect(await readSaved(makeDeps())).toEqual({ kind: 'none' })
+    await mkdir(file(), { recursive: true }) // reading a folder fails with something other than "not found"
+    expect((await readSaved(makeDeps())).kind).toBe('damaged')
+  })
+
+  it('getState says so with the marker the screens look for, and still answers null with no file', async () => {
+    expect(await getState(makeDeps())).toBeNull()
+    await damage()
+    await expect(getState(makeDeps())).rejects.toThrow(PROGRESS_DAMAGED)
+  })
+
+  it('start refuses and leaves the file alone, so the groups the test set aside are not orphaned', async () => {
+    await damage()
+    const result = await start(makeDeps(), scanWith(makeGroups(4)))
+    expect(result).toEqual({ status: 'refused', refusal: { why: 'fifty-fifty-running' } })
+    expect(await readFile(file(), 'utf8')).toBe('{"phase": "awaiting')
+    expect(gate.requests).toEqual([])
+  })
+
+  it('stop puts back every group the test set aside, never hers, clears caches and removes the file', async () => {
+    seedAside()
+    await damage()
+    expect(await stop(makeDeps())).toEqual({ status: 'ok', state: null })
+    expect(fixes.asideIds()).toEqual(['dir:hers'])
+    expect(fixes.calls.map((c) => c.method)).toEqual(['putBack', 'clearCaches'])
+    expect(await stateFileExists()).toBe(false)
+    expect(gate.requests.at(-1)).toMatchObject({ reason: 'state', ops: [{ op: 'remove', path: file() }] })
+    expect((await start(makeDeps(), scanWith(makeGroups(4)))).status).toBe('ok')
+  })
+
+  it('stop finds the folder in the file when it still says, and removes the file when nothing is aside', async () => {
+    await damage(JSON.stringify({ phase: 'awaiting-answer', folderPath: FOLDER }))
+    fixes.cacheOutcome = { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+    expect(await stop(makeDeps())).toEqual({ status: 'ok', state: null })
+    expect(fixes.calls.map((c) => c.method)).toEqual(['clearCaches'])
+    expect(await stateFileExists()).toBe(false)
+
+    await damage()
+    expect(await stop(makeDeps())).toEqual({ status: 'ok', state: null })
+    expect(await stateFileExists()).toBe(false)
+  })
+
+  it('a refused put-back (the game is open) keeps the file, so her switches stay refused until it works', async () => {
+    seedAside()
+    await damage()
+    fixes.refuseNext = GAME_RUNNING
+    expect(await stop(makeDeps())).toEqual({ status: 'refused', refusal: GAME_RUNNING })
+    expect(await stateFileExists()).toBe(true)
+    expect(fixes.asideIds()).toEqual(['dir:g0', 'dir:g1', 'dir:hers'])
+
+    fixes.cacheOutcome = { status: 'refused', refusal: GAME_RUNNING }
+    expect(await stop(makeDeps())).toEqual({ status: 'refused', refusal: GAME_RUNNING })
+    expect(await stateFileExists()).toBe(true)
+
+    expect(await stop(makeDeps())).toEqual({ status: 'ok', state: null })
+    expect(await stateFileExists()).toBe(false)
+  })
+
+  it('a put-back that stops part way, or a journal that cannot be read, keeps the file', async () => {
+    seedAside()
+    await damage()
+    fixes.partWayAfter = 1
+    await expect(stop(makeDeps())).rejects.toThrow()
+    expect(await stateFileExists()).toBe(true)
+
+    fixes.journal = null
+    expect(await stop(makeDeps())).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
+    expect(await stateFileExists()).toBe(true)
   })
 })

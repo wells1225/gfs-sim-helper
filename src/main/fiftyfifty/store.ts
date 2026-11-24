@@ -59,20 +59,39 @@ function looksLikeState(value: unknown): value is FiftyFifty {
   )
 }
 
-/** No file, or one that cannot be read as a session, is no session. History still lists every move. */
-export async function loadState(deps: Pick<AppContext, 'paths'>): Promise<FiftyFifty | null> {
+/** What is on disk: no file, a session, or a file that is there but cannot be read as one. */
+export type Saved =
+  | { kind: 'none' }
+  | { kind: 'session'; state: FiftyFifty }
+  | { kind: 'damaged'; folderPath: string | null } // folderPath: the Sims folder, when the file still says
+
+/**
+ * PR 10 refuses her switches while this file is there and does not plainly say the test is over. So a file
+ * that cannot be read as a session is 'damaged', never 'none': 'none' would leave her with no way out.
+ */
+export async function readSaved(deps: Pick<AppContext, 'paths'>): Promise<Saved> {
   let text: string
   try {
     text = await readFile(stateFile(deps), 'utf8')
-  } catch {
-    return null
+  } catch (err) {
+    const missing = (err as NodeJS.ErrnoException | null)?.code === 'ENOENT'
+    return missing ? { kind: 'none' } : { kind: 'damaged', folderPath: null }
   }
+  let parsed: unknown
   try {
-    const parsed: unknown = JSON.parse(text)
-    return looksLikeState(parsed) ? parsed : null
+    parsed = JSON.parse(text)
   } catch {
-    return null
+    return { kind: 'damaged', folderPath: null }
   }
+  if (looksLikeState(parsed)) return { kind: 'session', state: parsed }
+  const folderPath = typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, unknown>)['folderPath'] : null
+  return { kind: 'damaged', folderPath: typeof folderPath === 'string' && folderPath.length > 0 ? folderPath : null }
+}
+
+/** The session, or null when there is none to continue. A damaged file is null here: only `readSaved` tells. */
+export async function loadState(deps: Pick<AppContext, 'paths'>): Promise<FiftyFifty | null> {
+  const saved = await readSaved(deps)
+  return saved.kind === 'session' ? saved.state : null
 }
 
 async function runState(deps: StoreDeps, ops: WriteOp[]): Promise<Problem | null> {

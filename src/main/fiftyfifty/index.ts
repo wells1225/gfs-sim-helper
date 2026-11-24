@@ -1,17 +1,23 @@
 import type { FiftyAnswer, FiftyFifty, FiftyResult, FixOutcome, FixRefusal, Scan } from '../../shared/model.ts'
 import type { AppContext, GroupsOutcome } from '../ports.ts'
 import { answer, begin } from './machine.ts'
-import { clearState, loadState, saveState } from './store.ts'
+import { clearState, loadState, readSaved, saveState } from './store.ts'
 
 export { answer, begin } from './machine.ts'
 export { loadState } from './store.ts'
 
-export type FiftyDeps = Pick<AppContext, 'fixes' | 'gate' | 'paths' | 'clock' | 'newId' | 'host'>
+export type FiftyDeps = Pick<AppContext, 'fixes' | 'safety' | 'gate' | 'paths' | 'clock' | 'newId' | 'host'>
 
 /** A step that did not finish: the caller adds the state it was working on. */
 export type Problem =
   | { status: 'refused'; refusal: FixRefusal }
   | { status: 'stopped-part-way'; detail: string }
+
+/**
+ * `fifty:get` fails with this in its message when the progress file is there but cannot be read. The contract's
+ * answer (`FiftyFifty | null`) has no room for it, so the screens look for the same words in the failure.
+ */
+export const PROGRESS_DAMAGED = 'fifty-progress-damaged'
 
 const NO_SESSION: FiftyResult = { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
 
@@ -77,6 +83,54 @@ async function arrange(deps: FiftyDeps, state: FiftyFifty, want: string[]): Prom
   return null
 }
 
+/** "Nothing to clear" is fine: the caches were already gone. */
+async function clearCachesProblem(deps: FiftyDeps, folderPath: string): Promise<Problem | null> {
+  const caches = await deps.fixes.clearCaches(folderPath)
+  const nothingToClear =
+    caches.status === 'refused' && caches.refusal.why === 'out-of-date' && caches.refusal.detail === 'nothing-to-do'
+  return nothingToClear ? null : groupsProblem(caches)
+}
+
+/** What `fifty:get` answers: the session or null, and a failure naming PROGRESS_DAMAGED for a damaged file. */
+export async function getState(deps: FiftyDeps): Promise<FiftyFifty | null> {
+  const saved = await readSaved(deps)
+  if (saved.kind === 'damaged') throw new Error(PROGRESS_DAMAGED)
+  return saved.kind === 'session' ? saved.state : null
+}
+
+/**
+ * The way out when the progress file is damaged: put back every group the test set aside, in every folder a
+ * test ever ran on, clear the caches, then remove the file. A group she set aside herself (origin 'fix') is
+ * never touched. The file goes last, so anything that does not finish leaves it there and stop can be tried again.
+ */
+async function stopDamaged(deps: FiftyDeps, savedFolder: string | null): Promise<FiftyResult> {
+  const folders = new Set<string>(savedFolder ? [savedFolder] : [])
+  try {
+    for (const entry of await deps.safety.listJournal()) {
+      if (entry.origin.by === 'fifty-fifty') folders.add(entry.folderPath)
+    }
+  } catch {
+    return { status: 'refused', refusal: { why: 'not-started' } }
+  }
+
+  for (const folderPath of folders) {
+    const off = await deps.fixes.disabledGroups(folderPath)
+    const ours = off.filter((d) => d.origin === 'fifty-fifty').map((d) => d.groupId)
+    const moved = ours.length > 0 ? groupsProblem(await deps.fixes.putBack(folderPath, ours)) : null
+    const problem = moved ?? (await clearCachesProblem(deps, folderPath))
+    if (problem) return damagedProblem(problem)
+  }
+
+  const problem = await clearState(deps)
+  return problem ? damagedProblem(problem) : { status: 'ok', state: null }
+}
+
+/** `stopped-part-way` needs a session to hand back and a damaged file has none, so a half-done step fails the call. */
+function damagedProblem(problem: Problem): FiftyResult {
+  if (problem.status === 'refused') return problem
+  throw new Error(`The 50/50 put-back stopped part way: ${problem.detail}`)
+}
+
 async function saveOrProblem(deps: FiftyDeps, state: FiftyFifty): Promise<FiftyResult> {
   const problem = await saveState(deps, state)
   return problem ? withState(problem, state) : { status: 'ok', state }
@@ -85,8 +139,10 @@ async function saveOrProblem(deps: FiftyDeps, state: FiftyFifty): Promise<FiftyR
 export async function start(deps: FiftyDeps, scan: Scan | null): Promise<FiftyResult> {
   if (!scan) return { status: 'refused', refusal: { why: 'out-of-date', detail: 'no-scan' } }
 
-  const running = await loadState(deps)
-  if (running && running.phase !== 'stopped') return { status: 'ok', state: running }
+  const saved = await readSaved(deps)
+  // Starting over a damaged file would forget the groups the last test set aside. Stop puts them back first.
+  if (saved.kind === 'damaged') return { status: 'refused', refusal: { why: 'fifty-fifty-running' } }
+  if (saved.kind === 'session' && saved.state.phase !== 'stopped') return { status: 'ok', state: saved.state }
 
   // The scan can be older than a switch in "Your mods": a group already set aside is hers, not the test's.
   const off = new Set((await deps.fixes.disabledGroups(scan.folder.path)).map((d) => d.groupId))
@@ -122,10 +178,7 @@ export async function beginRound(deps: FiftyDeps): Promise<FiftyResult> {
   const moved = await arrange(deps, state, state.parked)
   if (moved) return withState(moved, state)
 
-  const caches = await deps.fixes.clearCaches(state.folderPath)
-  const nothingToClear =
-    caches.status === 'refused' && caches.refusal.why === 'out-of-date' && caches.refusal.detail === 'nothing-to-do'
-  const cleared = nothingToClear ? null : groupsProblem(caches)
+  const cleared = await clearCachesProblem(deps, state.folderPath)
   if (cleared) return withState(cleared, state)
 
   const nextPhase = state.culprit !== null ? 'found' : 'awaiting-answer'
@@ -171,9 +224,10 @@ async function endWith(deps: FiftyDeps, state: FiftyFifty, keep: string[]): Prom
 }
 
 export async function stop(deps: FiftyDeps): Promise<FiftyResult> {
-  const state = await loadState(deps)
-  if (!state) return { status: 'ok', state: null }
-  return endWith(deps, state, [])
+  const saved = await readSaved(deps)
+  if (saved.kind === 'damaged') return stopDamaged(deps, saved.folderPath)
+  if (saved.kind === 'none') return { status: 'ok', state: null }
+  return endWith(deps, saved.state, [])
 }
 
 export async function finish(deps: FiftyDeps, keep: 'keep-set-aside' | 'put-back'): Promise<FiftyResult> {

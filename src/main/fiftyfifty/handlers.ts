@@ -1,7 +1,7 @@
 import type { Handlers } from '../../shared/ipc.ts'
 import type { FiftyAnswer } from '../../shared/model.ts'
 import type { AppContext } from '../ports.ts'
-import { beginRound, finish, giveAnswer, loadState, start, stop } from './index.ts'
+import { beginRound, finish, getState, giveAnswer, start, stop } from './index.ts'
 
 export type FiftyChannel =
   | 'fifty:get'
@@ -13,7 +13,8 @@ export type FiftyChannel =
 
 /** The driver, passed in so the handler tests can watch the order of calls. */
 export interface FiftyApi {
-  loadState: typeof loadState
+  /** Fails, naming PROGRESS_DAMAGED, when the progress file is there but cannot be read. */
+  loadState: typeof getState
   start: typeof start
   beginRound: typeof beginRound
   giveAnswer: typeof giveAnswer
@@ -21,7 +22,7 @@ export interface FiftyApi {
   finish: typeof finish
 }
 
-const DRIVER: FiftyApi = { loadState, start, beginRound, giveAnswer, stop, finish }
+const DRIVER: FiftyApi = { loadState: getState, start, beginRound, giveAnswer, stop, finish }
 const ANSWERS: readonly FiftyAnswer[] = ['crashed', 'worked', 'not-sure']
 const KEEPS = ['keep-set-aside', 'put-back'] as const
 
