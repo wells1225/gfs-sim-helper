@@ -710,6 +710,20 @@ describe('the Sims folder', () => {
     await expectRefusal(w, () => w.run([], { folderPath: root }), { reason: 'not-a-sims-folder', path: root })
   })
 
+  it('refuses a folder link whose real target is a drive or filesystem root that holds Options.ini', async () => {
+    const w = await makeWorld()
+    const root = parse(w.root).root
+    const simsLink = join(w.root, 'pc', 'Alias', 'The Sims 4')
+    await mkdir(dirname(simsLink), { recursive: true })
+    await linkFolder(root, simsLink)
+    try {
+      disk.statAs = { file: join(simsLink, 'Options.ini'), as: w.inFolder('Options.ini') }
+      await expectRefusal(w, () => w.run([], { folderPath: simsLink }), { reason: 'not-a-sims-folder', path: simsLink })
+    } finally {
+      await rm(simsLink) // the link only: nothing may walk into the root
+    }
+  })
+
   it.runIf(ON_WINDOWS)('refuses C:\\Windows', async () => {
     const w = await makeWorld()
     await expectRefusal(
