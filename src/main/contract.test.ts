@@ -6,7 +6,7 @@ import { promisify } from 'node:util'
 import type { Page } from '@playwright/test'
 import { afterAll, describe, expect, it } from 'vitest'
 import { readFile, rm } from 'node:fs/promises'
-import { INVOKE_CHANNELS, type IpcInvoke } from '../shared/ipc.ts'
+import { INVOKE_CHANNELS, type Handlers, type IpcInvoke } from '../shared/ipc.ts'
 import type {
   AssistAnswer,
   BackupRefusal,
@@ -25,7 +25,8 @@ import { appPaths } from './app-paths.ts'
 import { assistHandlers } from './assist/handlers.ts'
 import { fiftyHandlers } from './fiftyfifty/handlers.ts'
 import { fixHandlers } from './fixes/handlers.ts'
-import { collectHandlers } from './ipc.ts'
+import type { IpcMainInvokeEvent } from 'electron'
+import { CHANGING_CHANNELS, collectHandlers, registerIpc } from './ipc.ts'
 import type { Host } from './locate/host.ts'
 import type { ActionPlan, AssistReply, KeyStore, PlanFixAt, PlannedStep, Updater } from './ports.ts'
 import type { GameRunState as LocateGameRunState } from './locate/process.ts'
@@ -413,6 +414,92 @@ describe('auto-update contract (PR 13)', () => {
     expect(ctx.busy()).toBe(true)
     await fix.catch(() => {})
     expect(ctx.busy()).toBe(false)
+  })
+
+  it('busy() is true while a write runs through the gate, so a state or key write is never cut by a restart', async () => {
+    const ctx = makeContext()
+    const write = ctx.gate.run({ reason: 'state', folderPath: null, ops: [] })
+    expect(ctx.busy()).toBe(true)
+    await write.catch(() => {})
+    expect(ctx.busy()).toBe(false)
+  })
+
+  describe('busy() holds for a whole changing IPC call', () => {
+    type Invoke = (event: IpcMainInvokeEvent, req?: unknown) => Promise<unknown>
+    const EVENT = {} as IpcMainInvokeEvent
+
+    /** registerIpc over fake handlers: each records busy() when it starts, then waits for release(). */
+    function register(trusted = true) {
+      const ctx = makeContext()
+      const invoke = new Map<string, Invoke>()
+      const seenBusy: boolean[] = []
+      let release = (): void => {}
+      const waiting = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const fake = async (): Promise<never> => {
+        seenBusy.push(ctx.busy())
+        await waiting
+        throw new Error('the fake handler ends by failing')
+      }
+      const handlers = Object.fromEntries(INVOKE_CHANNELS.map((c) => [c, fake])) as unknown as Handlers<keyof IpcInvoke>
+      registerIpc({ handle: (channel, fn) => void invoke.set(channel, fn as Invoke) }, ctx, () => trusted, handlers)
+      const call = (channel: keyof IpcInvoke): Promise<unknown> => {
+        const fn = invoke.get(channel)
+        if (!fn) throw new Error(`no handler registered for ${channel}`)
+        return fn(EVENT)
+      }
+      return { ctx, call, seenBusy, release }
+    }
+
+    it('names every channel, and no update channel counts as a change', () => {
+      expect(Object.keys(CHANGING_CHANNELS).sort()).toEqual([...INVOKE_CHANNELS].sort())
+      const changing = INVOKE_CHANNELS.filter((c) => CHANGING_CHANNELS[c])
+      expect(changing).toEqual([
+        'settings:update',
+        'report:build',
+        'fix:apply',
+        'journal:list',
+        'journal:undo',
+        'fifty:start',
+        'fifty:begin-round',
+        'fifty:answer',
+        'fifty:stop',
+        'fifty:finish',
+        'assist:set-key',
+        'assist:clear-key'
+      ])
+    })
+
+    it('a 50/50 step is busy from its first line to its last, between its fixes calls too, and lets go when it fails', async () => {
+      const { ctx, call, seenBusy, release } = register()
+      const first = call('fifty:begin-round')
+      const second = call('fix:apply')
+      await Promise.resolve()
+      expect(seenBusy).toEqual([true, true])
+      expect(ctx.busy()).toBe(true)
+      release()
+      await expect(first).rejects.toThrow('the fake handler ends by failing')
+      await expect(second).rejects.toThrow('the fake handler ends by failing')
+      expect(ctx.busy()).toBe(false)
+    })
+
+    it('update:install and a check-up are not counted, so install can still ask busy() itself', async () => {
+      const { ctx, call, seenBusy, release } = register()
+      const calls = [call('update:install'), call('scan:run'), call('fifty:get')]
+      await Promise.resolve()
+      expect(seenBusy).toEqual([false, false, false])
+      expect(ctx.busy()).toBe(false)
+      release()
+      await Promise.allSettled(calls)
+    })
+
+    it('a call from an untrusted sender is refused and holds nothing', async () => {
+      const { ctx, call, seenBusy } = register(false)
+      await expect(call('fifty:begin-round')).rejects.toThrow('untrusted sender')
+      expect(seenBusy).toEqual([])
+      expect(ctx.busy()).toBe(false)
+    })
   })
 
   it('e2e launches switch updates off unless the caller says otherwise', () => {
