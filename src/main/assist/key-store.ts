@@ -2,8 +2,8 @@
 // (contracts.md, section 8). Nothing here logs, and nothing here throws: an error can carry the key
 // in its text, so every error is dropped and the caller gets one of a fixed set of answers.
 import Anthropic from '@anthropic-ai/sdk'
-import { readFile } from 'node:fs/promises'
 import type { KeySetResult, KeyStatus } from '../../shared/model.ts'
+import { openForRead } from '../fs-read.ts'
 import type { AssistMessage, AssistReply, KeyStoreDeps } from '../ports.ts'
 
 type FailReason = Extract<AssistReply, { status: 'failed' }>['why']
@@ -14,6 +14,7 @@ const KEY_CHARS_AT_MOST = 512
 const USABLE_KEY = /^[\x21-\x7e]+$/ // what a request header can carry: no white space, no control characters
 
 const API_URL = 'https://api.anthropic.com' // fixed here, so ANTHROPIC_BASE_URL cannot send the key elsewhere
+const API_VERSION = '2026-10-21' // what SDK 1.13.0 sends; fixed here, so the environment cannot change it
 const TIMEOUT_MS = 60_000
 const RETRIES = 1
 const ANSWER_TOKENS_AT_MOST = 4096
@@ -53,12 +54,25 @@ function seal(deps: KeyStoreDeps, key: string): Uint8Array | null {
 /** The stored key, or null when there is no file, it is not ours, or it does not decrypt. Never writes. */
 async function readStoredKey(deps: KeyStoreDeps): Promise<string | null> {
   try {
-    const file = await readFile(deps.paths.keyFile)
-    if (file.length < 2 || file.length > KEY_FILE_BYTES_AT_MOST || file[0] !== FILE_VERSION) return null
+    const file = await readKeyFile(deps.paths.keyFile)
+    if (file === null || file.length < 2 || file[0] !== FILE_VERSION) return null
     const key = deps.safeStorage.decryptString(file.subarray(1))
     return isUsableKey(key) ? key : null
   } catch {
     return null
+  }
+}
+
+/** The file's bytes, or null when it is over the limit. The size is checked before anything is read. */
+async function readKeyFile(path: string): Promise<Buffer | null> {
+  const file = await openForRead(path)
+  try {
+    if (file.size > KEY_FILE_BYTES_AT_MOST) return null
+    // Never more than the size seen above, so a file that grows meanwhile cannot fill the memory.
+    const bytes = Buffer.alloc(file.size)
+    return bytes.subarray(0, await file.read(bytes, 0))
+  } finally {
+    await file.close()
   }
 }
 
@@ -165,12 +179,65 @@ function reasonFor(error: unknown): FailReason {
   return 'error'
 }
 
+/** What the SDK gets when a request is not sent, or is answered with a redirect: an error it does not retry. */
+function refused(): Response {
+  return new Response(null, { status: 502, headers: { 'x-should-retry': 'false' } })
+}
+
+/**
+ * The only way the built-in transport reaches the network. The SDK reads ANTHROPIC_CUSTOM_HEADERS and
+ * has no option to turn that off, and its fetch follows redirects, so neither is left to the SDK:
+ * - a request goes to API_URL and nowhere else,
+ * - no redirect is followed: one would carry the message to another host, or the key along on this one,
+ * - no header from the SDK is passed on. The four below are written here, the key from the stored one.
+ * A failure of the network itself is thrown on to the SDK, which reports it as a connection error.
+ */
+export function guardedFetch(apiKey: string): typeof fetch {
+  return async (input, init) => {
+    let url: string
+    let request: RequestInit
+    try {
+      if (typeof input !== 'string' && !(input instanceof URL)) return refused()
+      const address = new URL(input)
+      if (address.origin !== API_URL || address.username !== '' || address.password !== '') return refused()
+      if (init?.method !== 'POST' || typeof init.body !== 'string') return refused()
+      url = address.href
+      request = {
+        method: 'POST',
+        body: init.body,
+        redirect: 'manual',
+        headers: {
+          accept: 'application/json',
+          'anthropic-version': API_VERSION,
+          authorization: `Bearer ${apiKey}`,
+          'content-type': 'application/json'
+        },
+        ...(init.signal ? { signal: init.signal } : {}) // the SDK's timeout
+      }
+    } catch {
+      return refused()
+    }
+    // Looked up at the time of the call: the SDK is given this function, never the global one.
+    const response = await globalThis.fetch(url, request)
+    const redirected =
+      response.type === 'opaqueredirect' || response.status === 0 || (response.status >= 300 && response.status < 400)
+    if (!redirected) return response
+    try {
+      await response.body?.cancel()
+    } catch {
+      // Nothing was going to be read from it.
+    }
+    return refused()
+  }
+}
+
 /** The default transport: one Messages request, holding the system prompt and the text it was given. */
 async function anthropicTransport(apiKey: string, message: AssistMessage): Promise<AssistReply> {
   try {
     const client = new Anthropic({
       apiKey,
       baseURL: API_URL,
+      fetch: guardedFetch(apiKey),
       timeout: TIMEOUT_MS,
       maxRetries: RETRIES,
       logLevel: 'off',

@@ -900,7 +900,11 @@ describe('the built-in transport (the real SDK on a fake fetch)', () => {
     const calls = answerWith(() => json(200, message([{ type: 'text', text: 'ok' }])))
     const init = { method: 'POST', body: '{}', headers: { 'x-injected': 'yes' } }
 
-    for (const input of [url, ...(URL.canParse(url) ? [new URL(url), new Request(url, init)] : [])]) {
+    const inputs: (string | URL | Request)[] = [url]
+    if (URL.canParse(url)) inputs.push(new URL(url))
+    if (URL.canParse(url) && new URL(url).username === '') inputs.push(new Request(url, init)) // a Request takes no password
+
+    for (const input of inputs) {
       const response = await guardedFetch(KEY)(input, init)
 
       expect(response.ok).toBe(false)
