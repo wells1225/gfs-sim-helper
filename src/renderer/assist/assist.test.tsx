@@ -317,3 +317,15 @@ describe('KeySetupScreen', () => {
     expect(channels(api)).toContain('assist:clear-key')
   })
 })
+
+describe('NO_ANSWER_WORDS', () => {
+  it('says the online helper was unreachable and nothing on her PC changed', () => {
+    expect(NO_ANSWER_WORDS.offline.title).toBe("Couldn't reach the online helper right now")
+    expect(NO_ANSWER_WORDS.offline.detail).toBe('Nothing on your PC changed. Check your internet and try again.')
+  })
+
+  it('says an old preview is out of date without blaming a new check-up', () => {
+    expect(NO_ANSWER_WORDS['preview-expired'].title).toBe('That preview is out of date')
+    expect(NO_ANSWER_WORDS['preview-expired'].detail).toBe('Make a new one to send.')
+  })
+})

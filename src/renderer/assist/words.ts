@@ -28,8 +28,8 @@ export const NO_ANSWER_WORDS: Record<NoAnswerWhy, NoAnswerCopy> = {
     canRetry: false
   },
   offline: {
-    title: "Couldn't reach the helper",
-    detail: 'Check that this PC is online, then try again. Nothing on your PC was changed.',
+    title: "Couldn't reach the online helper right now",
+    detail: 'Nothing on your PC changed. Check your internet and try again.',
     canRetry: true
   },
   'limit-reached': {
@@ -38,8 +38,8 @@ export const NO_ANSWER_WORDS: Record<NoAnswerWhy, NoAnswerCopy> = {
     canRetry: true
   },
   'preview-expired': {
-    title: 'That summary is out of date',
-    detail: 'Your check-up changed since the summary was made. Have a look at the new one before sending it.',
+    title: 'That preview is out of date',
+    detail: 'Make a new one to send.',
     canRetry: true
   },
   error: {
