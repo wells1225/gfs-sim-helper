@@ -114,7 +114,8 @@ export async function beginRound(deps: FiftyDeps): Promise<FiftyResult> {
   const cleared = nothingToClear ? null : groupsProblem(caches)
   if (cleared) return withState(cleared, state)
 
-  return saveOrProblem(deps, { ...state, phase: 'awaiting-answer' })
+  const nextPhase = state.culprit !== null ? 'found' : 'awaiting-answer'
+  return saveOrProblem(deps, { ...state, phase: nextPhase })
 }
 
 export async function giveAnswer(deps: FiftyDeps, given: FiftyAnswer): Promise<FiftyResult> {
@@ -129,9 +130,10 @@ export async function giveAnswer(deps: FiftyDeps, given: FiftyAnswer): Promise<F
     const problem = await clearState(deps)
     return problem ? withState(problem, state) : { status: 'ok', state: next }
   }
-  const problem = await saveState(deps, next)
-  if (problem) return withState(problem, next)
-  if (next.phase === 'found') return { status: 'ok', state: next }
+  // When the culprit is named, save ready-to-test first so beginRound arranges [culprit] before marking found.
+  const toSave = next.phase === 'found' ? { ...next, phase: 'ready-to-test' as const } : next
+  const problem = await saveState(deps, toSave)
+  if (problem) return withState(problem, toSave)
   return beginRound(deps)
 }
 

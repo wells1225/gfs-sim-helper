@@ -5,7 +5,16 @@ import { Alert } from '../components/ui/alert.tsx'
 import { Button } from '../components/ui/button.tsx'
 import { Card } from '../components/ui/card.tsx'
 import { Progress } from '../components/ui/progress.tsx'
-import { ALL_BACK, displayRound, expectedRounds, groupsWord, isControlRound, roundHeader, roundsWord } from './words.ts'
+import {
+  ALL_BACK,
+  displayRound,
+  expectedRounds,
+  groupLabel,
+  groupsWord,
+  isControlRound,
+  roundHeader,
+  roundsWord
+} from './words.ts'
 
 export type EndedHow = 'stopped' | 'kept' | 'put-back' | 'not-mods'
 
@@ -115,6 +124,27 @@ export function ReadyStep({
   locked: boolean
   hideButton: boolean
 }) {
+  if (state.culprit !== null) {
+    const label = groupLabel(state, state.culprit)
+    return (
+      <Card>
+        <RoundHeader state={state} />
+        <Heading>Finish setting up your mods</Heading>
+        <Text>
+          We will put your other mods back and leave {label} set aside so your game is ready to play. If The Sims 4 is
+          open, save and close it first.
+        </Text>
+        {!hideButton && (
+          <div>
+            <Button size="lg" onClick={onSetUp} disabled={locked}>
+              Put the other mods back
+            </Button>
+          </div>
+        )}
+      </Card>
+    )
+  }
+
   const roundNum = displayRound(state.round)
   const control = isControlRound(state)
   return (
@@ -218,8 +248,8 @@ export function FoundStep({
       </p>
       <Text>
         {rounds > 0 && <>It took {roundsWord(rounds)}. </>}
-        Keeping it set aside lets you play while you look for an update from its creator.
-        {rounds > 0 && <> Some mods are still set aside from the last round until you choose.</>}
+        We already put your other mods back and left {label} set aside, so you can play while you look for an update
+        from its creator.
       </Text>
       <div className="flex flex-wrap gap-3">
         <Button
@@ -228,7 +258,7 @@ export function FoundStep({
           onClick={() => onFinish('keep-set-aside')}
           disabled={locked}
         >
-          Keep {label} set aside and put everything else back
+          Keep {label} set aside
         </Button>
         <Button size="lg" variant="outline" onClick={() => onFinish('put-back')} disabled={locked}>
           Put everything back

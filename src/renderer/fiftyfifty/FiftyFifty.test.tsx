@@ -201,7 +201,7 @@ describe('FiftyFiftyScreen', () => {
     cleared: ['cf:901234', 'dir:buildbuy', 'file:shoes.package']
   })
 
-  it('names the group as most likely and keeps it set aside', async () => {
+  it('names the group as most likely, explains other mods are already back, and keeps it set aside', async () => {
     const finishes: string[] = []
     const { user } = setup(<FiftyFiftyScreen />, {
       'fifty:get': found,
@@ -213,9 +213,22 @@ describe('FiftyFiftyScreen', () => {
     expect(await screen.findByRole('heading', { name: 'We found the most likely cause' })).toBeInTheDocument()
     expect(screen.getByText(/Hair/, { selector: 'strong' })).toBeInTheDocument()
     expect(screen.getByText(/most likely/i, { selector: 'p' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Keep Hair set aside and put everything else back' }))
+    expect(screen.getByText(/already put your other mods back/i)).toBeInTheDocument()
+    expect(screen.queryByText(/still set aside from the last round/i)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Keep Hair set aside' }))
     expect(await screen.findByText(/Hair is set aside/)).toBeInTheDocument()
     expect(finishes).toEqual(['keep-set-aside'])
+  })
+
+  it('shows a final setup step if arranging the culprit was interrupted', async () => {
+    const { api, user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': { ...found, phase: 'ready-to-test' },
+      'fifty:begin-round': ok(found)
+    })
+    expect(await screen.findByRole('heading', { name: 'Finish setting up your mods' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Put the other mods back' }))
+    expect(await screen.findByRole('heading', { name: 'We found the most likely cause' })).toBeInTheDocument()
+    expect(channels(api)).toContain('fifty:begin-round')
   })
 
   it('or puts everything back', async () => {

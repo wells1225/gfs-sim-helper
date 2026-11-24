@@ -260,7 +260,8 @@ describe('a full session', () => {
     expect(found.history).toHaveLength(7)
     expect(found.history[0]?.round).toBe(0)
     expect(found.history[0]?.parked).toHaveLength(64)
-    expect(fixes.calls.filter((c) => c.method === 'clearCaches')).toHaveLength(7)
+    expect(fixes.asideIds()).toEqual(['dir:g41'])
+    expect(fixes.calls.filter((c) => c.method === 'clearCaches')).toHaveLength(8)
     for (const call of fixes.calls.filter((c) => c.method === 'setAside')) {
       expect(call.origin).toMatchObject({ by: 'fifty-fifty', sessionId: found.id })
     }
@@ -317,7 +318,7 @@ describe('a full session', () => {
     expect(await loadState(deps)).toBeNull()
   })
 
-  it('found after "It still crashed": the culprit is in Mods and a cleared group is aside', async () => {
+  it('arranges right away when found: puts other groups back and leaves only the culprit aside', async () => {
     for (const keep of ['put-back', 'keep-set-aside'] as const) {
       fixes = new FakeFixes()
       const deps = makeDeps()
@@ -329,9 +330,34 @@ describe('a full session', () => {
       expect(fixes.asideIds()).toEqual(['dir:g0'])
       const found = stateOf(await giveAnswer(deps, 'crashed'))
       expect(found).toMatchObject({ phase: 'found', culprit: 'dir:g1' })
+      expect(fixes.asideIds()).toEqual(['dir:g1'])
+
+      const movesBeforeFinish = fixes.moves()
       await finish(deps, keep)
       expect(fixes.asideIds()).toEqual(keep === 'put-back' ? [] : ['dir:g1'])
+      if (keep === 'keep-set-aside') expect(fixes.moves()).toBe(movesBeforeFinish)
     }
+  })
+
+  it('if arranging the culprit at found is refused or blocked by CurseForge, stays before found until beginRound finishes it', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(2)))
+    await beginRound(deps)
+    await giveAnswer(deps, 'worked')
+
+    fixes.refuseNext = GAME_RUNNING
+    expect(await giveAnswer(deps, 'crashed')).toEqual({ status: 'refused', refusal: GAME_RUNNING })
+    expect(await loadState(deps)).toMatchObject({ phase: 'ready-to-test', culprit: 'dir:g1', parked: ['dir:g1'] })
+    expect(fixes.asideIds()).toEqual(['dir:g0'])
+
+    processes = ['CurseForge.exe']
+    expect(stateOf(await beginRound(deps))).toMatchObject({ phase: 'close-curseforge', culprit: 'dir:g1' })
+    expect(fixes.asideIds()).toEqual(['dir:g0'])
+
+    processes = ['explorer.exe']
+    const found = stateOf(await beginRound(deps))
+    expect(found).toMatchObject({ phase: 'found', culprit: 'dir:g1' })
+    expect(fixes.asideIds()).toEqual(['dir:g1'])
   })
 
   it('with one group, control round 0 tests it out: worked names it, crashed puts it back', async () => {
