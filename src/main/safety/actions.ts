@@ -33,6 +33,8 @@ async function fileHash(path: string): Promise<Sha256 | null> {
 }
 
 const OUT_OF_DATE: FixOutcome = { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
+/** The journal entry could not be written, so no change was started. */
+const NOT_STARTED: FixOutcome = { status: 'refused', refusal: { why: 'not-started' } }
 
 /** Each planned step as a pending journal step, or null when the disk no longer matches the plan. */
 async function journalSteps(
@@ -62,7 +64,8 @@ async function journalSteps(
       if (seenEdit.has(editKey)) return null
       seenEdit.add(editKey)
       const before = await fileHash(planned.path)
-      if (before === null) return null
+      // The planner built newText from the file as it read it. Changed since then: the edit would undo that change.
+      if (before === null || before !== planned.beforeSha256) return null
       const data = new TextEncoder().encode(planned.newText)
       let name = basename(planned.path)
       for (let n = 2; savedNames.has(name.toLowerCase()); n += 1) {
@@ -129,6 +132,8 @@ export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgres
     origin: plan.origin,
     folderPath: plan.folderPath,
     groupId: plan.groupId,
+    groupLabel: plan.groupLabel,
+    hasScript: plan.hasScript,
     backupId: backup.backupId,
     steps: built.steps,
     status: 'in-progress',
@@ -138,7 +143,7 @@ export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgres
 
   const written = await saveEntry(deps, entry, 'create')
   if (written.status === 'refused') return { status: 'refused', refusal: { why: 'gate', refusal: written.refusal } }
-  if (written.status === 'failed') throw new Error(`Could not write the journal entry: ${written.detail}`)
+  if (written.status === 'failed') return NOT_STARTED
 
   const ops: WriteOp[] = []
   const lastOp: number[] = []
@@ -255,7 +260,7 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
     if (marked.status !== 'done') {
       entry.status = statusBefore
       if (marked.status === 'refused') return { status: 'refused', refusal: { why: 'gate', refusal: marked.refusal } }
-      throw new Error(`Could not update the journal entry: ${marked.detail}`)
+      return NOT_STARTED
     }
     onProgress?.({ task: 'fix', stage: 'moving', done: 0, total: toRevert.length })
     let result: GateResult

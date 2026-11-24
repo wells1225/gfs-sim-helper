@@ -48,13 +48,21 @@ export async function saveEntry(deps: SafetyDeps, entry: JournalEntry, mode: 'cr
     for (const dir of await missingDirs(deps.paths.journalDir, new Set())) ops.push({ op: 'mkdir', path: dir })
   }
   ops.push({ op: 'write', path: entryFile(deps.paths.journalDir, entry.id), data: JSON.stringify(entry), mode })
-  return await deps.gate.run({ reason: 'journal', folderPath: null, ops })
+  return await journalRequest(deps, ops)
 }
 
 export async function removeEntry(deps: SafetyDeps, id: string): Promise<GateResult> {
-  return await deps.gate.run({
-    reason: 'journal',
-    folderPath: null,
-    ops: [{ op: 'remove', path: entryFile(deps.paths.journalDir, id) }]
-  })
+  return await journalRequest(deps, [{ op: 'remove', path: entryFile(deps.paths.journalDir, id) }])
+}
+
+/**
+ * A journal write never throws: a gate that throws counts as a write that failed. So once files have moved, the
+ * caller always gets to report how far it got.
+ */
+async function journalRequest(deps: SafetyDeps, ops: WriteOp[]): Promise<GateResult> {
+  try {
+    return await deps.gate.run({ reason: 'journal', folderPath: null, ops })
+  } catch (err) {
+    return { status: 'failed', opsDone: 0, detail: (err as Error).message ?? String(err) }
+  }
 }
