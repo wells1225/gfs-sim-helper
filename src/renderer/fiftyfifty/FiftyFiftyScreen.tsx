@@ -6,7 +6,7 @@ import { Alert, AlertDescription } from '../components/ui/alert.tsx'
 import { Button } from '../components/ui/button.tsx'
 import { useNav } from '../nav.tsx'
 import { useSession } from '../session.tsx'
-import { checkBack, type BackCheck } from './back-check.tsx'
+import { checkBack, checkFound, type BackCheck, type FoundCheck } from './back-check.tsx'
 import { DamagedProgress } from './DamagedProgress.tsx'
 import { AnswerStep, CloseCurseForgeStep, Ended, FoundStep, Intro, ReadyStep, TestStep, type EndedHow } from './steps.tsx'
 import { StopDialog } from './StopDialog.tsx'
@@ -32,7 +32,21 @@ export function FiftyFiftyScreen() {
   const [busy, setBusy] = useState<string | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
   const [asking, setAsking] = useState(false)
+  const [foundCheck, setFoundCheck] = useState<FoundCheck | null>(null)
   const busyRef = useRef(false)
+
+  // The found card asks History each time the session is read (every read makes a new `view`), so it never
+  // says more than History shows.
+  useEffect(() => {
+    setFoundCheck(null)
+    const found = view.kind === 'session' && view.state?.phase === 'found' ? view.state : null
+    if (!found) return
+    let live = true
+    void checkFound(api, found).then((check) => live && setFoundCheck(check))
+    return () => {
+      live = false
+    }
+  }, [api, view])
 
   /** What is saved now. A failed read falls back to `fallback`. */
   const read = useCallback(
@@ -202,7 +216,7 @@ export function FiftyFiftyScreen() {
       )
   } else {
     const label = groupLabel(state, state.culprit)
-    body = <FoundStep state={state} label={label} onFinish={(keep) => finish(keep, label, state)} locked={locked} />
+    body = <FoundStep state={state} label={label} check={foundCheck} onFinish={(keep) => finish(keep, label, state)} locked={locked} />
   }
 
   const inProgress = !!state && state.phase !== 'found' && state.phase !== 'stopped'

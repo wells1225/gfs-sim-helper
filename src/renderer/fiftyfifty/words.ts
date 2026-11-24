@@ -92,6 +92,19 @@ export function notBackLabels(journal: JournalEntry[], sessionId: string | null,
 }
 
 const NAMED_AT_MOST = 5
+/**
+ * Whether History shows the group set aside in this Sims folder right now. null when a move of it is half done:
+ * then nobody can say where its files are.
+ */
+export function isSetAside(journal: JournalEntry[], folderPath: string, groupId: string): boolean | null {
+  const folder = folderPath.toLowerCase()
+  const moves = journal.filter(
+    (e) => e.action === 'disable-group' && e.groupId === groupId && e.folderPath.toLowerCase() === folder
+  )
+  if (moves.some((e) => e.status === 'in-progress' || e.status === 'needs-attention')) return null
+  return moves.some((e) => e.status === 'done')
+}
+
 function listWords(labels: string[]): string {
   const named = labels.slice(0, NAMED_AT_MOST)
   const more = labels.length - named.length

@@ -5,7 +5,7 @@ import { Alert, AlertDescription } from '../components/ui/alert.tsx'
 import { Button } from '../components/ui/button.tsx'
 import { Card } from '../components/ui/card.tsx'
 import { Progress } from '../components/ui/progress.tsx'
-import { backWords, HistoryButton, type BackCheck } from './back-check.tsx'
+import { backWords, HistoryButton, type BackCheck, type FoundCheck } from './back-check.tsx'
 import {
   ALL_BACK,
   displayRound,
@@ -230,19 +230,29 @@ export function AnswerStep({
   )
 }
 
+/**
+ * `check` decides the words: null until History has answered. Only a check that found every other mod back and
+ * the cause set aside may say so.
+ */
 export function FoundStep({
   state,
   label,
+  check,
   onFinish,
   locked
 }: {
   state: FiftyFifty
   label: string
+  check: FoundCheck | null
   onFinish(keep: 'keep-set-aside' | 'put-back'): void
   locked: boolean
 }) {
   const rounds = state.history.filter((h) => h.answer !== 'not-sure').length
   const uncertain = isUncertainResult(state)
+  const othersLeft = check !== null && check.others.kind !== 'all-back' ? check.others : null
+  const aside = check?.causeAside ?? null
+  const asShown = check !== null && othersLeft === null && aside === true
+  const inMods = aside === false && `${label} is in your Mods folder right now.`
   return (
     <Card>
       <Heading>{uncertain ? 'The result is uncertain' : 'We found the most likely cause'}</Heading>
@@ -252,9 +262,11 @@ export function FoundStep({
             The game crashed in every split round, so we can't be sure whether <strong>{label}</strong> is the only cause.
           </p>
           <Text>
-            It's the last group left, and we've already put your other mods back with {label} set aside so you can try
-            playing once with just it out. If the game still crashes, more than one mod may be involved, or two mods may
-            be clashing.
+            {asShown
+              ? `It's the last group left, and we've already put your other mods back with ${label} set aside so you can try playing once with just it out. `
+              : "It's the last group left. "}
+            If the game still crashes{!asShown && ` with ${label} set aside`}, more than one mod may be involved, or two
+            mods may be clashing.{inMods && ` ${inMods}`}
           </Text>
         </>
       ) : (
@@ -262,12 +274,22 @@ export function FoundStep({
           <p className="text-lg leading-relaxed">
             <strong>{label}</strong> is most likely what's making your game crash.
           </p>
-          <Text>
-            {rounds > 0 && <>It took {roundsWord(rounds)}. </>}
-            We already put your other mods back and left {label} set aside, so you can play while you look for an update
-            from its creator.
-          </Text>
+          {(rounds > 0 || aside !== null) && (
+            <Text>
+              {rounds > 0 && <>It took {roundsWord(rounds)}. </>}
+              {asShown
+                ? `We already put your other mods back and left ${label} set aside, so you can play while you look for an update from its creator.`
+                : aside === true
+                  ? `${label} is set aside, so you can play while you look for an update from its creator.`
+                  : inMods}
+            </Text>
+          )}
         </>
+      )}
+      {othersLeft && (
+        <Alert variant="warn">
+          <AlertDescription>{backWords(othersLeft)}</AlertDescription>
+        </Alert>
       )}
       <div className="flex flex-wrap gap-3">
         <Button
@@ -281,6 +303,7 @@ export function FoundStep({
         <Button size="lg" variant="outline" onClick={() => onFinish('put-back')} disabled={locked}>
           Put everything back
         </Button>
+        {othersLeft && <HistoryButton />}
       </div>
     </Card>
   )
