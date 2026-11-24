@@ -177,6 +177,13 @@ describe('log-names-mod', () => {
     expect(`${crash!.title} ${crash!.detail}`).not.toContain('Wicked Wardrobe')
   })
 
+  it('never puts a group id in the words when the inventory has no group for the file', () => {
+    const scan = cleanScan({ logs: [log({ modHints: [hint] })] })
+    const [finding] = only({ ...scan, inventory: { ...scan.inventory, groups: [] } }, 'log-names-mod')
+    expect(finding!.title).toBe('“wardrobe” may be causing errors')
+    expect(finding!.title + finding!.detail).not.toMatch(/cf:|901234|\/|ts4script/)
+  })
+
   it('ignores a log older than the named mod file (the mod was updated after the error)', () => {
     const updatedScript = script('WickedWardrobe/wardrobe.ts4script', ['wicked_wardrobe/outfit_picker.pyc'], {
       groupId: 'cf:901234',
