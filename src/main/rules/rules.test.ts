@@ -44,12 +44,24 @@ describe('mods-off', () => {
     expect(only(scan, 'mods-off')[0]!.evidence).toEqual(['Options.ini: scriptmodsenabled = 0'])
   })
 
-  it('fires when only script mods are off and she has only package files, in words that hold either way', () => {
+  it('stays silent when only script mods are off and she has no script mods', () => {
     const scan = withFiles([pkg('CAS/dress.package')], { facts: { ...CLEAN_FACTS, options: { status: 'ok', mods: 'on', scriptMods: 'off' } } })
+    expect(only(scan, 'mods-off')).toEqual([])
+  })
+
+  it('fires only the mods-off variant when both switches are off and she has only package files', () => {
+    const scan = withFiles([pkg('CAS/dress.package')], { facts: { ...CLEAN_FACTS, options: { status: 'ok', mods: 'off', scriptMods: 'off' } } })
     const [finding] = only(scan, 'mods-off')
-    expect(finding!.title).toBe('Script mods are turned off')
-    expect(finding!.detail).toContain('no script mods can run')
+    expect(finding!.title).toBe('Your mods are turned off')
+    expect(finding!.evidence).toEqual(['Options.ini: modsdisabled = 1'])
     expect(finding!.detail).toContain("Don't save your game until mods are back on.")
+  })
+
+  it('fires the mods-off variant when mods are off and she has only a script mod', () => {
+    const scan = withFiles([script('Mod/mod.ts4script')], { facts: { ...CLEAN_FACTS, options: { status: 'ok', mods: 'off', scriptMods: 'on' } } })
+    const [finding] = only(scan, 'mods-off')
+    expect(finding!.title).toBe('Your mods are turned off')
+    expect(finding!.evidence).toEqual(['Options.ini: modsdisabled = 1'])
   })
 
   it('stays silent with no package or script, when a switch is only missing, or when Options.ini was not read', () => {
@@ -164,6 +176,37 @@ describe('log-names-mod', () => {
     expect(crash).toMatchObject({ files: [], groupIds: [], fixes: [], next: 'fifty-fifty' })
     expect(`${crash!.title} ${crash!.detail}`).not.toContain('Wicked Wardrobe')
   })
+
+  it('ignores a log older than the named mod file (the mod was updated after the error)', () => {
+    const updatedScript = script('WickedWardrobe/wardrobe.ts4script', ['wicked_wardrobe/outfit_picker.pyc'], {
+      groupId: 'cf:901234',
+      modifiedAt: '2026-11-22T12:00:00.000Z'
+    })
+    const staleLog = log({ fileModifiedAt: '2026-11-20T12:00:00.000Z', modHints: [hint] })
+    expect(only(withFiles([updatedScript], { logs: [staleLog] }), 'log-names-mod')).toEqual([])
+
+    const sameTimeLog = log({ fileModifiedAt: '2026-11-22T12:00:00.000Z', modHints: [hint] })
+    expect(only(withFiles([updatedScript], { logs: [sameTimeLog] }), 'log-names-mod').map((f) => f.id)).toEqual(['log-names-mod:cf:901234'])
+
+    const newerLog = log({ file: 'lastException_new.txt', kind: 'exception', fileModifiedAt: '2026-11-23T12:00:00.000Z', modHints: [hint] })
+    const olderMccc = log({ file: 'MCCC/mc_lastexception.html', kind: 'mccc', fileModifiedAt: '2026-11-19T12:00:00.000Z', modHints: [hint] })
+    const [mixed] = only(withFiles([updatedScript], { logs: [newerLog, olderMccc] }), 'log-names-mod')
+    expect(mixed!.detail).toContain('Your last exception log mentions')
+    expect(mixed!.evidence).toHaveLength(1)
+    expect(mixed!.evidence[0]).toContain('lastException_new.txt')
+
+    const untouchedScript = script('OtherMod/other.ts4script', ['other_mod/core.pyc'], {
+      groupId: 'dir:othermod',
+      modifiedAt: '2026-11-10T00:00:00.000Z'
+    })
+    const sharedLog = log({
+      fileModifiedAt: '2026-11-20T12:00:00.000Z',
+      modHints: [hint, 'c:/dev/other_mod/core']
+    })
+    expect(only(withFiles([updatedScript, untouchedScript], { logs: [sharedLog] }), 'log-names-mod').map((f) => f.id)).toEqual([
+      'log-names-mod:dir:othermod'
+    ])
+  })
 })
 
 describe('script-too-deep', () => {
@@ -272,8 +315,9 @@ describe('duplicate-files', () => {
     expect(finding!.files).toEqual(['Deep/x/y/hair.package', 'hair.package', 'A/hair.package'])
   })
 
-  it('else keeps the shallowest copy, else the first by name', () => {
+  it('keeps CurseForge even inside a backup-named folder, else avoids backup/copy/old folders, else shallower, else by name', () => {
     const files = [
+      // Fixture `duplicates`: HelperMod/ beats BackupCopy/ (folder contains backup/copy), CurseForge/ beats CAS/Hair/ (shallower)
       pkg('CAS/Hair/sample_hair_01.package', { hash: hashed('b') }),
       pkg('CurseForge/sample_hair_01.package', { hash: hashed('b') }),
       script('HelperMod/helper_mod.ts4script', ['helper_mod/actions.pyc'], { hash: hashed('c') }),
@@ -281,9 +325,30 @@ describe('duplicate-files', () => {
     ]
     const [finding] = only(withFiles(files), 'duplicate-files')
     expect(finding!.fixes).toEqual([
-      { fix: 'set-aside-files', files: ['HelperMod/helper_mod.ts4script', 'CAS/Hair/sample_hair_01.package'] }
+      { fix: 'set-aside-files', files: ['CAS/Hair/sample_hair_01.package', 'BackupCopy/helper_mod.ts4script'] }
     ])
     expect(finding!.detail).toContain('2 files are exact copies')
+
+    // Non-backup deeper folder beats shallower backup/old/copy folder; CurseForge still wins over non-backup; filename "old" is not a folder
+    const edgeFiles = [
+      pkg('Old/deep.package', { hash: hashed('1') }),
+      pkg('CAS/Hair/deep.package', { hash: hashed('1') }),
+      pkg('my_copy_dir/item.package', { hash: hashed('2') }),
+      pkg('Zed/item.package', { hash: hashed('2') }),
+      pkg('Backup/cf_item.package', { hash: hashed('3'), groupId: 'cf:88' }),
+      pkg('Clean/cf_item.package', { hash: hashed('3') }),
+      pkg('old_hair.package', { hash: hashed('4') }),
+      pkg('Clean/old_hair.package', { hash: hashed('4') }),
+      pkg('Alpha/same.package', { hash: hashed('5') }),
+      pkg('Beta/same.package', { hash: hashed('5') })
+    ]
+    const [edgeFinding] = only(withFiles(edgeFiles), 'duplicate-files')
+    expect(edgeFinding!.fixes).toEqual([
+      {
+        fix: 'set-aside-files',
+        files: ['Beta/same.package', 'Clean/cf_item.package', 'Old/deep.package', 'Clean/old_hair.package', 'my_copy_dir/item.package']
+      }
+    ])
   })
 
   it('ignores files that were not hashed, and files that are not mods', () => {
@@ -337,6 +402,16 @@ describe('stale-thumbnail-cache', () => {
     const files = [pkg('a.package'), other('notes.txt', { modifiedAt: '2026-11-23T00:00:00.000Z' })]
     expect(only(withFiles(files), 'stale-thumbnail-cache')).toEqual([])
   })
+
+  it('ignores an invalid mod timestamp when another mod file is newer than the cache', () => {
+    const files = [
+      pkg('bad_date.package', { modifiedAt: 'not-a-date' }),
+      pkg('newer.package', { modifiedAt: '2026-11-22T00:00:00.000Z' })
+    ]
+    const [finding] = only(withFiles(files, { facts: { ...CLEAN_FACTS, thumbCacheAt: '2026-11-20T00:00:00.000Z' } }), 'stale-thumbnail-cache')
+    expect(finding).toMatchObject({ rule: 'stale-thumbnail-cache', fixes: [{ fix: 'clear-caches' }] })
+    expect(finding!.evidence[1]).toBe('Newest mod: newer.package (2026-11-22T00:00:00.000Z)')
+  })
 })
 
 describe('crash-without-cause', () => {
@@ -347,9 +422,31 @@ describe('crash-without-cause', () => {
     expect(finding!.evidence).toEqual(['lastCrash.txt: crash at 2026-11-23 15:14:00, game 1.129.39.1030'])
   })
 
+  it('with no mods at all, does not point to 50/50 and suggests Repair in the EA app', () => {
+    for (const files of [[], [other('readme.txt'), archive('notes.zip')]]) {
+      const scan = withFiles(files, { logs: [crashLog()] })
+      const [finding] = only(scan, 'crash-without-cause')
+      expect(finding).toMatchObject({ severity: 'warn', certainty: 'worth-testing', fixes: [], next: 'none' })
+      expect(finding!.title).toContain('no mods')
+      expect(finding!.detail).toContain('no mods')
+      expect(finding!.detail).toContain('Repair in the EA app')
+      expect(`${finding!.title} ${finding!.detail}`).not.toContain('50/50')
+    }
+  })
+
   it('stays silent when another log named a mod', () => {
     const scan = cleanScan({ logs: [crashLog(), log({ modHints: ['c:/dev/wicked_wardrobe/outfit_picker'] })] })
     expect(only(scan, 'crash-without-cause')).toEqual([])
+  })
+
+  it('fires when a crash log exists and the only exception log is older than the named mod', () => {
+    const updatedScript = script('WickedWardrobe/wardrobe.ts4script', ['wicked_wardrobe/outfit_picker.pyc'], {
+      groupId: 'cf:901234',
+      modifiedAt: '2026-11-24T00:00:00.000Z'
+    })
+    const staleLog = log({ fileModifiedAt: '2026-11-20T12:00:00.000Z', modHints: ['c:/dev/wicked_wardrobe/outfit_picker'] })
+    const [finding] = only(withFiles([updatedScript], { logs: [crashLog(), staleLog] }), 'crash-without-cause')
+    expect(finding).toMatchObject({ rule: 'crash-without-cause', next: 'fifty-fifty' })
   })
 })
 

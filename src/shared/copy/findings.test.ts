@@ -60,8 +60,10 @@ const ALL_WORDS: Record<string, FindingWords> = {
   'script-older-than-update: 1': scriptOlderThanUpdateWords({ count: 1 }),
   'script-older-than-update: 4': scriptOlderThanUpdateWords({ count: 4 }),
   'stale-thumbnail-cache': staleThumbnailCacheWords(),
-  'crash-without-cause: 1': crashWithoutCauseWords({ crashCount: 1 }),
-  'crash-without-cause: 2': crashWithoutCauseWords({ crashCount: 2 })
+  'crash-without-cause: 1': crashWithoutCauseWords({ crashCount: 1, hasMods: true }),
+  'crash-without-cause: 2': crashWithoutCauseWords({ crashCount: 2, hasMods: true }),
+  'crash-without-cause: 1, no mods': crashWithoutCauseWords({ crashCount: 1, hasMods: false }),
+  'crash-without-cause: 2, no mods': crashWithoutCauseWords({ crashCount: 2, hasMods: false })
 }
 
 describe('finding words', () => {
@@ -80,10 +82,19 @@ describe('finding words', () => {
     expect(ALL_WORDS['script-older-than-update: 4']!.detail).toContain('only a hint, not proof')
   })
 
-  it('say a bare crash names no mod, and point to the 50/50 test', () => {
+  it('say a bare crash names no mod, and point to the 50/50 test when she has mods', () => {
     for (const key of ['crash-without-cause: 1', 'crash-without-cause: 2']) {
       expect(ALL_WORDS[key]!.detail).toContain('did not say which mod')
       expect(ALL_WORDS[key]!.detail).toContain('The 50/50 test can find it')
+    }
+  })
+
+  it('say a crash with no mods points to Repair in the EA app, not 50/50', () => {
+    for (const key of ['crash-without-cause: 1, no mods', 'crash-without-cause: 2, no mods']) {
+      expect(ALL_WORDS[key]!.title).toContain('no mods')
+      expect(ALL_WORDS[key]!.detail).toContain('no mods')
+      expect(ALL_WORDS[key]!.detail).toContain('Repair in the EA app')
+      expect(`${ALL_WORDS[key]!.title} ${ALL_WORDS[key]!.detail}`).not.toContain('50/50')
     }
   })
 

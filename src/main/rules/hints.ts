@@ -1,10 +1,11 @@
 // Matches a log's modHints to the Python files inside her .ts4script mods.
-import type { ModFile, RelPath } from '../../shared/model.ts'
+import type { IsoTime, ModFile, RelPath } from '../../shared/model.ts'
 
 export interface EntryOwner {
   groupId: string
   file: RelPath
   entry: string // as stored in the .ts4script
+  modifiedAt: IsoTime
 }
 
 const PYTHON_ENTRY = /\.(py|pyc|pyo)$/i
@@ -20,7 +21,7 @@ export function buildEntryIndex(files: readonly ModFile[]): Map<string, EntryOwn
       if (key === '' || key.endsWith('/')) continue
       if (key.split('/').pop() === '__init__') continue // every package has one, so it names nobody
       const owners = index.get(key)
-      const owner = { groupId: file.groupId, file: file.relPath, entry }
+      const owner = { groupId: file.groupId, file: file.relPath, entry, modifiedAt: file.modifiedAt }
       if (owners) owners.push(owner)
       else index.set(key, [owner])
     }

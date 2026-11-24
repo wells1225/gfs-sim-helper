@@ -155,9 +155,16 @@ export function staleThumbnailCacheWords(): FindingWords {
   }
 }
 
-export function crashWithoutCauseWords(input: { crashCount: number }): FindingWords {
+export function crashWithoutCauseWords(input: { crashCount: number; hasMods: boolean }): FindingWords {
+  const logPhrase = input.crashCount === 1 ? 'log only says' : 'logs only say'
+  if (!input.hasMods) {
+    return {
+      title: 'The game crashed even with no mods',
+      detail: `The crash ${logPhrase} when the game closed, not why. Since there are no mods in your mods folder, a mod didn't cause this. Try Repair in the EA app to check your game files.`
+    }
+  }
   return {
     title: "The game crashed, but it didn't say which mod",
-    detail: `The crash ${input.crashCount === 1 ? 'log only says' : 'logs only say'} when the game closed, not why, so the game did not say which mod (if any) caused it. The 50/50 test can find it step by step, starting with script mods.`
+    detail: `The crash ${logPhrase} when the game closed, not why, so the game did not say which mod (if any) caused it. The 50/50 test can find it step by step, starting with script mods.`
   }
 }

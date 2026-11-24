@@ -67,10 +67,9 @@ function depthNote(file: ModFile): string {
 export const modsOff: Rule = (scan) => {
   const options = scan.facts.options
   if (options.status !== 'ok') return []
-  const modsAreOff = options.mods === 'off'
-  const scriptModsAreOff = options.scriptMods === 'off'
+  const modsAreOff = options.mods === 'off' && scan.inventory.files.some(isMod)
+  const scriptModsAreOff = options.scriptMods === 'off' && scan.inventory.files.some((f) => f.kind === 'script')
   if (!modsAreOff && !scriptModsAreOff) return []
-  if (!scan.inventory.files.some(isMod)) return []
   return [
     finding('mods-off', words.modsOffWords({ modsOff: modsAreOff, scriptModsOff: scriptModsAreOff }), {
       evidence: [
@@ -110,8 +109,10 @@ export const logNamesMod: Rule = (scan) => {
   for (const log of scan.logs) {
     if (log.kind === 'crash') continue // a crash log has no traceback, so it never names a mod
     const kind = log.kind
+    const logTime = timeOf(log.fileModifiedAt)
     for (const hint of log.modHints) {
-      const owners = matchHint(hint, index)
+      // A log older than the named script file does not count for it (the mod was updated after the error).
+      const owners = matchHint(hint, index).filter((owner) => !(logTime < timeOf(owner.modifiedAt)))
       if (owners.length === 0) continue
       const groupId = owners[0]!.groupId
       const entry: Named = named.get(groupId) ?? { kinds: [], owners: new Map(), evidence: [] }
@@ -217,6 +218,12 @@ export const wrongGamePackage: Rule = (scan) => {
   )
 }
 
+const BACKUP_FOLDER = /backup|copy|old/i
+
+function inBackupFolder(file: ModFile): boolean {
+  return file.relPath.split('/').slice(0, -1).some((folder) => BACKUP_FOLDER.test(folder))
+}
+
 function byName(a: ModFile, b: ModFile): number {
   const left = a.relPath.toLowerCase()
   const right = b.relPath.toLowerCase()
@@ -233,9 +240,12 @@ export const duplicateFiles: Rule = (scan) => {
     if (copies) copies.push(file)
     else bySha.set(file.hash.sha256, [file])
   }
-  // Keep the copy in a CurseForge group, else the shallowest, else the first by name.
+  // Keep the CurseForge-tracked copy, then a copy not under a backup/copy/old folder, then the shallower depth, then by name.
   const keepOrder = (a: ModFile, b: ModFile) =>
-    Number(curseForgeGroups.has(b.groupId)) - Number(curseForgeGroups.has(a.groupId)) || a.depth - b.depth || byName(a, b)
+    Number(curseForgeGroups.has(b.groupId)) - Number(curseForgeGroups.has(a.groupId)) ||
+    Number(inBackupFolder(a)) - Number(inBackupFolder(b)) ||
+    a.depth - b.depth ||
+    byName(a, b)
   const sets = [...bySha.values()].filter((copies) => copies.length > 1).map((copies) => [...copies].sort(keepOrder))
   if (sets.length === 0) return []
   sets.sort((a, b) => byName(a[0]!, b[0]!))
@@ -269,10 +279,17 @@ export const staleThumbnailCache: Rule = (scan) => {
   const cacheAt = scan.facts.thumbCacheAt
   if (cacheAt === null) return []
   let newest: ModFile | null = null
+  let newestTime = -Infinity
   for (const file of scan.inventory.files) {
-    if (isMod(file) && (newest === null || timeOf(file.modifiedAt) > timeOf(newest.modifiedAt))) newest = file
+    if (!isMod(file)) continue
+    const modified = timeOf(file.modifiedAt)
+    if (Number.isNaN(modified)) continue
+    if (newest === null || modified > newestTime) {
+      newest = file
+      newestTime = modified
+    }
   }
-  if (newest === null || !(timeOf(newest.modifiedAt) > timeOf(cacheAt))) return []
+  if (newest === null || !(newestTime > timeOf(cacheAt))) return []
   return [
     finding('stale-thumbnail-cache', words.staleThumbnailCacheWords(), {
       evidence: [`localthumbcache.package: ${cacheAt}`, `Newest mod: ${newest.relPath} (${newest.modifiedAt})`],
@@ -284,12 +301,13 @@ export const staleThumbnailCache: Rule = (scan) => {
 export const crashWithoutCause: Rule = (scan) => {
   const crashes = scan.logs.filter((l) => l.kind === 'crash')
   if (crashes.length === 0 || logNamesMod(scan).length > 0) return []
+  const hasMods = scan.inventory.files.some(isMod)
   return [
-    finding('crash-without-cause', words.crashWithoutCauseWords({ crashCount: crashes.length }), {
+    finding('crash-without-cause', words.crashWithoutCauseWords({ crashCount: crashes.length, hasMods }), {
       evidence: crashes.map(
         (l) => `${l.file}: crash at ${l.createdLocal ?? l.fileModifiedAt}${l.gameVersion ? `, game ${l.gameVersion}` : ''}`
       ),
-      next: 'fifty-fifty'
+      next: hasMods ? 'fifty-fifty' : 'none'
     })
   ]
 }

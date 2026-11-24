@@ -5,7 +5,7 @@ import type { FolderFacts, GameInstall, ModSwitch, OptionsRead } from '../../sha
 
 function decode(bytes: Buffer): string {
   if (bytes[0] === 0xff && bytes[1] === 0xfe) return bytes.subarray(2).toString('utf16le')
-  return bytes.toString('utf8').replace(/^﻿/, '')
+  return bytes.toString('utf8').replace(/^\uFEFF/, '')
 }
 
 /** The two mod switches in the [options] section. A key that is absent or holds another value is 'missing'. */
