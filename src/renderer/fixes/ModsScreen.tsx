@@ -1,7 +1,7 @@
 import { AlertTriangle, Code2, Info, Package, Search, ShieldAlert, Sparkles } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import type { DisabledGroup, FixRefusal, ModGroup, Progress } from '../../shared/model.ts'
+import type { DisabledGroup, FixRefusal, JournalEntry, ModGroup, Progress } from '../../shared/model.ts'
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert.tsx'
 import { Badge } from '../components/ui/badge.tsx'
 import { Button } from '../components/ui/button.tsx'
@@ -12,7 +12,15 @@ import { Switch } from '../components/ui/switch.tsx'
 import { useNav } from '../nav.tsx'
 import { useSession } from '../session.tsx'
 import { useOptionalApi } from './optional-api.ts'
-import { UNEXPECTED_COPY, formatBytes, formatEntryTimestamp, progressCopy, refusalMessage } from './words.ts'
+import {
+  LOAD_FAILED_COPY,
+  UNEXPECTED_COPY,
+  formatBytes,
+  formatEntryTimestamp,
+  groupLabelFromEntry,
+  progressCopy,
+  refusalMessage
+} from './words.ts'
 
 interface ModListItem {
   groupId: string
@@ -23,6 +31,13 @@ interface ModListItem {
   fileCount: number | null
   bytes: number | null
   disabledEntry: DisabledGroup | null
+  /** A set-aside or put-back of this mod stopped partway: History sorts it out, so there is no switch. */
+  needsAttention: boolean
+}
+
+function sameFolder(a: string, b: string): boolean {
+  const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase()
+  return norm(a) === norm(b)
 }
 
 export function ModsScreen() {
@@ -31,7 +46,9 @@ export function ModsScreen() {
   const { go } = useNav()
 
   const [disabled, setDisabled] = useState<DisabledGroup[]>([])
+  const [stuck, setStuck] = useState<JournalEntry[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [query, setQuery] = useState('')
   const [busyGroupId, setBusyGroupId] = useState<string | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
@@ -44,6 +61,8 @@ export function ModsScreen() {
   } | null>(null)
 
   const mountedRef = useRef(true)
+  const headingRef = useRef<HTMLHeadingElement>(null)
+  const focusAfterRef = useRef<string | null>(null)
 
   useEffect(() => {
     mountedRef.current = true
@@ -58,13 +77,23 @@ export function ModsScreen() {
       return
     }
     try {
-      const list = await api.invoke('groups:disabled')
+      const [list, journal] = await Promise.all([api.invoke('groups:disabled'), api.invoke('journal:list')])
       if (mountedRef.current) {
         setDisabled(list)
+        setStuck(
+          journal.filter(
+            (e) =>
+              e.action === 'disable-group' &&
+              e.groupId !== null &&
+              (e.status === 'needs-attention' || e.status === 'in-progress')
+          )
+        )
+        setLoadFailed(false)
       }
     } catch {
+      // Keep what is on screen: a failed load must never look like an empty list.
       if (mountedRef.current) {
-        setDisabled([])
+        setLoadFailed(true)
       }
     } finally {
       if (mountedRef.current) {
@@ -76,6 +105,18 @@ export function ModsScreen() {
   useEffect(() => {
     void loadDisabled()
   }, [loadDisabled])
+
+  // A button that was just used can go away (Try again, a row that moved back to Mods), so keep keyboard focus.
+  useEffect(() => {
+    const target = focusAfterRef.current
+    if (target === null || busyGroupId !== null || loading) return
+    focusAfterRef.current = null
+    const active = document.activeElement
+    if (active && active !== document.body) return
+    const control = target ? document.getElementById(`mods-control-${target}`) : null
+    if (control instanceof HTMLElement && !control.hasAttribute('disabled')) control.focus()
+    else headingRef.current?.focus()
+  }, [busyGroupId, loading, loadFailed, disabled, stuck])
 
   useEffect(() => {
     if (!api || !busyGroupId) {
@@ -95,6 +136,13 @@ export function ModsScreen() {
       disabledById.set(entry.groupId, entry)
     }
 
+    const stuckById = new Map<string, JournalEntry>()
+    for (const entry of stuck) {
+      if (entry.groupId === null || stuckById.has(entry.groupId)) continue
+      if (scan && !sameFolder(entry.folderPath, scan.folder.path)) continue
+      stuckById.set(entry.groupId, entry)
+    }
+
     const combined: ModListItem[] = []
     const seen = new Set<string>()
 
@@ -110,7 +158,8 @@ export function ModsScreen() {
           source: group.source,
           fileCount: group.files.length,
           bytes: group.bytes,
-          disabledEntry
+          disabledEntry,
+          needsAttention: stuckById.has(group.id)
         })
       }
     }
@@ -125,7 +174,24 @@ export function ModsScreen() {
         source: entry.groupId.startsWith('cf:') ? 'curseforge' : null,
         fileCount: null,
         bytes: null,
-        disabledEntry: entry
+        disabledEntry: entry,
+        needsAttention: stuckById.has(entry.groupId)
+      })
+      seen.add(entry.groupId)
+    }
+
+    for (const [groupId, entry] of stuckById) {
+      if (seen.has(groupId)) continue
+      combined.push({
+        groupId,
+        label: groupLabelFromEntry(entry),
+        enabled: false,
+        hasScript: false,
+        source: groupId.startsWith('cf:') ? 'curseforge' : null,
+        fileCount: null,
+        bytes: null,
+        disabledEntry: null,
+        needsAttention: true
       })
     }
 
@@ -133,7 +199,7 @@ export function ModsScreen() {
       if (a.hasScript !== b.hasScript) return a.hasScript ? -1 : 1
       return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
     })
-  }, [disabled, scan])
+  }, [disabled, scan, stuck])
 
   const filtered = useMemo(() => {
     const trimmed = query.trim().toLowerCase()
@@ -154,6 +220,7 @@ export function ModsScreen() {
       if (!api) return
       setRefusalState(null)
       setProgress(null)
+      focusAfterRef.current = item.groupId
       setBusyGroupId(item.groupId)
 
       try {
@@ -264,7 +331,13 @@ export function ModsScreen() {
     <main className="flex flex-col gap-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-semibold tracking-tight text-foreground">Your mods</h1>
+          <h1
+            ref={headingRef}
+            tabIndex={-1}
+            className="text-2xl font-semibold tracking-tight text-foreground outline-none"
+          >
+            Your mods
+          </h1>
           <p className="text-[0.9375rem] text-muted-foreground">
             Switch any mod off to set it aside safely outside your Sims folder. Nothing is ever deleted.
           </p>
@@ -274,7 +347,7 @@ export function ModsScreen() {
           <div className="flex items-center gap-2 tabular-nums">
             {scan && (
               <Badge variant="ok">
-                {activeCount} {activeCount === 1 ? 'active' : 'active'}
+                {activeCount} active
               </Badge>
             )}
             {setAsideCount > 0 && (
@@ -357,6 +430,34 @@ export function ModsScreen() {
         )
       })()}
 
+      {loadFailed && (
+        <Alert variant="warn">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <div className="flex flex-1 flex-col gap-2">
+              <AlertTitle>{LOAD_FAILED_COPY.title}</AlertTitle>
+              <AlertDescription>
+                We could not check which mods are set aside. {LOAD_FAILED_COPY.detail}
+              </AlertDescription>
+              <div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={loading}
+                  onClick={() => {
+                    focusAfterRef.current = ''
+                    setLoading(true)
+                    void loadDisabled()
+                  }}
+                >
+                  Try again
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Alert>
+      )}
+
       {items.length > 0 && (
         <div className="relative">
           <Search
@@ -374,7 +475,7 @@ export function ModsScreen() {
         </div>
       )}
 
-      {!loading && items.length === 0 && scan && (
+      {!loading && !loadFailed && items.length === 0 && scan && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -388,7 +489,7 @@ export function ModsScreen() {
         </Card>
       )}
 
-      {!loading && !scan && items.length === 0 && (
+      {!loading && !loadFailed && !scan && items.length === 0 && (
         <p className="text-sm text-muted-foreground">No mods are currently set aside.</p>
       )}
 
@@ -422,7 +523,11 @@ export function ModsScreen() {
                       {item.source === 'curseforge' && (
                         <Badge variant="secondary">CurseForge</Badge>
                       )}
-                      {!item.enabled && <Badge variant="warn">Set aside</Badge>}
+                      {item.needsAttention ? (
+                        <Badge variant="warn">Needs attention</Badge>
+                      ) : (
+                        !item.enabled && <Badge variant="warn">Set aside</Badge>
+                      )}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground tabular-nums">
@@ -432,28 +537,43 @@ export function ModsScreen() {
                         </span>
                       )}
                       {item.bytes !== null && <span>· {formatBytes(item.bytes)}</span>}
-                      {item.disabledEntry && (
-                        <span>Set aside {formatEntryTimestamp(item.disabledEntry.at)}</span>
+                      {item.needsAttention ? (
+                        <span>A change to this mod stopped partway. History can put it right.</span>
+                      ) : (
+                        item.disabledEntry && (
+                          <span>Set aside {formatEntryTimestamp(item.disabledEntry.at)}</span>
+                        )
                       )}
                     </div>
                   </div>
 
-                  <Switch
-                    checked={item.enabled}
-                    disabled={busyGroupId !== null}
-                    aria-label={
-                      item.enabled ? `Set ${item.label} aside` : `Turn ${item.label} back on`
-                    }
-                    onCheckedChange={(checked) => {
-                      if (isBusy) return
-                      void toggleGroup({
-                        groupId: item.groupId,
-                        label: item.label,
-                        targetEnabled: checked,
-                        entryId: item.disabledEntry?.entryId
-                      })
-                    }}
-                  />
+                  {item.needsAttention ? (
+                    <Button
+                      id={`mods-control-${item.groupId}`}
+                      variant="outline"
+                      size="sm"
+                      aria-label={`Open History for ${item.label}`}
+                      onClick={() => go({ screen: 'history' })}
+                    >
+                      Open History
+                    </Button>
+                  ) : (
+                    <Switch
+                      id={`mods-control-${item.groupId}`}
+                      checked={item.enabled}
+                      disabled={busyGroupId !== null}
+                      aria-label={item.enabled ? `Set ${item.label} aside` : `Turn ${item.label} back on`}
+                      onCheckedChange={(checked) => {
+                        if (isBusy) return
+                        void toggleGroup({
+                          groupId: item.groupId,
+                          label: item.label,
+                          targetEnabled: checked,
+                          entryId: item.disabledEntry?.entryId
+                        })
+                      }}
+                    />
+                  )}
                 </div>
               </Card>
             )

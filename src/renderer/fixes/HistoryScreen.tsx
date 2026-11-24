@@ -22,6 +22,7 @@ import { useNav } from '../nav.tsx'
 import { groupHistoryEntries, type HistoryRow } from './history-groups.ts'
 import { useOptionalApi } from './optional-api.ts'
 import {
+  LOAD_FAILED_COPY,
   UNEXPECTED_COPY,
   formatEntryTimestamp,
   formatStepSummary,
@@ -35,6 +36,9 @@ export function HistoryScreen() {
 
   const [entries, setEntries] = useState<JournalEntry[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const headingRef = useRef<HTMLHeadingElement>(null)
+  const focusHeadingRef = useRef(false)
   const [undoingId, setUndoingId] = useState<string | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
   const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({})
@@ -55,34 +59,43 @@ export function HistoryScreen() {
     }
   }, [])
 
-  useEffect(() => {
+  const load = useCallback(async () => {
     if (!api) {
       setLoading(false)
       return
     }
-    let cancelled = false
-    api
-      .invoke('journal:list')
-      .then((list) => {
-        if (!cancelled) {
-          setEntries(list)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setEntries([])
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setLoading(false)
-        }
-      })
-
-    return () => {
-      cancelled = true
+    setLoading(true)
+    try {
+      const list = await api.invoke('journal:list')
+      if (mountedRef.current) {
+        setEntries(list)
+        setLoadFailed(false)
+      }
+    } catch {
+      // Keep what is on screen: a failed load must never look like an empty History.
+      if (mountedRef.current) {
+        setLoadFailed(true)
+      }
+    } finally {
+      if (mountedRef.current) {
+        setLoading(false)
+      }
     }
   }, [api])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  // Try again goes away once the list loads, so keep keyboard focus on the page.
+  useEffect(() => {
+    if (loading || !focusHeadingRef.current) return
+    focusHeadingRef.current = false
+    const active = document.activeElement
+    if (!active || active === document.body) {
+      headingRef.current?.focus()
+    }
+  }, [loading, loadFailed])
 
   useEffect(() => {
     if (!api || !undoingId) {
@@ -193,7 +206,13 @@ export function HistoryScreen() {
   return (
     <main className="flex flex-col gap-5">
       <div className="flex flex-col gap-1">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">History</h1>
+        <h1
+          ref={headingRef}
+          tabIndex={-1}
+          className="text-2xl font-semibold tracking-tight text-foreground outline-none"
+        >
+          History
+        </h1>
         <p className="text-[0.9375rem] text-muted-foreground">
           Every change made to your Mods folder or settings is saved here so you can put things back in one click.
         </p>
@@ -254,7 +273,34 @@ export function HistoryScreen() {
         </Alert>
       )}
 
-      {!loading && rows.length === 0 && (
+      {loadFailed && (
+        <Alert variant="warn">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+            <div className="flex flex-1 flex-col gap-2">
+              <AlertTitle>{LOAD_FAILED_COPY.title}</AlertTitle>
+              <AlertDescription>
+                We could not read your list of changes. {LOAD_FAILED_COPY.detail}
+              </AlertDescription>
+              <div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={loading}
+                  onClick={() => {
+                    focusHeadingRef.current = true
+                    void load()
+                  }}
+                >
+                  Try again
+                </Button>
+              </div>
+            </div>
+          </div>
+        </Alert>
+      )}
+
+      {!loading && !loadFailed && rows.length === 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">

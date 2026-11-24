@@ -161,6 +161,23 @@ export const UNEXPECTED_COPY: RefusalCopy = {
   tone: 'warn'
 }
 
+/** Shown when a list could not be read, so an error never looks like an empty list. */
+export const LOAD_FAILED_COPY = {
+  title: "Couldn't load this right now",
+  detail: 'Nothing was changed. Try again in a moment.'
+} as const
+
+/**
+ * The mod's name for a set-aside entry. The journal entry has no label field yet, so this reads it out of the
+ * summary that planFix wrote ("Set aside <label>").
+ */
+export function groupLabelFromEntry(entry: JournalEntry): string {
+  const summary = entry.summary.trim()
+  const prefix = 'Set aside '
+  if (summary.startsWith(prefix) && summary.length > prefix.length) return summary.slice(prefix.length)
+  return summary || 'A mod'
+}
+
 export function refusalMessage(refusal: FixRefusal): RefusalCopy {
   switch (refusal.why) {
     case 'gate':

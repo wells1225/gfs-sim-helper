@@ -356,6 +356,7 @@ describe('ModsScreen', () => {
     const user = userEvent.setup()
     const scan = sampleScan()
     const api = fakeApi({
+      'journal:list': [],
       'groups:disabled': [],
       'fix:apply': () => ({
         status: 'done',
@@ -413,6 +414,7 @@ describe('ModsScreen', () => {
 
   it('prompts to run a check-up when no scan exists yet while still listing disabled mods', async () => {
     const api = fakeApi({
+      'journal:list': [],
       'groups:disabled': [
         {
           groupId: 'cf:901234',
@@ -547,6 +549,7 @@ describe('review: retries, failures and focus', () => {
     const user = userEvent.setup()
     let attempt = 0
     const api = fakeApi({
+      'journal:list': [],
       'groups:disabled': [],
       'fix:apply': () => {
         attempt += 1
@@ -590,5 +593,188 @@ describe('review: History keeps focus', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument())
     expect(document.activeElement).not.toBe(document.body)
     expect(document.activeElement).toHaveTextContent('Set aside 3 zip files from Mods')
+  })
+})
+
+describe('last check: a list that fails to load does not look empty', () => {
+  it('History says it could not load, never "No changes yet", and Try again loads it', async () => {
+    const user = userEvent.setup()
+    const entry = sampleJournalEntry({ id: 'e-load-1', summary: 'Set aside 2 broken files from Mods' })
+    let attempt = 0
+    const api = fakeApi({
+      'journal:list': () => {
+        attempt += 1
+        if (attempt === 1) throw new Error('boom')
+        return [entry]
+      }
+    })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'history' }}>
+        <HistoryScreen />
+      </Harness>
+    )
+
+    expect(await screen.findByText("Couldn't load this right now")).toBeInTheDocument()
+    expect(screen.queryByText('No changes yet')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('Set aside 2 broken files from Mods')).toBeInTheDocument()
+    expect(screen.queryByText("Couldn't load this right now")).not.toBeInTheDocument()
+    expect(document.activeElement).not.toBe(document.body)
+  })
+
+  it('Your mods says it could not load, never "No mods are currently set aside", and Try again loads it', async () => {
+    const user = userEvent.setup()
+    let attempt = 0
+    const api = fakeApi({
+      'journal:list': [],
+      'groups:disabled': () => {
+        attempt += 1
+        if (attempt === 1) throw new Error('boom')
+        return [{ groupId: 'cf:901234', label: 'Wicked Wardrobe', entryId: 'e-1', at: '2026-11-24T12:00:00.000Z' }]
+      }
+    })
+
+    render(
+      <Harness api={api} initialScan={null} initialRoute={{ screen: 'mods' }}>
+        <ModsScreen />
+      </Harness>
+    )
+
+    expect(await screen.findByText("Couldn't load this right now")).toBeInTheDocument()
+    expect(screen.queryByText('No mods are currently set aside.')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('switch', { name: 'Turn Wicked Wardrobe back on' })).toBeInTheDocument()
+    expect(screen.queryByText("Couldn't load this right now")).not.toBeInTheDocument()
+    expect(document.activeElement).not.toBe(document.body)
+  })
+
+  it('Your mods keeps the check-up list on screen under the notice', async () => {
+    const api = fakeApi({
+      'journal:list': [],
+      'groups:disabled': () => {
+        throw new Error('boom')
+      }
+    })
+
+    render(
+      <Harness api={api} initialScan={sampleScan()} initialRoute={{ screen: 'mods' }}>
+        <ModsScreen />
+      </Harness>
+    )
+
+    expect(await screen.findByText("Couldn't load this right now")).toBeInTheDocument()
+    expect(screen.getByText('Hair')).toBeInTheDocument()
+  })
+})
+
+describe('last check: a mod whose put-back needs attention stays on Your mods', () => {
+  const stuck = sampleJournalEntry({
+    id: 'e-stuck',
+    action: 'disable-group',
+    summary: 'Set aside Wicked Wardrobe',
+    groupId: 'cf:901234',
+    status: 'needs-attention'
+  })
+
+  it('lists it on first load, marked, with a link to History in place of the switch', async () => {
+    const user = userEvent.setup()
+    const api = fakeApi({ 'groups:disabled': [], 'journal:list': [stuck] })
+
+    render(
+      <Harness api={api} initialScan={null} initialRoute={{ screen: 'mods' }}>
+        <ModsScreen />
+        <NavAndScanProbe />
+      </Harness>
+    )
+
+    expect(await screen.findByText('Wicked Wardrobe')).toBeInTheDocument()
+    expect(screen.getByText('Needs attention')).toBeInTheDocument()
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument()
+    expect(screen.queryByText('No mods are currently set aside.')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Open History for Wicked Wardrobe' }))
+    expect(screen.getByTestId('probe')).toHaveTextContent('route=history')
+  })
+
+  it('keeps the row when turning it back on stops partway, and does not offer the switch again', async () => {
+    const user = userEvent.setup()
+    let undone = false
+    const api = fakeApi({
+      'groups:disabled': () =>
+        undone ? [] : [{ groupId: 'cf:901234', label: 'Wicked Wardrobe', entryId: 'e-stuck', at: stuck.at }],
+      'journal:list': () => (undone ? [stuck] : [{ ...stuck, status: 'done' as const }]),
+      'journal:undo': () => {
+        undone = true
+        return { status: 'stopped-part-way', entry: stuck, detail: '' }
+      }
+    })
+
+    render(
+      <Harness api={api} initialScan={null} initialRoute={{ screen: 'mods' }}>
+        <ModsScreen />
+      </Harness>
+    )
+
+    await user.click(await screen.findByRole('switch', { name: 'Turn Wicked Wardrobe back on' }))
+    expect(await screen.findByRole('button', { name: 'Open History for Wicked Wardrobe' })).toBeInTheDocument()
+    expect(screen.getByText('Wicked Wardrobe')).toBeInTheDocument()
+    expect(screen.getByText('Needs attention')).toBeInTheDocument()
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument()
+  })
+
+  it('a mod still in the check-up list gets the History link too, so it cannot be set aside twice', async () => {
+    const scan = sampleScan()
+    const group = scan.inventory.groups.find((g) => g.label === 'Hair')!
+    const api = fakeApi({
+      'groups:disabled': [],
+      'journal:list': [
+        { ...stuck, id: 'e-hair', groupId: group.id, summary: 'Set aside Hair', folderPath: scan.folder.path },
+        { ...stuck, id: 'e-other', groupId: 'dir:elsewhere', summary: 'Set aside Elsewhere', folderPath: 'D:\\Other\\The Sims 4' }
+      ]
+    })
+
+    render(
+      <Harness api={api} initialScan={scan} initialRoute={{ screen: 'mods' }}>
+        <ModsScreen />
+      </Harness>
+    )
+
+    expect(await screen.findByRole('button', { name: 'Open History for Hair' })).toBeInTheDocument()
+    expect(screen.queryByRole('switch', { name: 'Set Hair aside' })).not.toBeInTheDocument()
+    // An entry from another Sims folder is not part of this list.
+    expect(screen.queryByText('Elsewhere')).not.toBeInTheDocument()
+  })
+})
+
+describe('last check: Your mods keeps focus after Try again', () => {
+  it('moves keyboard focus back to the switch when the notice goes away', async () => {
+    const user = userEvent.setup()
+    let attempt = 0
+    const api = fakeApi({
+      'groups:disabled': [],
+      'journal:list': [],
+      'fix:apply': () => {
+        attempt += 1
+        if (attempt === 1) throw new Error('boom')
+        return {
+          status: 'done',
+          entry: sampleJournalEntry({ id: 'd-1', action: 'disable-group', groupId: 'dir:hair', status: 'done' })
+        }
+      }
+    })
+
+    render(
+      <Harness api={api} initialScan={sampleScan()} initialRoute={{ screen: 'mods' }}>
+        <ModsScreen />
+      </Harness>
+    )
+
+    await user.click(await screen.findByRole('switch', { name: 'Set Hair aside' }))
+    await user.click(await screen.findByRole('button', { name: 'Try again' }))
+    const sw = await screen.findByRole('switch', { name: 'Turn Hair back on' })
+    await waitFor(() => expect(document.activeElement).toBe(sw))
   })
 })
