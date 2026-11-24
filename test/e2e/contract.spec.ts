@@ -21,6 +21,21 @@ test('launches a first run against the clean fixture with the shell and an empty
   }
 })
 
+test('the built page carries the exact Content-Security-Policy', async () => {
+  const running = await launchApp()
+  try {
+    const csp = running.page.locator('meta[http-equiv="Content-Security-Policy"]')
+    await expect(csp).toHaveCount(1)
+    expect(await csp.getAttribute('content')).toBe(
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+        "font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'; " +
+        "form-action 'none'"
+    )
+  } finally {
+    await running.close()
+  }
+})
+
 test('the installed app ignores ELECTRON_RENDERER_URL and still opens its own page', async () => {
   test.skip(!process.env['SIMS_HELPER_EXE'], 'needs the installed app (Windows CI)')
   const running = await launchApp({ env: { ELECTRON_RENDERER_URL: 'http://127.0.0.1:9/' } })

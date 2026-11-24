@@ -181,6 +181,8 @@ export function sampleJournalEntry(overrides: Partial<JournalEntry> = {}): Journ
     origin: { by: 'fix' },
     folderPath: SAMPLE_FOLDER_PATH,
     groupId: null,
+    groupLabel: null,
+    hasScript: false,
     backupId: '20261124-120400-e5f6',
     steps: [
       {
@@ -242,6 +244,7 @@ export function sampleFiftyFifty(overrides: Partial<FiftyFifty> = {}): FiftyFift
       curseForge: null
     }
   ]
+  const suspects = ['cf:901234', 'dir:buildbuy', 'dir:hair', 'file:shoes.package']
 
   return {
     id: '20261124-121000-f7a8',
@@ -249,14 +252,14 @@ export function sampleFiftyFifty(overrides: Partial<FiftyFifty> = {}): FiftyFift
     folderPath: SAMPLE_FOLDER_PATH,
     phase: 'awaiting-answer',
     round: 1,
-    roundsAtMost: 2,
+    roundsAtMost: 3, // ceil(log2(4)) + 1: the control round, then two halvings
     groups,
-    suspects: groups.map((g) => g.id),
+    suspects, // script groups first, then by label
     parked: ['cf:901234', 'dir:buildbuy'],
     inMods: ['dir:hair', 'file:shoes.package'],
     cleared: [],
     culprit: null,
-    history: [],
+    history: [{ round: 0, parked: [...suspects], answer: 'worked' }], // the control round: all aside, no crash
     ...overrides
   }
 }

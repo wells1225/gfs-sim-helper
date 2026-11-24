@@ -11,13 +11,16 @@ import type {
   FixOutcome,
   GameRunState,
   JournalEntry,
+  KeySetResult,
   KeyStatus,
   LocateView,
   Progress,
   ReportResult,
   ScanResult,
   Settings,
-  Symptom
+  Symptom,
+  UpdateInstall,
+  UpdateState
 } from './model.ts'
 
 export interface IpcInvoke {
@@ -39,15 +42,20 @@ export interface IpcInvoke {
   'fifty:get': { req: void; res: FiftyFifty | null }
   'fifty:start': { req: void; res: FiftyResult }
   'fifty:begin-round': { req: void; res: FiftyResult }
-  'fifty:answer': { req: { answer: FiftyAnswer }; res: FiftyResult }
+  'fifty:answer': { req: { answer: FiftyAnswer; round: number }; res: FiftyResult } // round: the round on her screen, so a late click cannot answer the next one
   'fifty:stop': { req: void; res: FiftyResult }
   'fifty:finish': { req: { keep: 'keep-set-aside' | 'put-back' }; res: FiftyResult }
   // PR 12 owns this block
   'assist:status': { req: void; res: AssistStatus }
   'assist:preview': { req: void; res: AssistPreview | null }
   'assist:send': { req: { previewId: string }; res: AssistAnswer }
-  'assist:set-key': { req: { key: string }; res: KeyStatus } // the only message that carries the key
+  'assist:set-key': { req: { key: string }; res: KeySetResult } // the only message that carries the key
   'assist:clear-key': { req: void; res: KeyStatus }
+  // PR 13 owns this block
+  'update:get': { req: void; res: UpdateState }
+  'update:check': { req: { by: 'start' | 'click' }; res: UpdateState } // 'start' checks at most once in 24 hours
+  'update:download': { req: void; res: UpdateState } // only from 'available'
+  'update:install': { req: void; res: UpdateInstall } // only from 'ready'; 'busy' while a change runs
 }
 
 export interface IpcEvents {
@@ -77,7 +85,11 @@ export const INVOKE_CHANNELS = [
   'assist:preview',
   'assist:send',
   'assist:set-key',
-  'assist:clear-key'
+  'assist:clear-key',
+  'update:get',
+  'update:check',
+  'update:download',
+  'update:install'
 ] as const satisfies readonly (keyof IpcInvoke)[]
 
 export type Handlers<K extends keyof IpcInvoke> = {

@@ -10,10 +10,15 @@ import type {
   GateRefusal,
   JournalEntry,
   JournalOrigin,
+  KeySetResult,
   KeyStatus,
   ModGroup,
   Progress,
-  Scan
+  RelPath,
+  Scan,
+  Sha256,
+  UpdateInstall,
+  UpdateState
 } from '../shared/model.ts'
 import type { Host } from './locate/host.ts' // PR 3's Host is used as it is, never widened
 
@@ -76,7 +81,7 @@ export interface GateDeps {
 
 export type PlannedStep =
   | { kind: 'move'; from: string; to: string }
-  | { kind: 'edit'; path: string; newText: string }
+  | { kind: 'edit'; path: string; newText: string; beforeSha256: Sha256 } // the file's hash when it was read; runAction refuses 'file-changed' if it differs
   | { kind: 'remove-cache'; path: string }
 
 export interface ActionPlan {
@@ -86,7 +91,18 @@ export interface ActionPlan {
   origin: JournalOrigin
   folderPath: string
   groupId: string | null
+  groupLabel: string | null // ModGroup.label for a disable or set-aside of one group, else null
+  hasScript: boolean // ModGroup.hasScript for that group, else false
   steps: PlannedStep[]
+}
+
+/** planFix's third argument: where to plan, plus what applyFix read from the disk first. */
+export interface PlanFixAt {
+  holdingDir: string
+  entryId: string
+  optionsText?: string // Options.ini as read, for 'turn-mods-on'
+  existingCaches?: readonly string[] // the CACHE_NAMES present now, for 'clear-caches'
+  existingModPaths?: readonly RelPath[] // destinations already taken, for 'move-script-up'
 }
 
 export type OnProgress = (progress: Progress) => void
@@ -145,12 +161,12 @@ export interface AssistMessage {
 
 export type AssistReply =
   | { status: 'text'; text: string }
-  | { status: 'failed'; why: 'no-key' | 'declined' | 'offline' | 'limit-reached' | 'error' }
+  | { status: 'failed'; why: 'no-key' | 'key-rejected' | 'declined' | 'offline' | 'limit-reached' | 'error' } // key-rejected: HTTP 401, the stored key no longer works
 
 export interface KeyStore {
   // PR 12, section 8
   status(): Promise<KeyStatus>
-  set(key: string): Promise<KeyStatus>
+  set(key: string): Promise<KeySetResult>
   clear(): Promise<KeyStatus>
   send(message: AssistMessage): Promise<AssistReply>
 }
@@ -179,6 +195,25 @@ export interface ScanDeps {
   paths: AppPaths
 }
 
+export interface UpdaterInput {
+  // PR 13, src/main/update/updater.ts (Fable): createUpdater(input) gives the Updater
+  isPackaged: boolean // app.isPackaged; updates are off when false
+  version: string // app.getVersion()
+  installDir: string // the folder of the running .exe
+  argv: readonly string[] // '--updated' means the installer just restarted the app after an update
+  env: Readonly<Record<string, string | undefined>> // SIMS_HELPER_UPDATES=off switches updates off; nothing here can point the feed elsewhere
+  keepOutOf: readonly string[] // Documents and the OneDrive roots: updates are off when installDir is inside or contains one
+  platform: NodeJS.Platform // updates are off except on 'win32'
+}
+
+export interface Updater {
+  // PR 13. The feed is only the installed app's app-update.yml
+  state(): UpdateState
+  check(): Promise<UpdateState> // during checking, downloading or ready: the state unchanged
+  download(): Promise<UpdateState> // only from 'available'
+  install(): UpdateInstall // only from 'ready': quitAndInstall(true, true), once
+}
+
 /** Built once in services.ts and handed to every handlers file. */
 export interface AppContext {
   host: Host
@@ -192,6 +227,8 @@ export interface AppContext {
   safety: Safety
   fixes: Fixes
   keyStore: KeyStore
+  updater: Updater
+  busy(): boolean // true while a safety or fixes call runs; update:install refuses 'busy' then
   session: { scan: Scan | null } // the last finished scan
   emit(progress: Progress): void // sends the 'progress' event to the window
   reveal(file: string): void // shows a file in Explorer
