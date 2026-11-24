@@ -2007,6 +2007,30 @@ describe('doing the ops', () => {
     expect(await readdir(dirname(to))).toEqual([])
   })
 
+  // `failed` with opsDone 0 says the move did not run. The target path never changed, so its copy can go.
+  it('move across drives: when the source folder is swapped during the copy, nothing is left at the target', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    await mkdir(sub, { recursive: true })
+    const from = join(sub, 'Slot_00000002.save')
+    await writeFile(from, 'decoy mod')
+    const to = w.inData('holding', 'e1', 'Mods', 'Slot_00000002.save')
+    const savesBefore = await snapshotTree(w.inFolder('saves'))
+    disk.crossDrive = { from, hits: 0 }
+    let swapped = false
+    disk.atTheLastMoment = async () => {
+      await rm(sub, { recursive: true })
+      await linkFolder(w.inFolder('saves'), sub)
+      swapped = true
+    }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
+    expect(swapped, 'the folder was really swapped during the copy').toBe(true)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await snapshotTree(w.inFolder('saves'))).toEqual(savesBefore)
+    expect(await readdir(dirname(to))).toEqual([])
+  })
+
   it('an empty request is done', async () => {
     const w = await makeWorld()
     expect(await w.run([])).toEqual({ status: 'done' })
