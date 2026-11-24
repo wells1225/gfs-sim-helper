@@ -6,6 +6,7 @@
 //     wells1225/gfs-sim-helper). Nothing here can point it anywhere else; SIMS_HELPER_UPDATES=off only switches it off.
 //   - Only a published, plain x.y.z version higher than this one is offered.
 //   - No state and no thrown error holds text from the network or from an error.
+//   - A check that gets no answer in two minutes is a failed check, and a later answer changes nothing.
 // Written against electron-updater 6.8.11 as installed (docs/research/fable-auto-update.md, section 0).
 import electronUpdater from 'electron-updater'
 import { win32 } from 'node:path'
@@ -43,6 +44,9 @@ type FailReason = Extract<UpdateState, { state: 'failed' }>['why']
 const REQUEST_HEADERS = { 'x-user-staging-id': '0' } as const
 
 const SILENT_LOGGER = { info(): void {}, warn(): void {}, error(): void {} }
+
+// A check with no answer by then is a failed check, so she can try again instead of watching it check for ever.
+const CHECK_GIVES_UP_AFTER_MS = 2 * 60 * 1000
 
 const PLAIN_VERSION = /^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})$/
 
@@ -184,12 +188,45 @@ export function createUpdater(input: UpdaterInput, seams: UpdaterSeams = {}): Up
     }
   }
 
+  // Each check gets a number. An answer counts only while its number is still the running one, so an answer that
+  // comes after the check was given up, or after a newer check began, changes nothing.
+  let checkRun = 0
+  let checkStartedAt = 0
+
+  function giveUpCheck(): void {
+    checkRun += 1
+    state = { state: 'failed', current, step: 'check', why: 'error' }
+  }
+
+  /** Gives up a check that has waited the full time. Run before every read, so no caller sees it stuck. */
+  function expireCheck(): void {
+    if (state.state !== 'checking') return
+    const waited = now().getTime() - checkStartedAt
+    if (!(waited < CHECK_GIVES_UP_AFTER_MS)) giveUpCheck() // a clock that gives no number gives up too
+  }
+
   async function check(): Promise<UpdateState> {
+    expireCheck()
     if (restarting || state.state === 'checking' || state.state === 'downloading' || state.state === 'ready') return state
+    checkRun += 1
+    const run = checkRun
+    const isCurrent = (): boolean => run === checkRun && state.state === 'checking'
+    checkStartedAt = now().getTime()
     state = { state: 'checking', current }
+    // The clock above is only read when someone asks. This timer ends the wait when nobody does.
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const gaveUp = new Promise<'gave-up'>((resolve) => {
+      timer = setTimeout(() => resolve('gave-up'), CHECK_GIVES_UP_AFTER_MS)
+      timer.unref() // never the reason the app stays open
+    })
     try {
       lockDown(engine)
-      const result = await engine.checkForUpdates()
+      const result = await Promise.race([engine.checkForUpdates(), gaveUp])
+      if (!isCurrent()) return state
+      if (result === 'gave-up') {
+        giveUpCheck()
+        return state
+      }
       if (result === null || result === undefined) {
         state = { state: 'failed', current, step: 'check', why: 'error' }
         return state
@@ -202,12 +239,15 @@ export function createUpdater(input: UpdaterInput, seams: UpdaterSeams = {}): Up
           ? { state: 'available', current, next }
           : idle(now().toISOString())
     } catch (error) {
-      state = { state: 'failed', current, step: 'check', why: failReason(error, 'check') }
+      if (isCurrent()) state = { state: 'failed', current, step: 'check', why: failReason(error, 'check') }
+    } finally {
+      clearTimeout(timer)
     }
     return state
   }
 
   async function download(): Promise<UpdateState> {
+    expireCheck()
     if (restarting || state.state !== 'available') return state
     const { next } = state
     state = { state: 'downloading', current, next, percent: 0 }
@@ -224,6 +264,7 @@ export function createUpdater(input: UpdaterInput, seams: UpdaterSeams = {}): Up
 
   function install(): UpdateInstall {
     if (restarting) return { status: 'restarting' }
+    expireCheck()
     if (state.state !== 'ready') return { status: 'refused', why: 'not-ready' }
     if (isBusy()) return { status: 'refused', why: 'busy' }
     try {
@@ -236,5 +277,10 @@ export function createUpdater(input: UpdaterInput, seams: UpdaterSeams = {}): Up
     return { status: 'restarting' }
   }
 
-  return { state: () => state, check, download, install }
+  function read(): UpdateState {
+    expireCheck()
+    return state
+  }
+
+  return { state: read, check, download, install }
 }
