@@ -78,11 +78,13 @@ export function FiftyFiftyScreen() {
   const giveAnswer = (answer: FiftyAnswer) =>
     void run('Getting the next round ready…', () => api.invoke('fifty:answer', { answer }), beginRound, show)
 
-  const stopTest = () =>
-    void run('Putting your mods back…', () => api.invoke('fifty:stop'), stopTest, () => {
-      setAsking(false)
+  const stopTest = () => {
+    // Close the question first, so a refusal (the game is still open) is not hidden behind it.
+    setAsking(false)
+    void run('Putting your mods back…', () => api.invoke('fifty:stop'), stopTest, () =>
       setView({ kind: 'ended', how: 'stopped', label: '' })
-    })
+    )
+  }
 
   const finish = (keep: 'keep-set-aside' | 'put-back', label: string) => {
     const again = () => finish(keep, label)

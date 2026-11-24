@@ -70,12 +70,16 @@ async function saveOrProblem(deps: FiftyDeps, state: FiftyFifty): Promise<FiftyR
 
 export async function start(deps: FiftyDeps, scan: Scan | null): Promise<FiftyResult> {
   if (!scan) return { status: 'refused', refusal: { why: 'out-of-date', detail: 'no-scan' } }
-  if (scan.inventory.groups.length === 0) return NO_SESSION
 
   const running = await loadState(deps)
   if (running) return { status: 'ok', state: running }
 
-  const state = begin(scan.inventory.groups, {
+  // The scan can be older than a switch in "Your mods": a group already set aside is hers, not the test's.
+  const off = new Set((await deps.fixes.disabledGroups(scan.folder.path)).map((d) => d.groupId))
+  const groups = scan.inventory.groups.filter((g) => !off.has(g.id))
+  if (groups.length === 0) return NO_SESSION
+
+  const state = begin(groups, {
     id: deps.newId(),
     startedAt: deps.clock.now().toISOString(),
     folderPath: scan.folder.path

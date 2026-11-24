@@ -211,6 +211,7 @@ export function FoundStep({
   onFinish(keep: 'keep-set-aside' | 'put-back'): void
   locked: boolean
 }) {
+  const rounds = state.history.filter((h) => h.answer !== 'not-sure').length
   return (
     <Card>
       <Heading>We found the most likely cause</Heading>
@@ -218,12 +219,17 @@ export function FoundStep({
         <strong>{label}</strong> is most likely what's making your game crash.
       </p>
       <Text>
-        It took {roundsWord(state.history.filter((h) => h.answer !== 'not-sure').length)}. Keeping it set aside lets you
-        play while you look for an update from its creator. Some mods are still set aside from the last round until you
-        choose.
+        {rounds > 0 && <>It took {roundsWord(rounds)}. </>}
+        Keeping it set aside lets you play while you look for an update from its creator.
+        {rounds > 0 && <> Some mods are still set aside from the last round until you choose.</>}
       </Text>
       <div className="flex flex-wrap gap-3">
-        <Button size="lg" onClick={() => onFinish('keep-set-aside')} disabled={locked}>
+        <Button
+          size="lg"
+          className="h-auto min-h-11 whitespace-normal py-2 text-left"
+          onClick={() => onFinish('keep-set-aside')}
+          disabled={locked}
+        >
           Keep {label} set aside and put everything else back
         </Button>
         <Button size="lg" variant="outline" onClick={() => onFinish('put-back')} disabled={locked}>
