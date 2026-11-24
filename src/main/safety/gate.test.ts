@@ -30,7 +30,8 @@ const disk = vi.hoisted(() => ({
   corruptNewFiles: null as null | { hits: number },
   realpathFails: null as null | { under: string; code: string; hits: number },
   unlinkFails: null as null | { file: string; hits: number },
-  writeFileQuotesItsData: null as null | { hits: number }
+  writeFileQuotesItsData: null as null | { hits: number },
+  whenTempOpens: null as null | (() => Promise<void>)
 }))
 
 vi.mock('node:fs/promises', async (importOriginal) => {
@@ -62,6 +63,11 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     }) as typeof real.unlink,
     open: (async (file, flags, mode) => {
       const handle = await real.open(file, flags, mode)
+      if (disk.whenTempOpens && flags === 'wx') {
+        const meanwhile = disk.whenTempOpens
+        disk.whenTempOpens = null
+        await meanwhile()
+      }
       if (disk.writeFileQuotesItsData && flags === 'wx') {
         const faults = disk.writeFileQuotesItsData
         handle.writeFile = (async (data: unknown) => {
@@ -164,6 +170,7 @@ afterEach(async () => {
   disk.realpathFails = null
   disk.unlinkFails = null
   disk.writeFileQuotesItsData = null
+  disk.whenTempOpens = null
   for (const root of worlds.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
@@ -344,6 +351,21 @@ describe('saves and Tray are never written', () => {
     })
     const made = w.inFolder('Mods', 'Sneaky', 'Deep', 'Folder')
     await expectRefusal(w, () => w.run([{ op: 'mkdir', path: made }]), { reason: 'saves-or-tray', path: made })
+  })
+
+  it('when saves is itself a link to another place, that place is saves too', async () => {
+    const w = await makeWorld()
+    const moved = join(w.root, 'pc', 'OtherDrive', 'SimSaves')
+    await mkdir(moved, { recursive: true })
+    await writeFile(join(moved, 'Slot_00000009.save'), 'save')
+    await rm(w.inFolder('saves'), { recursive: true })
+    await linkFolder(moved, w.inFolder('saves'))
+    await linkFolder(moved, w.inFolder('Mods', 'Sneaky'))
+    const from = w.inFolder('Mods', 'Sneaky', 'Slot_00000009.save')
+    await expectRefusal(w, () => w.run([{ op: 'move', from, to: w.inData('holding', 'x.save') }]), {
+      reason: 'saves-or-tray',
+      path: from
+    })
   })
 
   it('refuses a file link in Mods that points at a save', async (ctx) => {
@@ -1059,6 +1081,47 @@ describe('doing the ops', () => {
       expect(result, op.op).toMatchObject({ status: 'failed', opsDone: 0 })
       expect(await snapshotTree(w.root), op.op).toEqual(before)
     }
+  })
+
+  it('never overwrites a target that appears while the new file is still being written', async () => {
+    const w = await makeWorld()
+    const target = w.inData('holding', 'late.package')
+    const from = w.inFolder(...MOD)
+    const ops: WriteOp[] = [
+      { op: 'write', path: target, data: 'ours', mode: 'create' },
+      { op: 'copy', from, to: target },
+      { op: 'move', from, to: target }
+    ]
+    for (const op of ops) {
+      await rm(target, { force: true })
+      if (op.op === 'move') disk.crossDrive = { from, hits: 0 }
+      let appeared = false
+      disk.whenTempOpens = async () => {
+        await writeFile(target, 'someone else was first')
+        appeared = true
+      }
+      expect(await w.run([op]), op.op).toMatchObject({ status: 'failed', opsDone: 0 })
+      expect(appeared, `${op.op}: the other file really appeared`).toBe(true)
+      expect(await readFile(target, 'utf8'), op.op).toBe('someone else was first')
+      expect(await readdir(dirname(target)), op.op).toEqual(['late.package'])
+      expect(await exists(from), op.op).toBe(true)
+    }
+  })
+
+  it('a source that changes while it is copied fails the copy', async () => {
+    const w = await makeWorld()
+    const source = w.inData('growing.bin')
+    await mkdir(w.dataDir, { recursive: true })
+    await writeFile(source, 'first part')
+    const target = w.inData('copies', 'growing.bin')
+    let grew = false
+    disk.whenTempOpens = async () => {
+      await writeFile(source, 'first part and more')
+      grew = true
+    }
+    expect(await w.run([{ op: 'copy', from: source, to: target }])).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(grew).toBe(true)
+    expect(await readdir(dirname(target))).toEqual([])
   })
 
   it('failed reports how many ops ran, and those really happened', async () => {
