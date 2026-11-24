@@ -193,7 +193,9 @@
   *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    /* 0s, not 0.01ms: a near-zero transition on every element left inherited text in the
+       old colour after a light/dark switch. A 0s duration starts no transition at all. */
+    transition-duration: 0s !important;
     scroll-behavior: auto !important;
   }
 }
