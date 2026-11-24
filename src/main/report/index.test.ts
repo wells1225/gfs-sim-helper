@@ -181,15 +181,16 @@ describe('buildReport', () => {
 
     const redact = makeRedactor({ USERNAME: 'Lila', USERPROFILE: userDir })
     const paths = appPaths({ localAppData, appData: join(userDir, 'AppData', 'Roaming'), desktopDir })
-    const clock = { now: () => new Date('2026-11-24T15:30:45.000Z') }
+    // 23:30:45 on her own clock. Built from local parts, so in any time zone west of UTC the UTC date is the 25th.
+    const clock = { now: () => new Date(2026, 10, 24, 23, 30, 45) }
 
     const { result, file } = await buildReport({ gate, paths, clock, redact }, scan)
 
     expect(result.status).toBe('saved')
     if (result.status !== 'saved') return
 
-    expect(result.fileName).toBe('Sims Helper report 20261124-153045.zip')
-    expect(file).toBe(join(desktopDir, 'Sims Helper report 20261124-153045.zip'))
+    expect(result.fileName).toBe('Sims Helper report 20261124-233045.zip')
+    expect(file).toBe(join(desktopDir, 'Sims Helper report 20261124-233045.zip'))
 
     expect(requests).toHaveLength(1)
     const req = requests[0]!
@@ -201,7 +202,7 @@ describe('buildReport', () => {
     expect(op.op).toBe('write')
     if (op.op !== 'write') return
     expect(op.mode).toBe('create')
-    expect(op.path).toBe(join(desktopDir, 'Sims Helper report 20261124-153045.zip'))
+    expect(op.path).toBe(join(desktopDir, 'Sims Helper report 20261124-233045.zip'))
     expect(op.data).toBeInstanceOf(Uint8Array)
 
     const unzipped = unzipSync(op.data as Uint8Array)

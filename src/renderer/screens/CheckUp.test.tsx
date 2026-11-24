@@ -134,6 +134,29 @@ describe('CheckUp', () => {
     expect(screen.getByTestId('route')).toHaveTextContent('send-to-tyler')
   })
 
+  it('keeps the raw error inside a closed Technical details box, under a plain sentence', async () => {
+    const user = userEvent.setup()
+    const scan = sampleScan()
+    const raw = "EPERM: operation not permitted, scandir 'Mods'"
+    renderCheckUp({
+      scan: null,
+      answers: {
+        'settings:get': { welcome: 'seen', folderPath: scan.folder.path },
+        'scan:run': { status: 'failed', why: 'unexpected', detail: raw }
+      }
+    })
+
+    expect(await screen.findByText(/Nothing in your game folder was changed/)).toBeInTheDocument()
+    const details = screen.getByRole('button', { name: 'Technical details' })
+    expect(details).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText(raw)).not.toBeInTheDocument()
+
+    await user.click(details)
+    expect(details).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText(raw)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument()
+  })
+
   it('shows a calm all-clear verdict when there are no findings', () => {
     const scan = sampleScan({ findings: [] })
     renderCheckUp({ scan })

@@ -47,4 +47,28 @@ describe('SendToTyler', () => {
 
     expect(api.calls.map((c) => c.channel)).toEqual(['report:build', 'report:reveal'])
   })
+
+  it('stays calm when the safety check itself fails, and never shows the raw reason', async () => {
+    const user = userEvent.setup()
+    const api = fakeApi({
+      'report:build': { status: 'failed', why: 'write-refused', detail: 'check-failed' }
+    })
+
+    render(
+      <ApiProvider value={api}>
+        <SessionProvider initialScan={sampleScan()}>
+          <NavProvider initial={{ screen: 'send-to-tyler' }}>
+            <SendToTyler />
+          </NavProvider>
+        </SessionProvider>
+      </ApiProvider>
+    )
+
+    await user.click(screen.getByRole('button', { name: /create report zip/i }))
+
+    expect(await screen.findByText(/couldn't make sure your Desktop was safe to save to/i)).toBeInTheDocument()
+    expect(screen.getByText(/nothing was saved or changed/i)).toBeInTheDocument()
+    expect(document.body.textContent).not.toContain('check-failed')
+    expect(screen.getByRole('button', { name: /create report zip/i })).toBeEnabled()
+  })
 })

@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -131,6 +131,31 @@ describe('scanHandlers', () => {
     expect(gateRequests[0]?.folderPath).toBeNull()
 
     expect(await handlers['settings:get']()).toEqual({ welcome: 'seen', folderPath: simsDir })
+  })
+
+  it('keeps the old settings and saves no report when the gate refuses with check-failed', async () => {
+    const { simsDir, desktopDir, ctx } = await makeFixtureEnv()
+    ctx.gate = {
+      async run(request) {
+        const first = request.ops[0]!
+        return { status: 'refused', refusal: { reason: 'check-failed', path: 'path' in first ? first.path : '' } }
+      }
+    }
+    const handlers = scanHandlers(ctx)
+
+    // The message names the reason only, never the path the check was looking at.
+    const refused = await handlers['settings:update']({ welcome: 'seen', folderPath: simsDir }).then(
+      () => null,
+      (err: unknown) => (err instanceof Error ? err.message : String(err))
+    )
+    expect(refused).toBe('Could not save settings: check-failed')
+    expect(await handlers['settings:get']()).toEqual({ welcome: 'not-seen', folderPath: null })
+
+    await handlers['scan:run']({ folderPath: simsDir, symptom: 'closes' })
+    const report = await handlers['report:build']()
+    expect(report).toEqual({ status: 'failed', why: 'write-refused', detail: 'check-failed' })
+    expect(await readdir(desktopDir)).toEqual([])
+    await handlers['report:reveal']()
   })
 
   it('refuses scan:run for an unknown folderPath and stores the scan in ctx.session.scan when valid', async () => {

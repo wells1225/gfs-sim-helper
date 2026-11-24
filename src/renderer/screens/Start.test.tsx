@@ -1,5 +1,5 @@
 import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiProvider } from '../api.tsx'
 import { NavProvider, useNav } from '../nav.tsx'
 import { SessionProvider } from '../session.tsx'
@@ -35,6 +35,23 @@ function renderStart(answers: FakeApiAnswers) {
 }
 
 describe('Start', () => {
+  it('needs the API and has no quiet fallback to About without it', () => {
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      expect(() =>
+        render(
+          <SessionProvider>
+            <NavProvider initial={{ screen: 'start' }}>
+              <RouteProbe />
+            </NavProvider>
+          </SessionProvider>
+        )
+      ).toThrow(/SimsHelperApi is not available/)
+    } finally {
+      quiet.mockRestore()
+    }
+  })
+
   it('goes to welcome when welcome has not been seen', async () => {
     renderStart({
       'settings:get': { welcome: 'not-seen', folderPath: null }
