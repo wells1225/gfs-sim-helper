@@ -325,7 +325,7 @@ export async function recoverNow(deps: SafetyDeps, entries: JournalEntry[]): Pro
   for (const entry of entries) {
     if (entry.status !== 'in-progress') continue
     if (entry.undo === 'cannot-undo') {
-      const settled = await settleCacheClear(deps, entry).catch(() => null)
+      const settled = await settleCacheClear(deps, entry)
       if (settled) touched.push(settled)
       continue
     }
@@ -333,7 +333,7 @@ export async function recoverNow(deps: SafetyDeps, entries: JournalEntry[]): Pro
     try {
       outcome = await revert(deps, entry)
     } catch {
-      continue // its journal file could not be written: left in progress, and the other entries still get their turn
+      continue // settling this one threw (its backup could not start, say): left in progress, the others get their turn
     }
     if (outcome.status === 'refused') continue // left in progress: the next start tries again
     touched.push(outcome.entry)

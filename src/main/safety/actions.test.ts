@@ -791,6 +791,31 @@ describe('recover', () => {
     expect(left?.status).toBe('in-progress')
   })
 
+  it('goes on to the next entry when settling one entry throws', async () => {
+    const ws = await backedUp()
+    const moved = await runAction(ws.deps, disablePlan(ws))
+    const edited = await runAction(ws.deps, await editPlan(ws, '[options]\nmodsdisabled = 0\n'))
+    if (moved.status !== 'done' || edited.status !== 'done') throw new Error('actions failed')
+    for (const entry of [moved.entry, edited.entry]) {
+      await writeFile(join(ws.paths.journalDir, `${entry.id}.json`), JSON.stringify({ ...entry, status: 'in-progress' }))
+    }
+    // A new file in Mods makes the backup stale, so each entry needs a backup first. The first one throws.
+    await writeFile(join(ws.mods, 'new_hair.package'), 'new')
+    let thrown = false
+    ws.gate.hooks.beforeRequest = (request) => {
+      if (request.reason !== 'backup' || thrown) return undefined
+      thrown = true
+      throw new Error('gate broke')
+    }
+
+    const touched = await recover(ws.deps)
+
+    expect(thrown).toBe(true)
+    expect(touched.map((e) => [e.id, e.status])).toEqual([[moved.entry.id, 'undone']])
+    const left = (await listJournal(ws.deps)).find((e) => e.id === edited.entry.id)
+    expect(left?.status).toBe('in-progress')
+  })
+
   it('marks an entry it cannot settle as needing attention, and deletes nothing', async () => {
     const ws = await backedUp()
     const entry = await interrupted(ws, 2)
