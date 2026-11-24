@@ -340,6 +340,10 @@ miss. It is optional, and v1 ships without it.
     other paths. She clicks **Send** or **Cancel**.
   - **The answer:** it shows in plain words, labelled as a guess. The answer can point to a fix button, but the AI
     never runs a fix itself.
+  - **Model:** Claude Haiku 5.5 (`claude-haiku-5-5`, $0.10 in and $0.50 out per million tokens) by default, through
+    the official `@anthropic-ai/sdk`. Claude Sonnet 5.5 (`claude-sonnet-5-5`, $2 and $10) is the step up. The model ID
+    is one constant. Before merge, run both on her real logs from G1, and keep Haiku unless its answers are vague or
+    wrong. Haiku has no server-side fallback on a refusal, so the app shows a plain "couldn't answer this one" message.
   - **Cost:** Tyler sets a monthly spending cap on the key in the Anthropic console before setup.
 - [ ] Result you see: on the `exceptions` fixture, the button sends the previewed text and shows the answer.
 - [ ] Unit: the key never appears in any log, report zip or renderer message. The text sent matches the preview,
