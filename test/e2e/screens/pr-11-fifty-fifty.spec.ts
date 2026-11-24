@@ -124,15 +124,7 @@ test('stopped', async () => {
 })
 
 test('damaged-progress', async () => {
-  // Main's fifty:get fails with these words when fiftyfifty.json is there but cannot be read. stubIpc only
-  // answers with values, so this one handler is swapped by hand.
-  await running.app.evaluate(({ ipcMain }) => {
-    ipcMain.removeHandler('fifty:get')
-    ipcMain.handle('fifty:get', async () => {
-      throw new Error('fifty-progress-damaged')
-    })
-  })
-  await running.page.reload({ waitUntil: 'domcontentloaded' })
+  await stubIpc(running.app, { 'fifty:get': { status: 'damaged' } })
   await expect(running.page.getByText("The 50/50 test's progress file is damaged")).toBeVisible()
   await expect(running.page.getByRole('button', { name: 'Put everything back and stop' })).toBeVisible()
   await shoot(running.page, SLUG, 'damaged-progress')

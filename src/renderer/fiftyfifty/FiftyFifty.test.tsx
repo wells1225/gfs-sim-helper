@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { FiftyFifty, FiftyResult, JournalEntry, Scan } from '../../shared/model.ts'
+import type { FiftyFifty, FiftyGet, FiftyResult, FiftyStopResult, JournalEntry, Scan } from '../../shared/model.ts'
 import { sampleFiftyFifty, sampleFinding, sampleJournalEntry, sampleScan } from '../../shared/testing/sample.ts'
 import { ApiProvider } from '../api.tsx'
 import { NavProvider, useNav, type Route } from '../nav.tsx'
@@ -64,9 +64,8 @@ const moved = (groupId: string, groupLabel: string, status: JournalEntry['status
     status,
     origin: { by: 'fifty-fifty', sessionId, round: 1 }
   })
-/** What Electron hands the screen when main's fifty:get fails on a damaged progress file. */
-const damagedGet = () =>
-  Promise.reject(new Error("Error invoking remote method 'fifty:get': Error: fifty-progress-damaged"))
+/** What fifty:get answers when the progress file is there but cannot be read. */
+const damagedGet = (): FiftyGet => ({ status: 'damaged' })
 const GAME_OPEN: FiftyResult = { status: 'refused', refusal: { why: 'gate', refusal: { reason: 'game-running' } } }
 const channels = (api: { calls: { channel: string }[] }) => api.calls.map((c) => c.channel)
 
@@ -642,8 +641,16 @@ describe('a damaged progress file', () => {
   })
 
   it('stays and explains when putting back is refused or does not finish', async () => {
-    const notFinished = () => Promise.reject(new Error('The 50/50 put-back stopped part way'))
-    for (const [stop, says] of [[GAME_OPEN, /The Sims 4 is still open\. Save and close the game, then click Put everything back and stop again\./], [notFinished, /couldn't finish putting your mods back/]] as const) {
+    const failed = () => Promise.reject(new Error('boom'))
+    const partWay: FiftyStopResult = { status: 'stopped-part-way', state: null, notBack: ['Hair', 'Wicked Wardrobe'], detail: 'disk hiccup' }
+    const noneNamed: FiftyStopResult = { ...partWay, notBack: [] }
+    for (const [stop, says] of [
+      [GAME_OPEN, /The Sims 4 is still open\. Save and close the game, then click Put everything back and stop again\./],
+      [failed, /couldn't finish putting your mods back/],
+      // History cannot put mods back while the file is damaged, so the words point at the button, not at History.
+      [partWay, /^Some mods are not back in your Mods folder yet: Hair and Wicked Wardrobe\. Wait a moment, then click Put everything back and stop again\.$/],
+      [noneNamed, /^We couldn't finish stopping the test\. Wait a moment, then click Put everything back and stop again\.$/]
+    ] as const) {
       const { user } = setup(<ResumeBanner />, { 'fifty:get': damagedGet, 'fifty:stop': stop }, { route: { screen: 'about' } })
       await user.click(await screen.findByRole('button', { name: 'Put everything back and stop' }))
       expect(await screen.findByText(says)).toBeInTheDocument()
@@ -651,6 +658,20 @@ describe('a damaged progress file', () => {
       expect(screen.getByRole('button', { name: 'Put everything back and stop' })).toBeEnabled()
       cleanup()
     }
+  })
+
+  it('a stop from the banner that finds the file damaged switches to the damaged card and names what is not back', async () => {
+    const r2 = round({ phase: 'awaiting-answer' })
+    const { user } = setup(
+      <ResumeBanner />,
+      { 'fifty:get': r2, 'fifty:stop': { status: 'stopped-part-way', state: null, notBack: ['Hair'], detail: 'disk hiccup' } },
+      { route: { screen: 'about' } }
+    )
+    await user.click(await screen.findByRole('button', { name: 'Put everything back and stop' }))
+    await user.click(screen.getByRole('button', { name: 'Put everything back and stop' }))
+    expect(await screen.findByText(TITLE)).toBeInTheDocument()
+    expect(screen.getByText(/not back in your Mods folder yet: Hair\. Wait a moment/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument()
   })
 
   it('names a mod that is still not back after the file is removed', async () => {

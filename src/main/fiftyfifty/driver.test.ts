@@ -22,7 +22,6 @@ import {
   getState,
   giveAnswer,
   loadState,
-  PROGRESS_DAMAGED,
   start,
   stop,
   type FiftyDeps
@@ -773,10 +772,10 @@ describe('a damaged progress file', () => {
     expect((await readSaved(makeDeps())).kind).toBe('damaged')
   })
 
-  it('getState says so with the marker the screens look for, and still answers null with no file', async () => {
+  it('getState answers the damaged shape, and still answers null with no file', async () => {
     expect(await getState(makeDeps())).toBeNull()
     await damage()
-    await expect(getState(makeDeps())).rejects.toThrow(PROGRESS_DAMAGED)
+    expect(await getState(makeDeps())).toEqual({ status: 'damaged' })
   })
 
   it('start refuses and leaves the file alone, so the groups the test set aside are not orphaned', async () => {
@@ -830,11 +829,33 @@ describe('a damaged progress file', () => {
     seedAside()
     await damage()
     fixes.partWayAfter = 1
-    await expect(stop(makeDeps())).rejects.toThrow()
+    // dir:g0 did get back, and dir:hers is hers: only the test's group still out of Mods is named.
+    expect(await stop(makeDeps())).toEqual({
+      status: 'stopped-part-way',
+      state: null,
+      notBack: ['dir:g1'],
+      detail: 'disk hiccup'
+    })
     expect(await stateFileExists()).toBe(true)
+    expect(fixes.asideIds()).toEqual(['dir:g1', 'dir:hers'])
 
     fixes.journal = null
     expect(await stop(makeDeps())).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
+    expect(await stateFileExists()).toBe(true)
+  })
+
+  it('a put-back that throws ends part way too, naming every group of the test still out of Mods', async () => {
+    seedAside()
+    await damage()
+    fixes.putBack = async () => {
+      throw new Error('undo blew up')
+    }
+    expect(await stop(makeDeps())).toEqual({
+      status: 'stopped-part-way',
+      state: null,
+      notBack: ['dir:g0', 'dir:g1'],
+      detail: 'undo blew up'
+    })
     expect(await stateFileExists()).toBe(true)
   })
 })

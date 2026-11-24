@@ -84,6 +84,14 @@ describe('fiftyHandlers', () => {
     expect(log).toEqual(['beginRound:start', 'beginRound:end', 'get'])
   })
 
+  // 'ok' with no session would show her the Start button over a damaged file.
+  it('a late answer over a damaged progress file is refused, never ok with no session', async () => {
+    const api: FiftyApi = { ...recordingApi([], { beginRound: 20 }), loadState: async () => ({ status: 'damaged' }) }
+    const h = makeFiftyHandlers(fakeCtx(), api)
+    const [, late] = await Promise.all([h['fifty:begin-round'](), h['fifty:answer']({ answer: 'worked', round: 0 })])
+    expect(late).toEqual({ status: 'refused', refusal: { why: 'fifty-fifty-running' } })
+  })
+
   it('forwards the round to giveAnswer', async () => {
     const seen: unknown[] = []
     const api: FiftyApi = {
@@ -107,14 +115,13 @@ describe('fiftyHandlers', () => {
     expect(await h['fifty:get']()).toEqual(OK.status === 'ok' ? OK.state : null)
   })
 
-  // The screens look for these exact words in the failure (words.ts keeps its own copy: it cannot import main).
-  it('the real fifty:get fails naming fifty-progress-damaged when the progress file cannot be read', async () => {
+  it('the real fifty:get answers the damaged shape when the progress file cannot be read', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'fifty-handlers-'))
     try {
       const h = fiftyHandlers({ session: { scan: null }, paths: { stateDir } } as unknown as AppContext)
       expect(await h['fifty:get']()).toBeNull()
       await writeFile(join(stateDir, 'fiftyfifty.json'), '{"phase": "awaiting')
-      await expect(h['fifty:get']()).rejects.toThrow('fifty-progress-damaged')
+      expect(await h['fifty:get']()).toEqual({ status: 'damaged' })
     } finally {
       await rm(stateDir, { recursive: true, force: true })
     }
