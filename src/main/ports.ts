@@ -23,12 +23,12 @@ export interface Clock {
 
 export interface AppPaths {
   dataDir: string // %LOCALAPPDATA%\SimsHelper, never Electron's userData
-  backupsDir: string
-  holdingDir: string // <dataDir>\backups\<backupId>\ and <dataDir>\holding\<entryId>\Mods\<relPath>
-  journalDir: string
-  stateDir: string // <dataDir>\journal\<entryId>.json and <dataDir>\state\{settings,fiftyfifty}.json
-  keyFile: string
-  desktopDir: string // <dataDir>\assist\key.bin
+  backupsDir: string // <dataDir>\backups\<backupId>\
+  holdingDir: string // <dataDir>\holding\<entryId>\Mods\<relPath>
+  journalDir: string // <dataDir>\journal\<entryId>.json
+  stateDir: string // <dataDir>\state\{settings,fiftyfifty}.json
+  keyFile: string // <dataDir>\assist\key.bin
+  desktopDir: string // where the report zip is saved
   oneDriveRoots: string[] // from the OneDrive environment variables. A path part starting 'OneDrive' also counts
   curseForgeInstanceFile: string | null // %APPDATA%\CurseForge\agent\GameInstances\AddonGameInstance.json
 }
