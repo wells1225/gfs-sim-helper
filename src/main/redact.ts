@@ -46,10 +46,9 @@ export function makeRedactor(env: Record<string, string | undefined>): (text: st
 
   candidates.sort((a, b) => b.length - a.length)
   const alternation = candidates.map(escapeRegExp).join('|')
-  const pattern = new RegExp(
-    `(?<=^|[\\\\/])(?:${alternation})(?=$|[\\\\/])|(?<=[\\\\/])(?:${alternation})(?=["'\\r\\n])`,
-    'gi'
-  )
+  // A whole path segment: after a slash or backslash (or the start of the text), and not followed by a letter, mark,
+  // digit or underscore, so "Annabelle" and "Ann2" stay while "Ann<", "Ann)", "Ann." and "Ann-" are redacted.
+  const pattern = new RegExp(`(?<=^|[\\\\/])(?:${alternation})(?![\\p{L}\\p{M}\\p{N}_])`, 'giu')
 
   return (text: string) => text.replace(pattern, '<user>')
 }
