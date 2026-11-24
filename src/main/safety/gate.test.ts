@@ -976,6 +976,8 @@ describe('paths Windows would read differently are refused', () => {
     ['a data stream', (w) => `${w.inFolder('Mods', 'a.package')}:hidden`],
     ['a device name', (w) => w.inFolder('Mods', 'NUL')],
     ['a device name with an extension', (w) => w.inFolder('Mods', 'con.package')],
+    ['a device name with spaces before the extension', (w) => w.inFolder('Mods', 'NUL .package')],
+    ['a COM device name with spaces before the extension', (w) => w.inFolder('Mods', 'COM1   .package')],
     ['a wildcard', (w) => w.inFolder('Mods', '*.package')],
     ['an empty path', () => '']
   ]
@@ -1491,7 +1493,10 @@ describe('sortPath, the name check, with Windows paths (runs on any machine)', (
     [`${sims}\\Mods\\a.package `, 'mods malformed'],
     [`${sims}\\Mods\\NUL`, 'mods malformed'],
     [`${sims}\\Mods\\con.package`, 'mods malformed'],
+    [`${sims}\\Mods\\NUL .package`, 'mods malformed'],
+    [`${sims}\\Mods\\CON   .txt`, 'mods malformed'],
     [`${sims}\\Mods\\COM1`, 'mods malformed'],
+    [`${sims}\\Mods\\COM1 .package`, 'mods malformed'],
     [`${sims}\\Mods\\what?.package`, 'mods malformed'],
     [`${sims}\\Mods\\\\a.package`, 'mods malformed'],
     [`${sims}\\Mods\\`, 'mods root malformed'],
