@@ -181,6 +181,8 @@ export function sampleJournalEntry(overrides: Partial<JournalEntry> = {}): Journ
     origin: { by: 'fix' },
     folderPath: SAMPLE_FOLDER_PATH,
     groupId: null,
+    groupLabel: null,
+    hasScript: false,
     backupId: '20261124-120400-e5f6',
     steps: [
       {

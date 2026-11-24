@@ -13,7 +13,9 @@ import type {
   KeyStatus,
   ModGroup,
   Progress,
-  Scan
+  RelPath,
+  Scan,
+  Sha256
 } from '../shared/model.ts'
 import type { Host } from './locate/host.ts' // PR 3's Host is used as it is, never widened
 
@@ -76,7 +78,7 @@ export interface GateDeps {
 
 export type PlannedStep =
   | { kind: 'move'; from: string; to: string }
-  | { kind: 'edit'; path: string; newText: string }
+  | { kind: 'edit'; path: string; newText: string; beforeSha256: Sha256 } // the file's hash when it was read; runAction refuses 'file-changed' if it differs
   | { kind: 'remove-cache'; path: string }
 
 export interface ActionPlan {
@@ -86,7 +88,18 @@ export interface ActionPlan {
   origin: JournalOrigin
   folderPath: string
   groupId: string | null
+  groupLabel: string | null // ModGroup.label for a disable or set-aside of one group, else null
+  hasScript: boolean // ModGroup.hasScript for that group, else false
   steps: PlannedStep[]
+}
+
+/** planFix's third argument: where to plan, plus what applyFix read from the disk first. */
+export interface PlanFixAt {
+  holdingDir: string
+  entryId: string
+  optionsText?: string // Options.ini as read, for 'turn-mods-on'
+  existingCaches?: readonly string[] // the CACHE_NAMES present now, for 'clear-caches'
+  existingModPaths?: readonly RelPath[] // destinations already taken, for 'move-script-up'
 }
 
 export type OnProgress = (progress: Progress) => void

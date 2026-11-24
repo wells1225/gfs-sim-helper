@@ -287,6 +287,8 @@ export interface JournalEntry {
   origin: JournalOrigin
   folderPath: string
   groupId: string | null
+  groupLabel: string | null // the group's label when the entry is about one group, copied from ActionPlan
+  hasScript: boolean // the group has a .ts4script; false when groupId is null
   backupId: string
   steps: JournalStep[]
   status: 'in-progress' | 'done' | 'undone' | 'needs-attention'
@@ -305,6 +307,7 @@ export type FixRefusal =
   | { why: 'backup'; reason: BackupRefusal | 'backup-failed' }
   | { why: 'out-of-date'; detail: 'no-scan' | 'unknown-finding' | 'unknown-group' | 'file-changed' | 'nothing-to-do' }
   | { why: 'fifty-fifty-running' }
+  | { why: 'not-started' } // the action failed before anything changed (for example the journal could not be written)
 
 export type FixOutcome =
   | { status: 'done'; entry: JournalEntry }

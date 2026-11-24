@@ -7,14 +7,15 @@ import type { Page } from '@playwright/test'
 import { afterAll, describe, expect, it } from 'vitest'
 import { readFile, rm } from 'node:fs/promises'
 import { INVOKE_CHANNELS } from '../shared/ipc.ts'
-import type { BackupRefusal, GateRefusal, GameRunState as ModelGameRunState } from '../shared/model.ts'
+import type { BackupRefusal, FixRefusal, GateRefusal, GameRunState as ModelGameRunState } from '../shared/model.ts'
+import { sampleJournalEntry } from '../shared/testing/sample.ts'
 import { appPaths } from './app-paths.ts'
 import { assistHandlers } from './assist/handlers.ts'
 import { fiftyHandlers } from './fiftyfifty/handlers.ts'
 import { fixHandlers } from './fixes/handlers.ts'
 import { collectHandlers } from './ipc.ts'
 import type { Host } from './locate/host.ts'
-import type { ActionPlan } from './ports.ts'
+import type { ActionPlan, PlanFixAt, PlannedStep } from './ports.ts'
 import type { GameRunState as LocateGameRunState } from './locate/process.ts'
 import { scanHandlers } from './scan/handlers.ts'
 import { createContext } from './services.ts'
@@ -164,8 +165,51 @@ describe('backup and action plan contract', () => {
       origin: { by: 'fix' },
       folderPath: 'C:\\Sims',
       groupId: 'g1',
+      groupLabel: 'Group one',
+      hasScript: false,
       steps: []
     }
     expect(plan.entryId).toBe('entry-1')
+  })
+})
+
+describe('fix contract requests from PR 10', () => {
+  it('has a refusal for an action that failed before anything changed', () => {
+    const refusal: FixRefusal = { why: 'not-started' }
+    expect(refusal.why).toBe('not-started')
+  })
+
+  it('carries the hash the edit was planned against, so runAction can refuse a changed file', () => {
+    const step: PlannedStep = { kind: 'edit', path: 'C:\\Sims\\Options.ini', newText: 'a', beforeSha256: 'b'.repeat(64) }
+    expect(step.kind === 'edit' && step.beforeSha256).toBe('b'.repeat(64))
+  })
+
+  it('carries the group label and script flag on the plan and on the journal entry', () => {
+    const plan: ActionPlan = {
+      entryId: 'entry-2',
+      action: 'disable-group',
+      summary: 'Set aside Wicked Wardrobe',
+      origin: { by: 'fix' },
+      folderPath: 'C:\\Sims',
+      groupId: 'cf:901234',
+      groupLabel: 'Wicked Wardrobe',
+      hasScript: true,
+      steps: []
+    }
+    const entry = sampleJournalEntry({ groupId: plan.groupId, groupLabel: plan.groupLabel, hasScript: plan.hasScript })
+    expect([entry.groupLabel, entry.hasScript]).toEqual(['Wicked Wardrobe', true])
+    expect([sampleJournalEntry().groupLabel, sampleJournalEntry().hasScript]).toEqual([null, false])
+  })
+
+  it('lets planFix take what applyFix read from the disk', () => {
+    const at: PlanFixAt = {
+      holdingDir: 'C:\\Data\\holding',
+      entryId: 'entry-3',
+      optionsText: '[options]\n',
+      existingCaches: ['localthumbcache.package'],
+      existingModPaths: ['Scripts/a.ts4script']
+    }
+    const bare: PlanFixAt = { holdingDir: 'C:\\Data\\holding', entryId: 'entry-3' }
+    expect([at.optionsText, bare.optionsText]).toEqual(['[options]\n', undefined])
   })
 })
