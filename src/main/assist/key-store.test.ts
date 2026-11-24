@@ -5,7 +5,33 @@ import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { appPaths } from '../app-paths.ts'
 import type { AssistMessage, AssistReply, Gate, GateResult, KeyStoreDeps, SafeStorageLike, WriteRequest } from '../ports.ts'
-import { clearKey, keyStatus, sendWithKey, setKey } from './key-store.ts'
+import { clearKey, guardedFetch, keyStatus, sendWithKey, setKey } from './key-store.ts'
+
+// The real reader, with a note of every file opened and how many bytes were read from it.
+const reads = vi.hoisted(() => ({ opened: [] as { file: string; size: number; bytesRead: number; closed: boolean }[] }))
+vi.mock('../fs-read.ts', async (original) => {
+  const real = await original<typeof import('../fs-read.ts')>()
+  return {
+    ...real,
+    async openForRead(file: string) {
+      const handle = await real.openForRead(file)
+      const note = { file, size: handle.size, bytesRead: 0, closed: false }
+      reads.opened.push(note)
+      return {
+        size: handle.size,
+        async read(buffer: Uint8Array, position: number, length?: number) {
+          const count = await handle.read(buffer, position, length)
+          note.bytesRead += count
+          return count
+        },
+        async close() {
+          note.closed = true
+          await handle.close()
+        }
+      }
+    }
+  }
+})
 
 // A made-up value. It is not shaped like a real key on purpose.
 const KEY = 'FAKE-KEY-not-real-0123456789-abcdefghij'
@@ -124,6 +150,7 @@ function expectNoKey(value: unknown, key = KEY): void {
 beforeEach(async () => {
   tmp = await mkdtemp(join(tmpdir(), 'sims-helper-key-'))
   output = []
+  reads.opened = []
   for (const method of ['log', 'info', 'warn', 'error', 'debug', 'trace'] as const) {
     vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
       output.push(textIn(args))
@@ -380,6 +407,29 @@ describe('storing the key', () => {
     expect(transport).not.toHaveBeenCalled()
     expect(gate.requests).toEqual([])
     expect(Uint8Array.from(await readFile(keyFile))).toEqual(bytes)
+  })
+
+  it('refuses a key file over the size limit by its size, without reading it into memory', async () => {
+    const { deps, keyFile } = rig()
+    await mkdir(dirname(keyFile), { recursive: true })
+    await writeFile(keyFile, Uint8Array.from([1, ...SEAL_MARK, ...new Array<number>(70_000).fill(0x31)]))
+
+    expect(await keyStatus(deps)).toBe('not-set')
+
+    expect(reads.opened).toEqual([{ file: keyFile, size: 70_003, bytesRead: 0, closed: true }])
+  })
+
+  it('reads a stored key through one bounded read and closes the file', async () => {
+    const { deps, keyFile } = rig()
+    await setKey(deps, KEY)
+    reads.opened = []
+
+    expect(await keyStatus(deps)).toBe('set')
+
+    expect(reads.opened).toHaveLength(1)
+    expect(reads.opened[0]).toMatchObject({ file: keyFile, closed: true })
+    expect(reads.opened[0]!.bytesRead).toBe(reads.opened[0]!.size)
+    expect(reads.opened[0]!.size).toBeLessThan(1024)
   })
 
   it('counts a stored value that is not a usable key as not-set', async () => {
@@ -795,5 +845,81 @@ describe('the built-in transport (the real SDK on a fake fetch)', () => {
     expect(calls[0]!.headers.get('x-injected')).toBeNull()
     expect(textIn([...calls[0]!.headers])).not.toContain('FAKE-ENV')
     expect(output).toEqual([])
+  })
+
+  it('sends only its own four headers, whatever ANTHROPIC_CUSTOM_HEADERS names', async () => {
+    vi.stubEnv(
+      'ANTHROPIC_CUSTOM_HEADERS',
+      [
+        'anthropic-version: FAKE-ENV-VERSION',
+        'Content-Type: text/fake-env',
+        'Accept: text/fake-env',
+        'User-Agent: FAKE-ENV-AGENT',
+        'X-Api-Key: FAKE-ENV-API-KEY',
+        'X-Stainless-Lang: FAKE-ENV-LANG',
+        'Cookie: FAKE-ENV-COOKIE',
+        'X-Forwarded-Host: fake-env.example'
+      ].join('\n')
+    )
+    const calls = answerWith(() => json(200, message([{ type: 'text', text: 'ok' }])))
+
+    const reply = await sendWithKey(await stored(), MESSAGE)
+
+    expect(reply).toEqual({ status: 'text', text: 'ok' })
+    expect(calls).toHaveLength(1)
+    expect(Object.fromEntries(calls[0]!.headers)).toEqual({
+      accept: 'application/json',
+      'anthropic-version': expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      authorization: `Bearer ${KEY}`,
+      'content-type': 'application/json'
+    })
+    expect(output).toEqual([])
+  })
+
+  it('does not follow a redirect that stays on api.anthropic.com either', async () => {
+    const calls = answerWith(
+      () => new Response(null, { status: 302, headers: { location: 'https://api.anthropic.com/v1/elsewhere' } })
+    )
+
+    const reply = await sendWithKey(await stored(), MESSAGE)
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.redirect).toBe('manual')
+    expect(reply).toEqual({ status: 'failed', why: 'error' })
+    expect(output).toEqual([])
+  })
+
+  it.each([
+    ['another host', 'https://elsewhere.example/v1/messages'],
+    ['a host that only starts with the right name', 'https://api.anthropic.com.elsewhere.example/v1/messages'],
+    ['plain http', 'http://api.anthropic.com/v1/messages'],
+    ['another port', 'https://api.anthropic.com:8443/v1/messages'],
+    ['a name and password in the address', 'https://someone:FAKE-PASSWORD@api.anthropic.com/v1/messages'],
+    ['an address that is not one', 'not an address']
+  ])('the guarded fetch refuses %s and sends nothing', async (_name, url) => {
+    const calls = answerWith(() => json(200, message([{ type: 'text', text: 'ok' }])))
+    const init = { method: 'POST', body: '{}', headers: { 'x-injected': 'yes' } }
+
+    for (const input of [url, ...(URL.canParse(url) ? [new URL(url), new Request(url, init)] : [])]) {
+      const response = await guardedFetch(KEY)(input, init)
+
+      expect(response.ok).toBe(false)
+      expect(response.headers.get('location')).toBeNull()
+      expect(response.headers.get('x-should-retry')).toBe('false')
+    }
+    expect(calls).toEqual([])
+    expect(output).toEqual([])
+  })
+
+  it('the guarded fetch refuses a Request object and a body that is not text, even for the right address', async () => {
+    const calls = answerWith(() => json(200, message([{ type: 'text', text: 'ok' }])))
+    const url = 'https://api.anthropic.com/v1/messages'
+
+    const asRequest = await guardedFetch(KEY)(new Request(url, { method: 'POST', body: '{}' }))
+    const asBytes = await guardedFetch(KEY)(url, { method: 'POST', body: new Uint8Array([1, 2, 3]) })
+    const asGet = await guardedFetch(KEY)(url, { method: 'GET' })
+
+    expect([asRequest.ok, asBytes.ok, asGet.ok]).toEqual([false, false, false])
+    expect(calls).toEqual([])
   })
 })
