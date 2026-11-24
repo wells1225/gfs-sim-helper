@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { lstat, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type {
@@ -18,18 +19,11 @@ import {
   type FixDeps,
   type GroupsOutcome,
   type OnProgress,
+  type PlanFixAt,
   type PlannedStep
 } from '../ports.ts'
 import { DISABLE, holdingModPath } from './disable.ts'
 import { editOptionsIni } from './options-ini.ts'
-
-export interface PlanFixAt {
-  holdingDir: string
-  entryId: string
-  optionsText?: string
-  existingCaches?: readonly string[]
-  existingModPaths?: readonly RelPath[]
-}
 
 function normRelPath(relPath: string): string {
   return relPath.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '').toLowerCase()
@@ -62,18 +56,53 @@ function describeRefusalDetail(refusal: FixRefusal): string {
       return `Stopped because files changed (${refusal.detail})`
     case 'fifty-fifty-running':
       return 'Stopped because a 50/50 test is in progress'
+    case 'not-started':
+      return 'Stopped before anything changed'
   }
 }
 
-export function extractGroupLabel(entry: JournalEntry): string {
-  const summary = entry.summary.trim()
-  for (const prefix of ['Set aside ', 'Turned off ', 'Disabled ']) {
-    if (summary.startsWith(prefix) && summary.length > prefix.length) {
-      return summary.slice(prefix.length)
-    }
+/** Set aside one group: the plan for it, with its label and script flag for History and "Your mods". */
+function groupPlan(
+  group: ModGroup,
+  at: { modsDir: string; holdingDir: string; entryId: string },
+  origin: JournalOrigin,
+  folderPath: string
+): ActionPlan {
+  return {
+    entryId: at.entryId,
+    action: 'disable-group',
+    summary: `Set aside ${group.label}`,
+    origin,
+    folderPath,
+    groupId: group.id,
+    groupLabel: group.label,
+    hasScript: group.hasScript,
+    steps: DISABLE.plan(group, at)
   }
-  return summary || entry.groupId || entry.id
 }
+
+/**
+ * A set-aside that stopped part way is undone at once, so no group is left half moved. When the undo works the
+ * group is fully back: 'rolled-back'. When it does not (refused, stopped, or threw), the entry stays
+ * needs-attention and the original outcome stands.
+ */
+async function rollBackHalfDone(
+  deps: FixDeps,
+  outcome: Extract<FixOutcome, { status: 'stopped-part-way' }>,
+  onProgress?: OnProgress
+): Promise<'rolled-back' | Extract<FixOutcome, { status: 'stopped-part-way' }>> {
+  let undone: FixOutcome
+  try {
+    undone = await deps.safety.undo(outcome.entry.id, onProgress)
+  } catch {
+    return outcome
+  }
+  if (undone.status === 'done') return 'rolled-back'
+  if (undone.status === 'stopped-part-way') return { ...outcome, entry: undone.entry }
+  return outcome
+}
+
+const NOT_STARTED: FixRefusal = { why: 'not-started' }
 
 function summarizeSetAsideFiles(files: readonly ModFile[]): string {
   const n = files.length
@@ -146,7 +175,10 @@ export function planFix(
           origin,
           folderPath,
           groupId: null,
-          steps: [{ kind: 'edit', path: join(folderPath, 'Options.ini'), newText }]
+          groupLabel: null,
+          hasScript: false,
+          // The UTF-8 round trip in applyFix makes these the very bytes it read.
+          steps: [{ kind: 'edit', path: join(folderPath, 'Options.ini'), newText, beforeSha256: sha256Text(at.optionsText) }]
         }
       }
     }
@@ -213,6 +245,8 @@ export function planFix(
           origin,
           folderPath,
           groupId: null,
+          groupLabel: null,
+          hasScript: false,
           steps
         }
       }
@@ -265,6 +299,8 @@ export function planFix(
           origin,
           folderPath,
           groupId: null,
+          groupLabel: null,
+          hasScript: false,
           steps
         }
       }
@@ -301,6 +337,8 @@ export function planFix(
           origin,
           folderPath,
           groupId: null,
+          groupLabel: null,
+          hasScript: false,
           steps
         }
       }
@@ -322,23 +360,9 @@ export function planFix(
         }
       }
 
-      const steps = DISABLE.plan(group, {
-        modsDir,
-        holdingDir: at.holdingDir,
-        entryId: at.entryId
-      })
-
       return {
         status: 'planned',
-        plan: {
-          entryId: at.entryId,
-          action: 'disable-group',
-          summary: `Set aside ${group.label}`,
-          origin,
-          folderPath,
-          groupId: group.id,
-          steps
-        }
+        plan: groupPlan(group, { modsDir, holdingDir: at.holdingDir, entryId: at.entryId }, origin, folderPath)
       }
     }
 
@@ -425,7 +449,12 @@ export async function applyFix(
     return planned
   }
 
-  return deps.safety.runAction(planned.plan, onProgress)
+  const outcome = await deps.safety.runAction(planned.plan, onProgress)
+  if (request.fix === 'disable-group' && outcome.status === 'stopped-part-way') {
+    const rolled = await rollBackHalfDone(deps, outcome, onProgress)
+    return rolled === 'rolled-back' ? { status: 'refused', refusal: NOT_STARTED } : rolled
+  }
+  return outcome
 }
 
 export async function setAside(
@@ -445,25 +474,8 @@ export async function setAside(
   for (const group of groups) {
     if (group.files.length === 0) continue
 
-    const entryId = deps.newId()
-    const steps = DISABLE.plan(group, {
-      modsDir,
-      holdingDir: deps.paths.holdingDir,
-      entryId
-    })
-
-    const outcome = await deps.safety.runAction(
-      {
-        entryId,
-        action: 'disable-group',
-        summary: `Set aside ${group.label}`,
-        origin,
-        folderPath,
-        groupId: group.id,
-        steps
-      },
-      onProgress
-    )
+    const at = { modsDir, holdingDir: deps.paths.holdingDir, entryId: deps.newId() }
+    const outcome = await deps.safety.runAction(groupPlan(group, at, origin, folderPath), onProgress)
 
     if (outcome.status === 'done') {
       entries.push(outcome.entry)
@@ -481,12 +493,14 @@ export async function setAside(
       }
     }
 
-    entries.push(outcome.entry)
-    return {
-      status: 'stopped-part-way',
-      entries,
-      detail: outcome.detail
+    const rolled = await rollBackHalfDone(deps, outcome, onProgress)
+    if (rolled === 'rolled-back') {
+      // The half-moved group is fully back; only whole groups before it stay set aside.
+      if (entries.length === 0) return { status: 'refused', refusal: NOT_STARTED }
+      return { status: 'stopped-part-way', entries, detail: outcome.detail }
     }
+    entries.push(rolled.entry)
+    return { status: 'stopped-part-way', entries, detail: rolled.detail }
   }
 
   return { status: 'done', entries }
@@ -576,6 +590,8 @@ export async function clearCaches(deps: FixDeps, folderPath: string): Promise<Fi
     origin: { by: 'fix' },
     folderPath,
     groupId: null,
+    groupLabel: null,
+    hasScript: false,
     steps
   })
 }
@@ -597,13 +613,23 @@ export async function disabledGroups(deps: FixDeps, folderPath: string): Promise
     if (seen.has(entry.groupId)) continue
     seen.add(entry.groupId)
 
-    result.push({
-      groupId: entry.groupId,
-      label: extractGroupLabel(entry),
-      entryId: entry.id,
-      at: entry.at
-    })
+    result.push(disabledGroupOf(entry, entry.groupId))
   }
 
   return result
+}
+
+/** "Your mods" row for a done disable entry. The label is the entry's own, never cut out of its summary. */
+export function disabledGroupOf(entry: JournalEntry, groupId: string): DisabledGroup {
+  return {
+    groupId,
+    label: entry.groupLabel ?? 'A mod',
+    entryId: entry.id,
+    at: entry.at,
+    origin: entry.origin.by
+  }
+}
+
+function sha256Text(text: string): string {
+  return createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex')
 }

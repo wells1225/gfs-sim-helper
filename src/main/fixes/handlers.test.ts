@@ -238,7 +238,8 @@ describe('fixHandlers', () => {
               groupId: 'cf:901234',
               label: 'Wicked Wardrobe',
               entryId: 'e-1',
-              at: '2026-11-24T12:00:00.000Z'
+              at: '2026-11-24T12:00:00.000Z',
+              origin: 'fix' as const
             }
           ].filter(() => folderPath.length > 0)
         }
@@ -263,7 +264,8 @@ describe('fixHandlers', () => {
         groupId: 'cf:901234',
         label: 'Wicked Wardrobe',
         entryId: 'e-1',
-        at: '2026-11-24T12:00:00.000Z'
+        at: '2026-11-24T12:00:00.000Z',
+        origin: 'fix'
       }
     ])
 

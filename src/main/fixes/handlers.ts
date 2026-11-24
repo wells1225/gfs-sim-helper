@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import type { Handlers } from '../../shared/ipc.ts'
 import type { DisabledGroup, FixCall, FixOutcome } from '../../shared/model.ts'
 import type { AppContext } from '../ports.ts'
-import { extractGroupLabel } from './index.ts'
+import { disabledGroupOf } from './index.ts'
 
 export type FixChannel = 'backup:status' | 'fix:apply' | 'journal:list' | 'journal:undo' | 'groups:disabled'
 
@@ -72,16 +72,12 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
   /**
    * runAction throws only when its journal entry could not be written, before any file moved, so a throw here
    * becomes a calm refusal. The error text (it can hold her user name) never reaches the window.
-   * Until the contract has its own FixRefusal for this, it borrows the gate's check-failed.
    */
   async function applyCalmly(run: () => Promise<FixOutcome>): Promise<FixOutcome> {
     try {
       return await run()
     } catch {
-      return {
-        status: 'refused',
-        refusal: { why: 'gate', refusal: { reason: 'check-failed', path: ctx.paths.journalDir } }
-      }
+      return { status: 'refused', refusal: { why: 'not-started' } }
     }
   }
 
@@ -189,12 +185,7 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
         }
         if (seen.has(entry.groupId)) continue
         seen.add(entry.groupId)
-        result.push({
-          groupId: entry.groupId,
-          label: extractGroupLabel(entry),
-          entryId: entry.id,
-          at: entry.at
-        })
+        result.push(disabledGroupOf(entry, entry.groupId))
       }
       return result
     }

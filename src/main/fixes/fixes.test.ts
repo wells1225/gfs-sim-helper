@@ -440,7 +440,8 @@ describe('applyFix', () => {
       {
         kind: 'edit',
         path: join(dir, 'Options.ini'),
-        newText: '[options]\r\nfullscreen=1\r\nmodsdisabled=0\r\nscriptmodsenabled=1\r\n'
+        newText: '[options]\r\nfullscreen=1\r\nmodsdisabled=0\r\nscriptmodsenabled=1\r\n',
+        beforeSha256: expect.stringMatching(/^[0-9a-f]{64}$/)
       }
     ])
   })
@@ -520,7 +521,9 @@ describe('setAside, putBack, clearCaches and disabledGroups', () => {
 
     expect(result.status).toBe('stopped-part-way')
     if (result.status !== 'stopped-part-way') return
-    expect(result.entries.map((e) => e.groupId)).toEqual(['dir:a', 'dir:b'])
+    // The half-moved Mod B was undone at once, so only the whole group before it is reported.
+    expect(result.entries.map((e) => e.groupId)).toEqual(['dir:a'])
+    expect(safety.undoneIds).toEqual(['e-2'])
     expect(result.detail).toBe('disk full')
     expect(call).toBe(2)
   })
@@ -598,6 +601,7 @@ describe('setAside, putBack, clearCaches and disabledGroups', () => {
             summary: 'Set aside Wicked Wardrobe',
             folderPath,
             groupId: 'cf:901234',
+            groupLabel: 'Wicked Wardrobe',
             status: 'done'
           }),
           sampleJournalEntry({
@@ -629,7 +633,8 @@ describe('setAside, putBack, clearCaches and disabledGroups', () => {
         groupId: 'cf:901234',
         label: 'Wicked Wardrobe',
         entryId: 'e-1',
-        at: '2026-11-24T12:05:00.000Z'
+        at: '2026-11-24T12:05:00.000Z',
+        origin: 'fix'
       }
     ])
   })

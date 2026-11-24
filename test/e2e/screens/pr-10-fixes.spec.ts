@@ -82,6 +82,7 @@ function buildHistoryEntries(): JournalEntry[] {
       summary: 'Set aside Wicked Wardrobe',
       origin: { by: 'fifty-fifty', sessionId: 'ff-session-1', round: 2 },
       groupId: 'cf:901234',
+      groupLabel: 'Wicked Wardrobe',
       status: 'undone',
       undoneAt: '2026-11-24T12:08:00.000Z'
     }),
@@ -92,6 +93,7 @@ function buildHistoryEntries(): JournalEntry[] {
       summary: 'Set aside BuildBuy',
       origin: { by: 'fifty-fifty', sessionId: 'ff-session-1', round: 1 },
       groupId: 'dir:buildbuy',
+      groupLabel: 'BuildBuy',
       status: 'undone',
       undoneAt: '2026-11-24T12:08:00.000Z'
     })
@@ -154,6 +156,8 @@ test('branch shot: recovery-notice', async () => {
       action: 'disable-group',
       summary: 'Set aside Wicked Wardrobe',
       groupId: 'cf:901234',
+      groupLabel: 'Wicked Wardrobe',
+      hasScript: true,
       status: 'needs-attention'
     })
 
@@ -177,13 +181,15 @@ test('branch shot: mods-no-check-up', async () => {
         groupId: 'cf:901234',
         label: 'Wicked Wardrobe',
         entryId: '20261124-120500-d1',
-        at: '2026-11-24T12:05:00.000Z'
+        at: '2026-11-24T12:05:00.000Z',
+        origin: 'fix'
       },
       {
         groupId: 'dir:buildbuy',
         label: 'BuildBuy',
         entryId: '20261124-114000-d2',
-        at: '2026-11-24T11:40:00.000Z'
+        at: '2026-11-24T11:40:00.000Z',
+        origin: 'fifty-fifty'
       }
     ]
 
