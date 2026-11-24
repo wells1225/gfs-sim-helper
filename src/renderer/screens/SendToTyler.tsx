@@ -124,8 +124,10 @@ export function SendToTyler() {
                 {result.why === 'no-scan'
                   ? 'Run a check-up first before creating a report.'
                   : result.why === 'write-refused'
-                    ? "We couldn't write the report file to your Desktop right now."
-                    : 'Something went wrong while building the zip. Try again in a moment.'}
+                    ? result.detail === 'check-failed'
+                      ? "We couldn't make sure your Desktop was safe to save to, so we stopped. Nothing was saved or changed. It is safe to try again."
+                      : "We couldn't write the report file to your Desktop right now. Nothing was saved or changed."
+                    : 'Something went wrong while building the zip. Nothing was changed. Try again in a moment.'}
               </AlertDescription>
             </Alert>
           )}

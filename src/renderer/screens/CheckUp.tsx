@@ -15,6 +15,7 @@ import { useEffect, useState } from 'react'
 import type { Finding, Progress, Severity } from '../../shared/model.ts'
 import { useApi } from '../api.tsx'
 import { AskEntry } from '../assist/AskEntry.tsx'
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../components/ui/accordion.tsx'
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert.tsx'
 import { Badge } from '../components/ui/badge.tsx'
 import { Button } from '../components/ui/button.tsx'
@@ -203,9 +204,21 @@ export function CheckUp() {
                 ? "We couldn't find the Sims 4 folder you picked earlier. It may have moved or OneDrive may be paused."
                 : 'Something unexpected interrupted the scan. Nothing in your game folder was changed.'}
             </p>
-            <p className="rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs text-muted-foreground">
-              {scanError.detail}
+            <p className="text-sm text-muted-foreground">
+              You can try again. If it keeps happening, tell Tyler and show him the technical details below.
             </p>
+            <Accordion type="single" collapsible>
+              <AccordionItem value="technical-details" className="border-t border-border border-b-0">
+                <AccordionTrigger className="py-2 text-xs font-medium text-muted-foreground">
+                  Technical details
+                </AccordionTrigger>
+                <AccordionContent>
+                  <p className="break-all rounded-lg bg-muted/60 px-3 py-2 font-mono text-xs text-foreground/90">
+                    {scanError.detail}
+                  </p>
+                </AccordionContent>
+              </AccordionItem>
+            </Accordion>
           </CardContent>
           <CardFooter className="gap-2">
             <Button onClick={() => setRetryCount((n) => n + 1)}>

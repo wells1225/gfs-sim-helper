@@ -183,6 +183,10 @@ export function PickFolder() {
                   onClick={() => void handleSelect(folder)}
                 >
                   {isBusy ? 'Saving choice…' : 'Use this folder'}
+                  <span className="sr-only">
+                    : folder {index + 1} of {folders.length}
+                    {isNewest ? ', the newest' : ''}, last used {formatLastUsed(folder.newestFileAt)}
+                  </span>
                 </Button>
               </CardFooter>
             </Card>
