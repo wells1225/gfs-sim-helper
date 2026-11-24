@@ -727,6 +727,112 @@ describe('stop puts every file back', () => {
   })
 })
 
+describe('keeping the culprit set aside makes it her own choice', () => {
+  const BAD = 'dir:g5'
+  const file = () => join(paths.stateDir, 'fiftyfifty.json')
+
+  async function found(): Promise<FiftyDeps> {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    const state = await playToFound(deps, BAD)
+    expect(state.culprit).toBe(BAD)
+    expect(fixes.aside.get(BAD)?.origin).toBe('fifty-fifty')
+    fixes.calls = []
+    return deps
+  }
+
+  /** The next setAside is refused, as the gate does when the game was opened between the two steps. */
+  function refuseNextSetAside(): void {
+    const real = fixes.setAside.bind(fixes)
+    fixes.setAside = async (...args) => {
+      fixes.setAside = real
+      return { status: 'refused', refusal: GAME_RUNNING }
+    }
+  }
+
+  it('puts it back and sets it aside again as her own (origin fix) before the test ends', async () => {
+    const deps = await found()
+    const done = stateOf(await finish(deps, 'keep-set-aside'))
+    expect(done).toMatchObject({ phase: 'stopped', parked: [BAD], inMods: [] })
+    expect(fixes.asideIds()).toEqual([BAD])
+    expect(fixes.aside.get(BAD)?.origin).toBe('fix')
+    expect(fixes.calls).toEqual([
+      { method: 'putBack', ids: [BAD] },
+      { method: 'setAside', ids: [BAD], origin: { by: 'fix' } }
+    ])
+    expect(await stateFileExists()).toBe(false)
+  })
+
+  it('a damaged-file stop after a finished test never touches the kept culprit', async () => {
+    const deps = await found()
+    stateOf(await finish(deps, 'keep-set-aside'))
+    // The folder is known to the stop both ways: History has a move of the test there, and the file still says.
+    fixes.journal = [
+      sampleJournalEntry({ action: 'disable-group', groupId: BAD, folderPath: FOLDER, origin: { by: 'fifty-fifty', sessionId: 's1', round: 3 }, status: 'undone' })
+    ]
+    await mkdir(paths.stateDir, { recursive: true })
+    await writeFile(file(), JSON.stringify({ phase: 'awaiting-answer', folderPath: FOLDER }))
+    fixes.calls = []
+
+    expect(await stop(deps)).toEqual({ status: 'ok', state: null })
+    expect(fixes.asideIds()).toEqual([BAD])
+    expect(fixes.calls.map((c) => c.method)).toEqual(['clearCaches'])
+    expect(await stateFileExists()).toBe(false)
+  })
+
+  it('a refused put-back keeps the session and moves nothing', async () => {
+    const deps = await found()
+    fixes.refuseNext = GAME_RUNNING
+    expect(await finish(deps, 'keep-set-aside')).toEqual({ status: 'refused', refusal: GAME_RUNNING })
+    expect(await loadState(deps)).toMatchObject({ phase: 'found', culprit: BAD })
+    expect(fixes.aside.get(BAD)?.origin).toBe('fifty-fifty')
+
+    stateOf(await finish(deps, 'keep-set-aside'))
+    expect(fixes.aside.get(BAD)?.origin).toBe('fix')
+  })
+
+  it('a refused set-aside keeps the session, and trying again only sets it aside', async () => {
+    const deps = await found()
+    refuseNextSetAside()
+    expect(await finish(deps, 'keep-set-aside')).toEqual({ status: 'refused', refusal: GAME_RUNNING })
+    expect(await loadState(deps)).toMatchObject({ phase: 'found', culprit: BAD })
+    expect(fixes.asideIds()).toEqual([])
+
+    fixes.calls = []
+    stateOf(await finish(deps, 'keep-set-aside'))
+    expect(fixes.calls).toEqual([{ method: 'setAside', ids: [BAD], origin: { by: 'fix' } }])
+    expect(fixes.aside.get(BAD)?.origin).toBe('fix')
+    expect(await stateFileExists()).toBe(false)
+  })
+
+  it('a progress file that cannot be removed keeps the session, and trying again moves nothing', async () => {
+    const deps = await found()
+    gate.next = { status: 'refused', refusal: { reason: 'game-running' } }
+    expect((await finish(deps, 'keep-set-aside')).status).toBe('refused')
+    expect(await loadState(deps)).toMatchObject({ phase: 'found' })
+    expect(fixes.aside.get(BAD)?.origin).toBe('fix')
+
+    fixes.calls = []
+    stateOf(await finish(deps, 'keep-set-aside'))
+    expect(fixes.calls).toEqual([])
+    expect(await stateFileExists()).toBe(false)
+  })
+
+  it('a culprit she turned back on from Your mods is set aside as her own', async () => {
+    const deps = await found()
+    fixes.aside.delete(BAD)
+    stateOf(await finish(deps, 'keep-set-aside'))
+    expect(fixes.calls).toEqual([{ method: 'setAside', ids: [BAD], origin: { by: 'fix' } }])
+    expect(fixes.aside.get(BAD)?.origin).toBe('fix')
+  })
+
+  it('put-back still leaves nothing aside', async () => {
+    const deps = await found()
+    stateOf(await finish(deps, 'put-back'))
+    expect(fixes.asideIds()).toEqual([])
+  })
+})
+
 describe('a damaged progress file', () => {
   const file = () => join(paths.stateDir, 'fiftyfifty.json')
   const testEntry = (groupId: string) =>
