@@ -138,10 +138,15 @@ export function moduleUseProblem(relFile: string, use: ModuleUse, files: Readonl
     const named = use.clause?.match(/^(?:type\s+)?\{([^}]*)\}$/)
     if (!named) return `${file} must load ${specifier} with named imports only`
     for (const part of named[1]!.split(',')) {
-      const name = part.trim().split(/\s+as\s+/)[0]!.replace(/^type\s+/, '')
-      if (name === '') continue
+      const trimmed = part.trim()
+      if (trimmed === '') continue
+      const segments = trimmed.split(/\s+as\s+/)
+      const name = segments[0]!.replace(/^type\s+/, '')
       if (READ_ONLY_FS_NAMES.has(name)) continue
-      if (file === 'main/fs-read.ts' && FS_READ_EXTRA_NAMES.has(name)) continue
+      if (file === 'main/fs-read.ts' && FS_READ_EXTRA_NAMES.has(name)) {
+        if (segments.length > 1) return `${file} must not rename ${name}`
+        continue
+      }
       return `${file} imports the fs function ${name}, which is not on the read-only list`
     }
     return undefined
@@ -155,6 +160,73 @@ export function moduleUseProblem(relFile: string, use: ModuleUse, files: Readonl
   const allowed = packageName === undefined ? undefined : ALLOWED_PACKAGES[packageName]
   if (allowed === 'any' || allowed?.includes(file)) return undefined
   return `${file} may not load ${specifier}`
+}
+
+const FS_READ_WRITE_HANDLE =
+  /(?:\.\s*|\[['"`])(write|writeFile|writev|appendFile|truncate|chmod|chown|utimes|datasync|sync)\b/
+
+/** Splits the top-level comma-separated arguments of a call starting at `openParen`, or null if malformed. */
+function callArgs(source: string, openParen: number): string[] | null {
+  if (source[openParen] !== '(') return null
+  const args: string[] = []
+  let depth = 0
+  let start = openParen + 1
+  let quote: string | null = null
+  for (let i = openParen + 1; i < source.length; i += 1) {
+    const ch = source[i]!
+    if (quote !== null) {
+      if (ch === '\\') {
+        i += 1
+        continue
+      }
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch
+    } else if (ch === '(' || ch === '{' || ch === '[') {
+      depth += 1
+    } else if (ch === ')' || ch === '}' || ch === ']') {
+      if (ch === ')' && depth === 0) {
+        const tail = source.slice(start, i).trim()
+        if (tail !== '' || args.length > 0) args.push(tail)
+        return args
+      }
+      if (depth === 0) return null
+      depth -= 1
+    } else if (ch === ',' && depth === 0) {
+      args.push(source.slice(start, i).trim())
+      start = i + 1
+    }
+  }
+  return null
+}
+
+/** fs-read.ts may import open and createReadStream only to open files read-only ('r'). */
+export function fsReadProblems(source: string): string[] {
+  const problems: string[] = []
+  if (FS_READ_WRITE_HANDLE.test(source)) {
+    problems.push('main/fs-read.ts calls a write-capable FileHandle method')
+  }
+  const withoutImports = source.replace(/\bimport\b\s*(?:type\s+)?\{[^}]*\}\s*from\s*(['"])[^'"`]*\1/g, (m) =>
+    ' '.repeat(m.length)
+  )
+  for (const match of withoutImports.matchAll(/\b(open|createReadStream)\b/g)) {
+    const fn = match[1]!
+    const afterName = match.index + fn.length
+    const ws = withoutImports.slice(afterName).match(/^\s*/)![0]!.length
+    const args = callArgs(withoutImports, afterName + ws)
+    if (fn === 'open') {
+      if (args === null || args.length !== 2 || !/^(['"])r\1$/.test(args[1]!)) {
+        problems.push("main/fs-read.ts must call open with the literal 'r' flag only")
+      }
+    } else {
+      if (args === null || args.length !== 2 || !/^\{\s*flags\s*:\s*(['"])r\1\s*,?\s*\}$/.test(args[1]!)) {
+        problems.push("main/fs-read.ts must call createReadStream with { flags: 'r' } only")
+      }
+    }
+  }
+  return problems
 }
 
 /** Every reason a shipped file breaks the read and write rule. `files` is every file under src/. */
@@ -173,6 +245,7 @@ export function sourceProblems(relFile: string, source: string, files: ReadonlyS
   for (const match of source.matchAll(DANGEROUS_NAME)) {
     if (!importedAt.has(match.index)) problems.push(`${file} names the module ${match[0]} outside an import`)
   }
+  if (file === 'main/fs-read.ts') problems.push(...fsReadProblems(source))
   return problems
 }
 
@@ -308,8 +381,8 @@ describe('read and write gate lint', () => {
       ['main/inventory/index.ts', "import type { Scan } from '../../shared/model.ts'"],
       ['main/inventory/index.ts', "import { sha256File } from '../fs-read.ts'"],
       ['main/inventory/index.ts', "export { readDbpfIndex } from './index.ts'"],
-      ['main/fs-read.ts', "import { open } from 'node:fs/promises'"],
-      ['main/fs-read.ts', "import { createReadStream } from 'node:fs'"],
+      ['main/fs-read.ts', "import { open } from 'node:fs/promises'\nconst h = await open(file, 'r')"],
+      ['main/fs-read.ts', "import { createReadStream } from 'node:fs'\ncreateReadStream(file, { flags: 'r' })"],
       ['main/safety/gate.ts', "import { mkdir, open, rename, rm, unlink, utimes } from 'node:fs/promises'"],
       ['main/safety/gate.ts', "import { sha256File } from '../fs-read.ts'"],
       ['main/index.ts', "import { app, BrowserWindow } from 'electron'"],
@@ -346,10 +419,25 @@ describe('read and write gate lint', () => {
       ['main/inventory/index.ts', "import fs, { readFile } from 'node:fs'"],
       ['main/inventory/index.ts', "import 'node:fs'"],
       ['main/inventory/index.ts', "import /* ' */ { writeFile } /* ' */ from 'node:fs/promises'"],
-      // open and createReadStream belong to fs-read.ts alone
+      // open and createReadStream belong to fs-read.ts alone, and only with read-only flags
       ['main/inventory/index.ts', "import { open } from 'node:fs/promises'"],
       ['main/inventory/index.ts', "import { createReadStream } from 'node:fs'"],
       ['main/fs-read.ts', "import { createWriteStream } from 'node:fs'"],
+      ['main/fs-read.ts', "import { open } from 'node:fs/promises'\nconst h = await open(file, 'w')"],
+      ['main/fs-read.ts', "import { open } from 'node:fs/promises'\nconst h = await open(file, 'r+')"],
+      ['main/fs-read.ts', "import { open } from 'node:fs/promises'\nconst h = await open(file, 'a')"],
+      ['main/fs-read.ts', "import { open } from 'node:fs/promises'\nconst h = await open(file, flags)"],
+      ['main/fs-read.ts', "import { open } from 'node:fs/promises'\nconst h = await open(file)"],
+      ['main/fs-read.ts', "import { open as o } from 'node:fs/promises'\nconst h = await o(file, 'w')"],
+      ['main/fs-read.ts', "import { open } from 'node:fs/promises'\nconst fn = open\nawait fn(file, 'w')"],
+      ['main/fs-read.ts', "import { open } from 'node:fs/promises'\nexport { open }"],
+      ['main/fs-read.ts', "import { open } from 'node:fs/promises'\nconst h = await open(file, 'r')\nawait h.writeFile('x')"],
+      ['main/fs-read.ts', "import { open } from 'node:fs/promises'\nconst h = await open(file, 'r')\nawait h.truncate(0)"],
+      ['main/fs-read.ts', "import { createReadStream } from 'node:fs'\ncreateReadStream(file, { flags: 'w' })"],
+      ['main/fs-read.ts', "import { createReadStream } from 'node:fs'\ncreateReadStream(file, { flags: 'r+' })"],
+      ['main/fs-read.ts', "import { createReadStream } from 'node:fs'\ncreateReadStream(file, opts)"],
+      ['main/fs-read.ts', "import { createReadStream } from 'node:fs'\ncreateReadStream(file)"],
+      ['main/fs-read.ts', "import { createReadStream as crs } from 'node:fs'\ncrs(file, { flags: 'w' })"],
       // re-exports
       ['main/inventory/index.ts', "export { writeFile } from 'node:fs/promises'"],
       ['main/inventory/index.ts', "export * from 'node:fs'"],
