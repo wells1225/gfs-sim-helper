@@ -116,6 +116,7 @@ describe('FIXES_READY and words', () => {
     expect(refusalMessage({ why: 'gate', refusal: { reason: 'check-failed', path: '/sims/Mods' } })).toMatchObject({
       canRetry: true
     })
+    expect(refusalMessage({ why: 'fifty-fifty-running' })).toMatchObject({ canRetry: true })
   })
 })
 
@@ -567,5 +568,27 @@ describe('review: retries, failures and focus', () => {
     expect(await screen.findByText('Something went wrong')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('switch', { name: 'Turn Hair back on' })).toBeInTheDocument()
+  })
+})
+
+describe('review: History keeps focus', () => {
+  it('moves keyboard focus to the row when its Undo button turns into the Undone label', async () => {
+    const user = userEvent.setup()
+    const entry = sampleJournalEntry({ id: 'e-h1', summary: 'Set aside 3 zip files from Mods', status: 'done', undo: 'can-undo' })
+    const api = fakeApi({
+      'journal:list': [entry],
+      'journal:undo': { status: 'done', entry: { ...entry, status: 'undone', undoneAt: '2026-11-24T12:40:00.000Z' } }
+    })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'history' }}>
+        <HistoryScreen />
+      </Harness>
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Undo' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).not.toBeInTheDocument())
+    expect(document.activeElement).not.toBe(document.body)
+    expect(document.activeElement).toHaveTextContent('Set aside 3 zip files from Mods')
   })
 })

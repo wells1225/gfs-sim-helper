@@ -300,3 +300,21 @@ describe('review: fix:apply checks the shape of what the window sends', () => {
     expect(applied).toEqual([])
   })
 })
+
+describe('review: a fix that throws comes back as a calm refusal', () => {
+  it('returns a refusal when fixes.apply throws before anything changed (the journal entry could not be written)', async () => {
+    const { ctx } = await makeContext({
+      fixes: {
+        async apply() {
+          throw new Error('journal entry could not be written: C:\\Users\\lila\\AppData')
+        }
+      }
+    })
+    ctx.session.scan = sampleScan()
+    const handlers = fixHandlers(ctx)
+
+    const res = await handlers['fix:apply']({ via: 'finding', findingId: 'mods-off', fix: 'turn-mods-on' })
+    expect(res.status).toBe('refused')
+    expect(JSON.stringify(res)).not.toContain('lila')
+  })
+})

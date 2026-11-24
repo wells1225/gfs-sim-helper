@@ -44,6 +44,7 @@ export function HistoryScreen() {
     refusal: FixRefusal | 'unexpected' // 'unexpected': the call failed with an error
   } | null>(null)
   const [partWayMessage, setPartWayMessage] = useState<string | null>(null)
+  const [focusEntryId, setFocusEntryId] = useState<string | null>(null)
 
   const mountedRef = useRef(true)
 
@@ -97,6 +98,16 @@ export function HistoryScreen() {
 
   const rows = useMemo<HistoryRow[]>(() => groupHistoryEntries(entries), [entries])
 
+  // The Undo button turns into a label, so keep keyboard focus on its row.
+  useEffect(() => {
+    if (!focusEntryId) return
+    const active = document.activeElement
+    if (!active || active === document.body) {
+      document.getElementById(`history-entry-${focusEntryId}`)?.focus()
+    }
+    setFocusEntryId(null)
+  }, [focusEntryId, entries])
+
   const handleUndo = useCallback(
     async (entry: JournalEntry) => {
       if (!api) return
@@ -119,6 +130,7 @@ export function HistoryScreen() {
 
         if (outcome.status === 'done') {
           setEntries((prev) => prev.map((e) => (e.id === entry.id ? outcome.entry : e)))
+          setFocusEntryId(entry.id)
           toast('Undone', { description: `Put everything back for: ${entry.summary}` })
           return
         }
@@ -269,7 +281,12 @@ export function HistoryScreen() {
             if (row.kind === 'fix') {
               const { entry } = row
               return (
-                <Card key={entry.id} className="gap-0 px-4 py-3.5">
+                <Card
+                  key={entry.id}
+                  id={`history-entry-${entry.id}`}
+                  tabIndex={-1}
+                  className="gap-0 px-4 py-3.5 outline-none"
+                >
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div className="flex min-w-0 flex-1 flex-col gap-1">
                       <span className="text-[0.9375rem] font-semibold text-foreground">
@@ -358,7 +375,9 @@ export function HistoryScreen() {
                       {row.entries.map((entry) => (
                         <div
                           key={entry.id}
-                          className="flex flex-wrap items-center justify-between gap-2 text-sm"
+                          id={`history-entry-${entry.id}`}
+                          tabIndex={-1}
+                          className="flex flex-wrap items-center justify-between gap-2 text-sm outline-none"
                         >
                           <div className="flex flex-col gap-0.5">
                             <span className="font-medium text-foreground">{entry.summary}</span>

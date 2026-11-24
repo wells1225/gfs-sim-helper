@@ -211,7 +211,7 @@ export function refusalMessage(refusal: FixRefusal): RefusalCopy {
       return {
         title: 'A 50/50 test is in progress',
         detail: 'Finish or stop your 50/50 test before making other changes to your mods.',
-        canRetry: false,
+        canRetry: true,
         tone: 'warn'
       }
   }

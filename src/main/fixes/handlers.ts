@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Handlers } from '../../shared/ipc.ts'
-import type { DisabledGroup, FixCall } from '../../shared/model.ts'
+import type { DisabledGroup, FixCall, FixOutcome } from '../../shared/model.ts'
 import type { AppContext } from '../ports.ts'
 import { extractGroupLabel } from './index.ts'
 
@@ -64,6 +64,22 @@ function isFixCall(call: unknown): call is FixCall {
 }
 
 export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
+  /**
+   * runAction throws only when its journal entry could not be written, before any file moved, so a throw here
+   * becomes a calm refusal. The error text (it can hold her user name) never reaches the window.
+   * Until the contract has its own FixRefusal for this, it borrows the gate's check-failed.
+   */
+  async function applyCalmly(run: () => Promise<FixOutcome>): Promise<FixOutcome> {
+    try {
+      return await run()
+    } catch {
+      return {
+        status: 'refused',
+        refusal: { why: 'gate', refusal: { reason: 'check-failed', path: ctx.paths.journalDir } }
+      }
+    }
+  }
+
   let recovered = false
   let recoveryPromise: Promise<unknown> | null = null
 
@@ -114,7 +130,7 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
         if (!request) {
           return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-finding' } }
         }
-        return ctx.fixes.apply(scan, request, (progress) => ctx.emit(progress))
+        return applyCalmly(() => ctx.fixes.apply(scan, request, (progress) => ctx.emit(progress)))
       }
 
       if (call.fix === 'disable-group') {
@@ -122,10 +138,8 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
         if (!hasGroup) {
           return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-group' } }
         }
-        return ctx.fixes.apply(
-          scan,
-          { fix: 'disable-group', groupId: call.groupId },
-          (progress) => ctx.emit(progress)
+        return applyCalmly(() =>
+          ctx.fixes.apply(scan, { fix: 'disable-group', groupId: call.groupId }, (progress) => ctx.emit(progress))
         )
       }
 
