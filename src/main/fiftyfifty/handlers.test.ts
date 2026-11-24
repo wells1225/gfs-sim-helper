@@ -1,9 +1,12 @@
 // @vitest-environment node
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { FiftyResult } from '../../shared/model.ts'
 import { sampleFiftyFifty, sampleScan } from '../../shared/testing/sample.ts'
 import type { AppContext } from '../ports.ts'
-import { makeFiftyHandlers, type FiftyApi } from './handlers.ts'
+import { fiftyHandlers, makeFiftyHandlers, type FiftyApi } from './handlers.ts'
 
 const OK: FiftyResult = { status: 'ok', state: sampleFiftyFifty() }
 
@@ -102,5 +105,18 @@ describe('fiftyHandlers', () => {
   it('fifty:get returns the saved state', async () => {
     const h = makeFiftyHandlers(fakeCtx(), recordingApi([]))
     expect(await h['fifty:get']()).toEqual(OK.status === 'ok' ? OK.state : null)
+  })
+
+  // The screens look for these exact words in the failure (words.ts keeps its own copy: it cannot import main).
+  it('the real fifty:get fails naming fifty-progress-damaged when the progress file cannot be read', async () => {
+    const stateDir = await mkdtemp(join(tmpdir(), 'fifty-handlers-'))
+    try {
+      const h = fiftyHandlers({ session: { scan: null }, paths: { stateDir } } as unknown as AppContext)
+      expect(await h['fifty:get']()).toBeNull()
+      await writeFile(join(stateDir, 'fiftyfifty.json'), '{"phase": "awaiting')
+      await expect(h['fifty:get']()).rejects.toThrow('fifty-progress-damaged')
+    } finally {
+      await rm(stateDir, { recursive: true, force: true })
+    }
   })
 })
