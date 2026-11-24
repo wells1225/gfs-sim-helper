@@ -10,6 +10,7 @@ import type { Host } from '../locate/host.ts'
 import type { AppContext, Fixes, Safety } from '../ports.ts'
 import { createContext } from '../services.ts'
 import { fixHandlers } from './handlers.ts'
+import { applyFix } from './index.ts'
 
 const tempDirs: string[] = []
 
@@ -314,7 +315,32 @@ describe('review: a fix that throws comes back as a calm refusal', () => {
     const handlers = fixHandlers(ctx)
 
     const res = await handlers['fix:apply']({ via: 'finding', findingId: 'mods-off', fix: 'turn-mods-on' })
-    expect(res.status).toBe('refused')
+    expect(res).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
+    expect(JSON.stringify(res)).not.toContain('lila')
+  })
+
+  it('a disable that stops part way and whose undo throws stays stopped-part-way, never not-started', async () => {
+    const { ctx } = await makeContext({
+      safety: {
+        async runAction(plan) {
+          return {
+            status: 'stopped-part-way',
+            entry: sampleJournalEntry({ id: plan.entryId, action: plan.action, groupId: plan.groupId, status: 'needs-attention' }),
+            detail: 'disk full'
+          }
+        },
+        async undo() {
+          throw new Error('journal locked: C:\\Users\\lila\\AppData')
+        }
+      }
+    })
+    ctx.fixes.apply = (scan, request, onProgress) =>
+      applyFix({ safety: ctx.safety, paths: ctx.paths, newId: () => 'e-half' }, scan, request, onProgress)
+    ctx.session.scan = sampleScan()
+    const handlers = fixHandlers(ctx)
+
+    const res = await handlers['fix:apply']({ via: 'group', fix: 'disable-group', groupId: 'dir:hair' })
+    expect(res.status).toBe('stopped-part-way')
     expect(JSON.stringify(res)).not.toContain('lila')
   })
 })

@@ -1,5 +1,6 @@
 // @vitest-environment node
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -75,6 +76,8 @@ function makeFakeSafety(overrides: Partial<Safety> = {}): Safety & {
         origin: plan.origin,
         folderPath: plan.folderPath,
         groupId: plan.groupId,
+        groupLabel: plan.groupLabel,
+        hasScript: plan.hasScript,
         status: 'done',
         undo: plan.steps.every((s) => s.kind === 'remove-cache') ? 'cannot-undo' : 'can-undo'
       })
@@ -744,5 +747,235 @@ describe('review: one entry id for the journal entry and its holding folder', ()
     const plan = safety.ranPlans[0]!
     const move = plan.steps[0]!
     expect(move.kind === 'move' && move.to.startsWith(join(deps.paths.holdingDir, plan.entryId))).toBe(true)
+  })
+})
+
+describe('contract round 3: group label, script flag, edit hash, origin', () => {
+  const at = { holdingDir: join('/data', 'holding'), entryId: 'entry-90' }
+
+  it('a one-group plan carries the group label and script flag; every other plan carries null and false', () => {
+    const scan = sampleScan()
+    const wardrobe = planFix(scan, { fix: 'disable-group', groupId: 'cf:901234' }, at)
+    expect(wardrobe.status === 'planned' && [wardrobe.plan.groupLabel, wardrobe.plan.hasScript]).toEqual([
+      'Wicked Wardrobe',
+      true
+    ])
+    const hair = planFix(scan, { fix: 'disable-group', groupId: 'dir:hair' }, at)
+    expect(hair.status === 'planned' && [hair.plan.groupLabel, hair.plan.hasScript]).toEqual(['Hair', false])
+
+    const others = [
+      planFix(scan, { fix: 'turn-mods-on' }, { ...at, optionsText: '[options]\r\nmodsdisabled=1\r\n' }),
+      planFix(scan, { fix: 'clear-caches' }, at),
+      planFix(scan, { fix: 'set-aside-files', files: [scan.inventory.files[0]!.relPath] }, at)
+    ]
+    for (const result of others) {
+      expect(result.status === 'planned' && [result.plan.groupLabel, result.plan.hasScript]).toEqual([null, false])
+    }
+  })
+
+  it('setAside puts each group label and script flag on its plan', async () => {
+    const safety = makeFakeSafety()
+    const groups: ModGroup[] = [
+      { id: 'dir:a', label: 'Mod A', source: 'folder', files: ['A/a.package'], bytes: 1, hasScript: false, curseForge: null },
+      { id: 'dir:b', label: 'Mod B', source: 'folder', files: ['B/b.ts4script'], bytes: 1, hasScript: true, curseForge: null }
+    ]
+    await setAside(makeDeps(safety), '/sims/The Sims 4', groups, { by: 'fix' })
+    expect(safety.ranPlans.map((p) => [p.groupLabel, p.hasScript])).toEqual([
+      ['Mod A', false],
+      ['Mod B', true]
+    ])
+  })
+
+  it('clearCaches plans carry null and false', async () => {
+    const dir = await makeTempDir('sims-fixes-caches3-')
+    await writeFile(join(dir, 'localthumbcache.package'), 'thumb')
+    const safety = makeFakeSafety()
+    await clearCaches(makeDeps(safety, dir), dir)
+    expect([safety.ranPlans[0]!.groupLabel, safety.ranPlans[0]!.hasScript]).toEqual([null, false])
+  })
+
+  it('the Options.ini edit carries the SHA-256 of the bytes applyFix read, with and without a byte order mark', async () => {
+    for (const text of [
+      '[options]\r\nmodsdisabled=1\r\nscriptmodsenabled=0\r\n',
+      '\uFEFF[options]\r\nmodsdisabled=1\r\nscriptmodsenabled=0\r\n'
+    ]) {
+      const dir = await makeTempDir('sims-fixes-hash-')
+      await writeFile(join(dir, 'Options.ini'), text, 'utf8')
+      const bytes = await readFile(join(dir, 'Options.ini'))
+      const scan = sampleScan({
+        folder: { path: dir, inOneDrive: false, newestFileAt: new Date('2026-11-24T12:00:00.000Z') }
+      })
+      const safety = makeFakeSafety()
+
+      await applyFix(makeDeps(safety, dir), scan, { fix: 'turn-mods-on' })
+      const step = safety.ranPlans[0]!.steps[0]!
+      expect(step.kind).toBe('edit')
+      expect(step.kind === 'edit' && step.beforeSha256).toBe(createHash('sha256').update(bytes).digest('hex'))
+      expect(step.kind === 'edit' && step.beforeSha256).toMatch(/^[0-9a-f]{64}$/)
+    }
+  })
+
+  it('disabledGroups takes the label from the entry, never from its summary, and says who set the group aside', async () => {
+    const folderPath = '/sims/The Sims 4'
+    const safety = makeFakeSafety({
+      async listJournal() {
+        return [
+          sampleJournalEntry({
+            id: 'e-1',
+            at: '2026-11-24T12:05:00.000Z',
+            action: 'disable-group',
+            summary: 'Something the summary says',
+            folderPath,
+            groupId: 'cf:901234',
+            groupLabel: 'Wicked Wardrobe',
+            hasScript: true,
+            status: 'done'
+          }),
+          sampleJournalEntry({
+            id: 'e-2',
+            at: '2026-11-24T12:04:00.000Z',
+            action: 'disable-group',
+            summary: 'Set aside Hair',
+            origin: { by: 'fifty-fifty', sessionId: 'ff-1', round: 1 },
+            folderPath,
+            groupId: 'dir:hair',
+            groupLabel: 'Hair',
+            status: 'done'
+          }),
+          sampleJournalEntry({
+            id: 'e-3',
+            at: '2026-11-24T12:03:00.000Z',
+            action: 'disable-group',
+            summary: 'Set aside Old Entry',
+            folderPath,
+            groupId: 'dir:old',
+            groupLabel: null,
+            status: 'done'
+          })
+        ]
+      }
+    })
+
+    expect(await disabledGroups(makeDeps(safety), folderPath)).toEqual([
+      { groupId: 'cf:901234', label: 'Wicked Wardrobe', entryId: 'e-1', at: '2026-11-24T12:05:00.000Z', origin: 'fix' },
+      { groupId: 'dir:hair', label: 'Hair', entryId: 'e-2', at: '2026-11-24T12:04:00.000Z', origin: 'fifty-fifty' },
+      { groupId: 'dir:old', label: 'A mod', entryId: 'e-3', at: '2026-11-24T12:03:00.000Z', origin: 'fix' }
+    ])
+  })
+})
+
+describe('lead decision: a set-aside that stops part way is put back at once', () => {
+  const folderPath = '/sims/The Sims 4'
+  const groups: ModGroup[] = [
+    { id: 'dir:a', label: 'Mod A', source: 'folder', files: ['A/a.package', 'A/a2.package'], bytes: 1, hasScript: false, curseForge: null },
+    { id: 'dir:b', label: 'Mod B', source: 'folder', files: ['B/b.package', 'B/b2.package'], bytes: 1, hasScript: false, curseForge: null }
+  ]
+
+  /** A safety whose runAction stops part way on the given call, and whose undo answers as told. */
+  function halfDoneSafety(opts: { stopOnCall: number; undo: 'done' | 'refused' | 'stopped-part-way' | 'throws' }) {
+    let call = 0
+    const halfEntry = (plan: ActionPlan, status: JournalEntry['status']) =>
+      sampleJournalEntry({
+        id: plan.entryId,
+        action: plan.action,
+        summary: plan.summary,
+        origin: plan.origin,
+        folderPath: plan.folderPath,
+        groupId: plan.groupId,
+        groupLabel: plan.groupLabel,
+        hasScript: plan.hasScript,
+        status
+      })
+    const plans = new Map<string, ActionPlan>()
+    const base = makeFakeSafety()
+    const safety = makeFakeSafety({
+      async runAction(plan, onProgress) {
+        call += 1
+        plans.set(plan.entryId, plan)
+        safety.ranPlans.push(plan)
+        if (call === opts.stopOnCall) {
+          return { status: 'stopped-part-way', entry: halfEntry(plan, 'needs-attention'), detail: 'disk full' }
+        }
+        return base.runAction(plan, onProgress)
+      },
+      async undo(entryId) {
+        safety.undoneIds.push(entryId)
+        const plan = plans.get(entryId)!
+        if (opts.undo === 'throws') throw new Error('C:\\Users\\lila\\AppData journal locked')
+        if (opts.undo === 'refused') {
+          return { status: 'refused', refusal: { why: 'gate', refusal: { reason: 'game-running' } } }
+        }
+        if (opts.undo === 'stopped-part-way') {
+          return { status: 'stopped-part-way', entry: halfEntry(plan, 'needs-attention'), detail: 'a.package changed' }
+        }
+        return { status: 'done', entry: halfEntry(plan, 'undone') }
+      }
+    })
+    return safety
+  }
+
+  it('setAside: the first group stops part way and the undo works, so nothing was set aside', async () => {
+    const safety = halfDoneSafety({ stopOnCall: 1, undo: 'done' })
+    const result = await setAside(makeDeps(safety), folderPath, groups, { by: 'fifty-fifty', sessionId: 'ff-1', round: 1 })
+    expect(result).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
+    expect(safety.undoneIds).toEqual([safety.ranPlans[0]!.entryId])
+    expect(safety.ranPlans).toHaveLength(1)
+  })
+
+  it('setAside: a later group stops part way and the undo works, so only the whole groups before it stay set aside', async () => {
+    const safety = halfDoneSafety({ stopOnCall: 2, undo: 'done' })
+    const result = await setAside(makeDeps(safety), folderPath, groups, { by: 'fifty-fifty', sessionId: 'ff-1', round: 1 })
+    expect(result.status).toBe('stopped-part-way')
+    if (result.status !== 'stopped-part-way') return
+    expect(result.entries.map((e) => [e.groupId, e.status])).toEqual([['dir:a', 'done']])
+    expect(safety.undoneIds).toEqual([safety.ranPlans[1]!.entryId])
+  })
+
+  for (const undo of ['refused', 'stopped-part-way', 'throws'] as const) {
+    it(`setAside: the undo of the half-moved group ${undo === 'throws' ? 'throws' : `is ${undo}`}, so its entry stays needs-attention`, async () => {
+      const safety = halfDoneSafety({ stopOnCall: 1, undo })
+      const result = await setAside(makeDeps(safety), folderPath, groups, { by: 'fix' })
+      expect(result.status).toBe('stopped-part-way')
+      if (result.status !== 'stopped-part-way') return
+      expect(result.entries.map((e) => [e.groupId, e.status])).toEqual([['dir:a', 'needs-attention']])
+      expect(JSON.stringify(result)).not.toContain('lila')
+      expect(safety.ranPlans).toHaveLength(1)
+    })
+
+    it(`disable from Your mods: the undo of the half-moved group ${undo === 'throws' ? 'throws' : `is ${undo}`}, so it stays needs-attention`, async () => {
+      const safety = halfDoneSafety({ stopOnCall: 1, undo })
+      const result = await applyFix(makeDeps(safety), sampleScan(), { fix: 'disable-group', groupId: 'dir:hair' })
+      expect(result.status).toBe('stopped-part-way')
+      if (result.status !== 'stopped-part-way') return
+      expect([result.entry.groupId, result.entry.status]).toEqual(['dir:hair', 'needs-attention'])
+      expect(JSON.stringify(result)).not.toContain('lila')
+    })
+  }
+
+  it('disable from Your mods: stops part way and the undo works, so nothing was set aside', async () => {
+    const safety = halfDoneSafety({ stopOnCall: 1, undo: 'done' })
+    const result = await applyFix(makeDeps(safety), sampleScan(), { fix: 'disable-group', groupId: 'dir:hair' })
+    expect(result).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
+    expect(safety.undoneIds).toEqual([safety.ranPlans[0]!.entryId])
+  })
+
+  it('a half-moved group is in neither list: disabledGroups leaves it out and putBack does not touch it', async () => {
+    const stuck = sampleJournalEntry({
+      id: 'e-stuck',
+      action: 'disable-group',
+      summary: 'Set aside Mod A',
+      folderPath,
+      groupId: 'dir:a',
+      groupLabel: 'Mod A',
+      status: 'needs-attention'
+    })
+    const safety = makeFakeSafety({
+      async listJournal() {
+        return [stuck]
+      }
+    })
+    expect(await disabledGroups(makeDeps(safety), folderPath)).toEqual([])
+    expect(await putBack(makeDeps(safety), folderPath, ['dir:a'])).toEqual({ status: 'done', entries: [] })
+    expect(safety.undoneIds).toEqual([])
   })
 })
