@@ -8,11 +8,29 @@ export function roundsWord(n: number): string {
   return n === 1 ? '1 round' : `${n} rounds`
 }
 
+export function expectedRounds(groups: number): number {
+  return Math.ceil(Math.log2(Math.max(groups, 1))) + 1
+}
+
+export function displayRound(round: number): number {
+  return round + 1
+}
+
+export function isControlRound(state: Pick<FiftyFifty, 'round'>): boolean {
+  return state.round === 0
+}
+
+export function isNotModsResult(state: Pick<FiftyFifty, 'phase' | 'history'>): boolean {
+  return state.phase === 'stopped' && state.history.some((h) => h.round === 0 && h.answer === 'crashed')
+}
+
 export function roundOf(state: Pick<FiftyFifty, 'round' | 'roundsAtMost'>): string {
-  return `Round ${state.round} of about ${Math.max(state.roundsAtMost, state.round)}`
+  const current = displayRound(state.round)
+  return `Round ${current} of about ${Math.max(state.roundsAtMost, current)}`
 }
 
 export function roundHeader(state: FiftyFifty): string {
+  if (isControlRound(state)) return `${roundOf(state)} · testing without mods`
   return `${roundOf(state)} · ${groupsWord(state.suspects.length)} left`
 }
 

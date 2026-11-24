@@ -5,9 +5,9 @@ import { Alert } from '../components/ui/alert.tsx'
 import { Button } from '../components/ui/button.tsx'
 import { Card } from '../components/ui/card.tsx'
 import { Progress } from '../components/ui/progress.tsx'
-import { ALL_BACK, groupsWord, roundHeader, roundsWord } from './words.ts'
+import { ALL_BACK, displayRound, expectedRounds, groupsWord, isControlRound, roundHeader, roundsWord } from './words.ts'
 
-export type EndedHow = 'stopped' | 'kept' | 'put-back'
+export type EndedHow = 'stopped' | 'kept' | 'put-back' | 'not-mods'
 
 function Heading({ children }: { children: ReactNode }) {
   return <h2 className="text-xl font-semibold leading-snug tracking-tight">{children}</h2>
@@ -17,9 +17,9 @@ function Text({ children }: { children: ReactNode }) {
   return <p className="text-[0.9375rem] leading-relaxed text-muted-foreground">{children}</p>
 }
 
-/** "Round 2 of about 6 · 16 mod groups left" and a bar that fills as the rounds go by. */
+/** "Round 2 of about 7 · 32 mod groups left" and a bar that fills as the rounds go by. */
 function RoundHeader({ state }: { state: FiftyFifty }) {
-  const done = state.roundsAtMost > 0 ? ((state.round - 1) / state.roundsAtMost) * 100 : 0
+  const done = state.roundsAtMost > 0 ? Math.min(100, Math.max(0, (state.round / state.roundsAtMost) * 100)) : 0
   const text = roundHeader(state)
   return (
     <div className="flex flex-col gap-2">
@@ -41,7 +41,7 @@ export function Intro({
   locked: boolean
 }) {
   const groups = scan?.inventory.groups.length ?? 0
-  const rounds = Math.ceil(Math.log2(Math.max(groups, 1)))
+  const rounds = expectedRounds(groups)
   return (
     <Card>
       <div className="flex items-start gap-3">
@@ -49,20 +49,13 @@ export function Intro({
         <div className="flex flex-col gap-2">
           <Heading>The 50/50 test</Heading>
           <Text>
-            The 50/50 test finds a broken mod by setting aside half your mods at a time. After each round you play a
-            quick test and tell us whether the game crashed.
+            The 50/50 test first checks whether the game still crashes with all mods set aside, then narrows your mods
+            down half at a time. After each round you play a quick test and tell us whether the game crashed.
           </Text>
           {scan && groups > 0 && (
             <Text>
-              You have <span className="tabular-nums">{groupsWord(groups)}</span>
-              {rounds > 0 ? (
-                <>
-                  , so this takes about <span className="tabular-nums">{roundsWord(rounds)}</span>. Each round is one
-                  game load.
-                </>
-              ) : (
-                ', so there is nothing to split.'
-              )}
+              You have <span className="tabular-nums">{groupsWord(groups)}</span>, so this takes about{' '}
+              <span className="tabular-nums">{roundsWord(rounds)}</span>. Each round is one game load.
             </Text>
           )}
           {!scan && <Text>Run the check-up first, so we know which mods you have.</Text>}
@@ -122,18 +115,21 @@ export function ReadyStep({
   locked: boolean
   hideButton: boolean
 }) {
+  const roundNum = displayRound(state.round)
+  const control = isControlRound(state)
   return (
     <Card>
       <RoundHeader state={state} />
-      <Heading>Get round {state.round} ready</Heading>
+      <Heading>Get round {roundNum} ready</Heading>
       <Text>
-        We will set aside {groupsWord(state.parked.length)} and clear the cache. If The Sims 4 is open, save and close it
-        first.
+        {control
+          ? `We will set aside all ${groupsWord(state.parked.length)} and clear the cache so you can check whether the crash still happens with no mods at all. If The Sims 4 is open, save and close it first.`
+          : `We will set aside ${groupsWord(state.parked.length)} and clear the cache. If The Sims 4 is open, save and close it first.`}
       </Text>
       {!hideButton && (
         <div>
           <Button size="lg" onClick={onSetUp} disabled={locked}>
-            Set up round {state.round}
+            Set up round {roundNum}
           </Button>
         </div>
       )}
@@ -142,13 +138,15 @@ export function ReadyStep({
 }
 
 export function TestStep({ state, onTested, locked }: { state: FiftyFifty; onTested(): void; locked: boolean }) {
+  const control = isControlRound(state)
   return (
     <Card>
       <RoundHeader state={state} />
-      <Heading>Time to test</Heading>
+      <Heading>{control ? 'Test without mods first' : 'Time to test'}</Heading>
       <p className="flex items-center gap-2 text-[0.9375rem]">
         <CircleCheck className="size-4 shrink-0 text-severity-ok" strokeWidth={1.75} aria-hidden />
-        We set aside {groupsWord(state.parked.length)} and cleared the cache.
+        We set aside {control ? `all ${groupsWord(state.parked.length)}` : groupsWord(state.parked.length)} and cleared
+        the cache.
       </p>
       <Alert variant="info">
         <div className="flex items-start gap-2">
@@ -181,8 +179,8 @@ export function AnswerStep({
   return (
     <Card>
       <RoundHeader state={state} />
-      <Heading>Did the game crash?</Heading>
-      <Text>Close The Sims 4 before you answer, so we can set up the next round.</Text>
+      <Heading>{isControlRound(state) ? 'Did the game crash without mods?' : 'Did the game crash?'}</Heading>
+      <Text>Close The Sims 4 before you answer, so we can move your mods safely.</Text>
       <div className="grid gap-3 sm:grid-cols-2">
         <Button size="lg" variant="outline" className="h-16 text-base" onClick={() => onAnswer('crashed')} disabled={locked}>
           It still crashed
@@ -241,11 +239,26 @@ export function FoundStep({
 }
 
 export function Ended({ how, label, onCheckAgain }: { how: EndedHow; label: string; onCheckAgain(): void }) {
+  const heading =
+    how === 'not-mods'
+      ? 'Mods are unlikely to be the cause'
+      : how === 'stopped'
+        ? 'The 50/50 test is stopped'
+        : 'All done'
   return (
     <main>
       <Card>
-        <Heading>{how === 'stopped' ? 'The 50/50 test is stopped' : 'All done'}</Heading>
-        {how === 'kept' ? (
+        <Heading>{heading}</Heading>
+        {how === 'not-mods' ? (
+          <>
+            <Text>
+              The game still crashed with all your mods set aside, so a mod is unlikely to be behind it. {ALL_BACK}
+            </Text>
+            <Text>
+              Try repairing the game in the EA app: open the EA app, find The Sims 4, click Manage, and choose Repair.
+            </Text>
+          </>
+        ) : how === 'kept' ? (
           <Text>
             {label} is set aside. Everything else is back in your Mods folder. You can turn it back on from Your mods
             whenever you like.

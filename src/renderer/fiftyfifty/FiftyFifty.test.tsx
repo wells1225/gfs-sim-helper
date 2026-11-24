@@ -41,17 +41,27 @@ function setup(
 }
 
 const ok = (state: FiftyFifty | null): FiftyResult => ({ status: 'ok', state })
-const round = (overrides: Partial<FiftyFifty> = {}) => sampleFiftyFifty(overrides)
+const round = (overrides: Partial<FiftyFifty> = {}) =>
+  sampleFiftyFifty({ round: 1, roundsAtMost: 3, history: [{ round: 0, parked: ['cf:901234', 'dir:hair', 'dir:buildbuy', 'file:shoes.package'], answer: 'worked' }], ...overrides })
+const controlRound = (overrides: Partial<FiftyFifty> = {}) =>
+  sampleFiftyFifty({
+    round: 0,
+    roundsAtMost: 3,
+    parked: ['cf:901234', 'dir:hair', 'dir:buildbuy', 'file:shoes.package'],
+    inMods: [],
+    history: [],
+    ...overrides
+  })
 const channels = (api: { calls: { channel: string }[] }) => api.calls.map((c) => c.channel)
 
 describe('FiftyFiftyScreen', () => {
   it('explains the test and starts it from the last check-up', async () => {
     const { api, user } = setup(<FiftyFiftyScreen />, {
       'fifty:get': null,
-      'fifty:start': ok(round({ phase: 'close-curseforge' }))
+      'fifty:start': ok(controlRound({ phase: 'close-curseforge' }))
     })
     expect(await screen.findByRole('heading', { name: 'The 50/50 test' })).toBeInTheDocument()
-    expect(screen.getByText(/You have/)).toHaveTextContent('You have 2 mod groups, so this takes about 1 round.')
+    expect(screen.getByText(/You have/)).toHaveTextContent('You have 2 mod groups, so this takes about 2 rounds.')
     await user.click(screen.getByRole('button', { name: 'Start the 50/50 test' }))
     expect(await screen.findByRole('heading', { name: 'First, close CurseForge' })).toBeInTheDocument()
     expect(channels(api)).toEqual(['fifty:get', 'fifty:start'])
@@ -63,14 +73,14 @@ describe('FiftyFiftyScreen', () => {
     expect(screen.getByTestId('route')).toHaveTextContent('check-up')
   })
 
-  it('close CurseForge, then the round is set up and the test card shows what was done', async () => {
+  it('close CurseForge, then control round 0 sets aside all mods and shows what was done', async () => {
     const { api, user } = setup(<FiftyFiftyScreen />, {
-      'fifty:get': round({ phase: 'close-curseforge' }),
-      'fifty:begin-round': ok(round())
+      'fifty:get': controlRound({ phase: 'close-curseforge' }),
+      'fifty:begin-round': ok(controlRound())
     })
     await user.click(await screen.findByRole('button', { name: 'CurseForge is closed' }))
-    expect(await screen.findByText('Round 1 of about 2 · 4 mod groups left')).toBeInTheDocument()
-    expect(screen.getByText('We set aside 2 mod groups and cleared the cache.')).toBeInTheDocument()
+    expect(await screen.findByText('Round 1 of about 3 · testing without mods')).toBeInTheDocument()
+    expect(screen.getByText('We set aside all 4 mod groups and cleared the cache.')).toBeInTheDocument()
     expect(screen.getByText(/start a/)).toHaveTextContent(
       "Open The Sims 4, start a new test household (don't open your real save), and try the thing that crashed."
     )
@@ -78,10 +88,31 @@ describe('FiftyFiftyScreen', () => {
     expect(channels(api)).toEqual(['fifty:get', 'fifty:begin-round'])
   })
 
+  it('when control round 0 still crashes, tells her mods are unlikely to be the cause and to try Repair in the EA app', async () => {
+    const stoppedControl = controlRound({
+      phase: 'stopped',
+      suspects: [],
+      parked: [],
+      inMods: [],
+      cleared: ['cf:901234', 'dir:hair', 'dir:buildbuy', 'file:shoes.package'],
+      history: [{ round: 0, parked: ['cf:901234', 'dir:hair', 'dir:buildbuy', 'file:shoes.package'], answer: 'crashed' }]
+    })
+    const { user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': controlRound(),
+      'fifty:answer': ok(stoppedControl)
+    })
+    await user.click(await screen.findByRole('button', { name: "I've tested it" }))
+    await user.click(screen.getByRole('button', { name: 'It still crashed' }))
+    expect(await screen.findByRole('heading', { name: 'Mods are unlikely to be the cause' })).toBeInTheDocument()
+    expect(screen.getByText(/EA app/i)).toBeInTheDocument()
+    expect(screen.getByText(/Repair/i)).toBeInTheDocument()
+    expect(screen.getByText(/All your mods are back in place/i)).toBeInTheDocument()
+  })
+
   it('says so when CurseForge still looks open', async () => {
     const { user } = setup(<FiftyFiftyScreen />, {
-      'fifty:get': round({ phase: 'close-curseforge' }),
-      'fifty:begin-round': ok(round({ phase: 'close-curseforge' }))
+      'fifty:get': controlRound({ phase: 'close-curseforge' }),
+      'fifty:begin-round': ok(controlRound({ phase: 'close-curseforge' }))
     })
     await user.click(await screen.findByRole('button', { name: 'CurseForge is closed' }))
     expect(await screen.findByText(/CurseForge still looks open/)).toBeInTheDocument()
@@ -104,7 +135,7 @@ describe('FiftyFiftyScreen', () => {
     expect(screen.getByRole('button', { name: 'No crash, it worked!' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'It still crashed' }))
 
-    expect(await screen.findByText('Round 2 of about 2 · 2 mod groups left')).toBeInTheDocument()
+    expect(await screen.findByText('Round 3 of about 3 · 2 mod groups left')).toBeInTheDocument()
     expect(screen.getByText('We set aside 1 mod group and cleared the cache.')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: "I've tested it" }))
@@ -134,7 +165,7 @@ describe('FiftyFiftyScreen', () => {
     await user.click(await screen.findByRole('button', { name: "I've tested it" }))
     await user.click(screen.getByRole('button', { name: 'No crash, it worked!' }))
     expect(await screen.findByText(/The Sims 4 is still open/)).toBeInTheDocument()
-    expect(screen.getByText(/Round 2 of about 2/)).toBeInTheDocument()
+    expect(screen.getByText(/Round 3 of about 3/)).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByRole('button', { name: "I've tested it" })).toBeInTheDocument()
     expect(channels(api)).toEqual(['fifty:get', 'fifty:answer', 'fifty:get', 'fifty:begin-round'])
@@ -145,7 +176,7 @@ describe('FiftyFiftyScreen', () => {
       'fifty:get': round({ round: 2, phase: 'ready-to-test' }),
       'fifty:begin-round': ok(round({ round: 2 }))
     })
-    await user.click(await screen.findByRole('button', { name: 'Set up round 2' }))
+    await user.click(await screen.findByRole('button', { name: 'Set up round 3' }))
     await screen.findByRole('button', { name: "I've tested it" })
     expect(channels(api)).toContain('fifty:begin-round')
   })
@@ -240,11 +271,11 @@ describe('FiftyFiftyScreen', () => {
 })
 
 describe('ResumeBanner', () => {
-  const r2 = round({ round: 2, roundsAtMost: 6, suspects: Array.from({ length: 16 }, (_, i) => `g${i}`) })
+  const r2 = round({ round: 1, roundsAtMost: 7, suspects: Array.from({ length: 16 }, (_, i) => `g${i}`) })
 
   it('shows the round and continues to the test', async () => {
     const { user } = setup(<ResumeBanner />, { 'fifty:get': r2 }, { route: { screen: 'check-up' } })
-    expect(await screen.findByText('50/50 test in progress · Round 2 of about 6')).toBeInTheDocument()
+    expect(await screen.findByText('50/50 test in progress · Round 2 of about 7')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Continue' }))
     expect(screen.getByTestId('route')).toHaveTextContent('fifty-fifty')
   })
@@ -296,9 +327,10 @@ describe('ResumeBanner', () => {
 })
 
 describe('FiftyEntry', () => {
-  it('is a big button when a finding points to the 50/50 test', async () => {
+  it('is a big button when a finding points to the 50/50 test and includes the control round in the estimate', async () => {
     const scan = sampleScan({ findings: [sampleFinding({ id: 'crash-without-cause', rule: 'crash-without-cause', next: 'fifty-fifty' })] })
     const { user } = setup(<FiftyEntry scan={scan} />, {}, { route: { screen: 'check-up' } })
+    expect(screen.getByText(/For your/)).toHaveTextContent(/about 2 rounds/)
     await user.click(screen.getByRole('button', { name: 'Find it with the 50/50 test' }))
     expect(screen.getByTestId('route')).toHaveTextContent('fifty-fifty')
   })

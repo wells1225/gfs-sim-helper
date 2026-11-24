@@ -8,7 +8,7 @@ import { useNav } from '../nav.tsx'
 import { useSession } from '../session.tsx'
 import { AnswerStep, CloseCurseForgeStep, Ended, FoundStep, Intro, ReadyStep, TestStep, type EndedHow } from './steps.tsx'
 import { StopDialog } from './StopDialog.tsx'
-import { CURSEFORGE_OPEN, groupLabel, PART_WAY, refusalWords } from './words.ts'
+import { CURSEFORGE_OPEN, groupLabel, isControlRound, isNotModsResult, PART_WAY, refusalWords } from './words.ts'
 
 type View = { kind: 'loading' } | { kind: 'session'; state: FiftyFifty | null } | { kind: 'ended'; how: EndedHow; label: string }
 
@@ -75,8 +75,17 @@ export function FiftyFiftyScreen() {
   const startTest = () =>
     void run('Starting the 50/50 test…', () => api.invoke('fifty:start'), startTest, show)
 
-  const giveAnswer = (answer: FiftyAnswer) =>
-    void run('Getting the next round ready…', () => api.invoke('fifty:answer', { answer }), beginRound, show)
+  const giveAnswer = (answer: FiftyAnswer) => {
+    const controlCrash = view.kind === 'session' && !!view.state && isControlRound(view.state) && answer === 'crashed'
+    const working = controlCrash ? 'Putting your mods back…' : 'Getting the next round ready…'
+    void run(working, () => api.invoke('fifty:answer', { answer }), beginRound, (next) => {
+      if (next && isNotModsResult(next)) {
+        setView({ kind: 'ended', how: 'not-mods', label: '' })
+        return
+      }
+      show(next)
+    })
+  }
 
   const stopTest = () => {
     // Close the question first, so a refusal (the game is still open) is not hidden behind it.

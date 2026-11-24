@@ -251,14 +251,16 @@ describe('start', () => {
 })
 
 describe('a full session', () => {
-  it('names the bad group of 64 in 6 rounds and put-back leaves nothing aside', async () => {
+  it('names the bad group of 64 in 7 rounds (control round + 6 splits) and put-back leaves nothing aside', async () => {
     const deps = makeDeps()
     const groups = makeGroups(64, 9)
     await start(deps, scanWith(groups))
     const found = await playToFound(deps, 'dir:g41')
     expect(found.culprit).toBe('dir:g41')
-    expect(found.history).toHaveLength(6)
-    expect(fixes.calls.filter((c) => c.method === 'clearCaches')).toHaveLength(6)
+    expect(found.history).toHaveLength(7)
+    expect(found.history[0]?.round).toBe(0)
+    expect(found.history[0]?.parked).toHaveLength(64)
+    expect(fixes.calls.filter((c) => c.method === 'clearCaches')).toHaveLength(7)
     for (const call of fixes.calls.filter((c) => c.method === 'setAside')) {
       expect(call.origin).toMatchObject({ by: 'fifty-fifty', sessionId: found.id })
     }
@@ -267,6 +269,41 @@ describe('a full session', () => {
     expect(done.phase).toBe('stopped')
     expect(fixes.asideIds()).toEqual([])
     expect(await stateFileExists()).toBe(false)
+    expect(await loadState(deps)).toBeNull()
+  })
+
+  it('stops and puts every group back when control round 0 still crashes with all mods aside', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(6)))
+    const r0 = stateOf(await beginRound(deps))
+    expect(r0.round).toBe(0)
+    expect(fixes.asideIds()).toHaveLength(6)
+
+    const stopped = stateOf(await giveAnswer(deps, 'crashed'))
+    expect(stopped.phase).toBe('stopped')
+    expect(stopped.culprit).toBeNull()
+    expect(stopped.history).toEqual([{ round: 0, parked: r0.parked, answer: 'crashed' }])
+    expect(fixes.asideIds()).toEqual([])
+    expect(await stateFileExists()).toBe(false)
+    expect(await loadState(deps)).toBeNull()
+  })
+
+  it('keeps the session if putting mods back after a crashed control round is refused or stops part-way', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(4)))
+    await beginRound(deps)
+    fixes.refuseNext = GAME_RUNNING
+    expect(await giveAnswer(deps, 'crashed')).toEqual({ status: 'refused', refusal: GAME_RUNNING })
+    expect(await loadState(deps)).toMatchObject({ round: 0, phase: 'awaiting-answer' })
+    expect(fixes.asideIds()).toHaveLength(4)
+
+    fixes.partWayAfter = 2
+    expect(await giveAnswer(deps, 'crashed')).toMatchObject({ status: 'stopped-part-way' })
+    expect(await loadState(deps)).toMatchObject({ round: 0, phase: 'awaiting-answer' })
+
+    const stopped = stateOf(await giveAnswer(deps, 'crashed'))
+    expect(stopped.phase).toBe('stopped')
+    expect(fixes.asideIds()).toEqual([])
     expect(await loadState(deps)).toBeNull()
   })
 
@@ -287,32 +324,45 @@ describe('a full session', () => {
       await stop(deps)
       await start(deps, scanWith(makeGroups(2)))
       await beginRound(deps)
+      expect(fixes.asideIds()).toEqual(['dir:g0', 'dir:g1'])
+      await giveAnswer(deps, 'worked')
       expect(fixes.asideIds()).toEqual(['dir:g0'])
       const found = stateOf(await giveAnswer(deps, 'crashed'))
       expect(found).toMatchObject({ phase: 'found', culprit: 'dir:g1' })
-      expect(fixes.asideIds()).toEqual(['dir:g0']) // nothing is arranged at found
       await finish(deps, keep)
       expect(fixes.asideIds()).toEqual(keep === 'put-back' ? [] : ['dir:g1'])
     }
   })
 
-  it('with one group, keep-set-aside sets it aside and put-back moves nothing', async () => {
+  it('with one group, control round 0 tests it out: worked names it, crashed puts it back', async () => {
     const deps = makeDeps()
-    const state = stateOf(await start(deps, scanWith(makeGroups(1))))
-    expect(state).toMatchObject({ phase: 'found', culprit: 'dir:g0' })
+    const started = stateOf(await start(deps, scanWith(makeGroups(1))))
+    expect(started).toMatchObject({ phase: 'close-curseforge', round: 0, culprit: null })
+    await beginRound(deps)
+    expect(fixes.asideIds()).toEqual(['dir:g0'])
+    const found = stateOf(await giveAnswer(deps, 'worked'))
+    expect(found).toMatchObject({ phase: 'found', culprit: 'dir:g0' })
     await finish(deps, 'keep-set-aside')
     expect(fixes.asideIds()).toEqual(['dir:g0'])
+
+    fixes = new FakeFixes()
+    const deps2 = makeDeps()
+    await start(deps2, scanWith(makeGroups(1)))
+    await beginRound(deps2)
+    const stopped = stateOf(await giveAnswer(deps2, 'crashed'))
+    expect(stopped).toMatchObject({ phase: 'stopped', culprit: null })
+    expect(fixes.asideIds()).toEqual([])
   })
 
   it('not-sure runs the same round again without moving anything', async () => {
     const deps = makeDeps()
     await start(deps, scanWith(makeGroups(8)))
-    const r1 = stateOf(await beginRound(deps))
+    const r0 = stateOf(await beginRound(deps))
     const movesBefore = fixes.moves()
     const again = stateOf(await giveAnswer(deps, 'not-sure'))
-    expect(again.round).toBe(1)
+    expect(again.round).toBe(0)
     expect(again.phase).toBe('awaiting-answer')
-    expect(again.parked).toEqual(r1.parked)
+    expect(again.parked).toEqual(r0.parked)
     expect(fixes.moves()).toBe(movesBefore)
     expect(fixes.calls.at(-1)?.method).toBe('clearCaches')
   })
@@ -363,6 +413,7 @@ describe('restart and repeat', () => {
     const deps = makeDeps()
     await start(deps, scanWith(makeGroups(16)))
     await beginRound(deps)
+    await giveAnswer(deps, 'worked')
     const r2 = stateOf(await giveAnswer(deps, 'crashed'))
     expect(r2.round).toBe(2)
 
@@ -406,7 +457,7 @@ describe('CurseForge', () => {
     const moves = fixes.moves()
     processes = ['CurseForge.exe']
     const state = stateOf(await giveAnswer(deps, 'worked'))
-    expect(state).toMatchObject({ phase: 'close-curseforge', round: 2 })
+    expect(state).toMatchObject({ phase: 'close-curseforge', round: 1 })
     expect(fixes.moves()).toBe(moves)
     expect(await loadState(deps)).toEqual(state)
   })
@@ -426,7 +477,7 @@ describe('refusals', () => {
     fixes.refuseNext = GAME_RUNNING
     expect(await beginRound(deps)).toEqual({ status: 'refused', refusal: GAME_RUNNING })
     const saved = await loadState(deps)
-    expect(saved).toMatchObject({ round: 1, phase: 'ready-to-test' })
+    expect(saved).toMatchObject({ round: 0, phase: 'ready-to-test' })
     expect(fixes.asideIds()).toEqual([])
     expect(stateOf(await beginRound(deps)).phase).toBe('awaiting-answer')
   })
@@ -437,8 +488,8 @@ describe('refusals', () => {
     await beginRound(deps)
     fixes.refuseNext = GAME_RUNNING
     expect(await giveAnswer(deps, 'worked')).toEqual({ status: 'refused', refusal: GAME_RUNNING })
-    expect(await loadState(deps)).toMatchObject({ round: 2, phase: 'ready-to-test', history: [{ answer: 'worked' }] })
-    expect(stateOf(await beginRound(deps))).toMatchObject({ round: 2, phase: 'awaiting-answer' })
+    expect(await loadState(deps)).toMatchObject({ round: 1, phase: 'ready-to-test', history: [{ answer: 'worked' }] })
+    expect(stateOf(await beginRound(deps))).toMatchObject({ round: 1, phase: 'awaiting-answer' })
   })
 
   it('a refused cache clear does not advance; "nothing to clear" is fine', async () => {
@@ -533,7 +584,7 @@ describe('stop puts every file back', () => {
     fixes.refuseNext = GAME_RUNNING
     expect(await stop(deps)).toEqual({ status: 'refused', refusal: GAME_RUNNING })
     expect(await loadState(deps)).toEqual(before)
-    expect(fixes.asideIds()).toHaveLength(4)
+    expect(fixes.asideIds()).toHaveLength(8)
     await stop(deps)
     expect(fixes.asideIds()).toEqual([])
   })

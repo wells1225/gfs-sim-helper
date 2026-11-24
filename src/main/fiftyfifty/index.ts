@@ -123,6 +123,12 @@ export async function giveAnswer(deps: FiftyDeps, given: FiftyAnswer): Promise<F
   if (state.phase !== 'awaiting-answer') return { status: 'ok', state }
 
   const next = answer(state, given)
+  if (next.phase === 'stopped') {
+    const moved = await arrange(deps, state, [])
+    if (moved) return withState(moved, state)
+    const problem = await clearState(deps)
+    return problem ? withState(problem, state) : { status: 'ok', state: next }
+  }
   const problem = await saveState(deps, next)
   if (problem) return withState(problem, next)
   if (next.phase === 'found') return { status: 'ok', state: next }

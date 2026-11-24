@@ -7,7 +7,7 @@ const SLUG = 'pr-11-fifty-fifty'
 
 const LABELS = ['Wicked Wardrobe', 'MC Command Center', 'Hair', 'BuildBuy', 'Skin Details', 'Poses', 'Clutter', 'Shoes']
 
-/** 64 groups, round 2 of about 6, with 32 suspects left and 16 of them set aside. */
+/** 64 groups, round 2 (displayed as Round 3 of about 7), with 32 suspects left and 16 of them set aside. */
 function midSession(overrides: Partial<FiftyFifty> = {}): FiftyFifty {
   const groups: ModGroup[] = Array.from({ length: 64 }, (_, i) => ({
     id: `dir:g${i}`,
@@ -22,13 +22,16 @@ function midSession(overrides: Partial<FiftyFifty> = {}): FiftyFifty {
   return sampleFiftyFifty({
     phase: 'awaiting-answer',
     round: 2,
-    roundsAtMost: 6,
+    roundsAtMost: 7,
     groups,
     suspects: ids.slice(0, 32),
     parked: ids.slice(0, 16),
     inMods: ids.slice(16, 32),
     cleared: ids.slice(32),
-    history: [{ round: 1, parked: ids.slice(32), answer: 'crashed' }],
+    history: [
+      { round: 0, parked: ids, answer: 'worked' },
+      { round: 1, parked: ids.slice(32), answer: 'crashed' }
+    ],
     ...overrides
   })
 }
@@ -41,7 +44,7 @@ const FOUND = midSession({
   inMods: [],
   cleared: Array.from({ length: 64 }, (_, i) => `dir:g${i}`).filter((id) => id !== 'dir:g1'),
   culprit: 'dir:g1',
-  history: Array.from({ length: 6 }, (_, i) => ({ round: i + 1, parked: [], answer: 'worked' as const }))
+  history: Array.from({ length: 7 }, (_, i) => ({ round: i, parked: [], answer: 'worked' as const }))
 })
 
 let running: LaunchedApp
@@ -73,14 +76,14 @@ async function enterAt(state: FiftyFifty, extra: Parameters<typeof stubIpc>[1] =
 
 test('resume-banner', async () => {
   await stubIpc(running.app, { 'fifty:get': midSession() })
-  await expect(running.page.getByText('50/50 test in progress · Round 2 of about 6')).toBeVisible()
+  await expect(running.page.getByText('50/50 test in progress · Round 3 of about 7')).toBeVisible()
   await shoot(running.page, SLUG, 'resume-banner')
 })
 
 test('close-curseforge', async () => {
   const page = await enterAt(midSession({ phase: 'close-curseforge' }))
   await expect(page.getByRole('heading', { name: 'First, close CurseForge' })).toBeVisible()
-  await expect(page.getByText('Round 2 of about 6 · 32 mod groups left')).toBeVisible()
+  await expect(page.getByText('Round 3 of about 7 · 32 mod groups left')).toBeVisible()
   await shoot(page, SLUG, 'close-curseforge')
 })
 

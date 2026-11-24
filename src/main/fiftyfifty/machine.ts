@@ -25,20 +25,20 @@ export function begin(
   groups: ModGroup[],
   init: { id: string; startedAt: IsoTime; folderPath: string }
 ): FiftyFifty {
-  const fresh: FiftyFifty = {
+  const suspects = suspectOrder(groups)
+  return {
     ...init,
     phase: 'close-curseforge',
-    round: 1,
-    roundsAtMost: Math.ceil(Math.log2(Math.max(groups.length, 1))),
+    round: 0,
+    roundsAtMost: Math.ceil(Math.log2(Math.max(groups.length, 1))) + 1,
     groups: [...groups],
-    suspects: [],
-    parked: [],
+    suspects,
+    parked: [...suspects],
     inMods: [],
     cleared: [],
     culprit: null,
     history: []
   }
-  return split(fresh, suspectOrder(groups))
 }
 
 export function answer(state: FiftyFifty, given: FiftyAnswer): FiftyFifty {
@@ -48,7 +48,11 @@ export function answer(state: FiftyFifty, given: FiftyAnswer): FiftyFifty {
   if (given === 'not-sure') return { ...state, history }
 
   const [suspects, ruledOut] = given === 'crashed' ? [state.inMods, state.parked] : [state.parked, state.inMods]
-  const next = split({ ...state, history, cleared: [...state.cleared, ...ruledOut] }, suspects)
+  const cleared = [...state.cleared, ...ruledOut]
+  if (suspects.length === 0) {
+    return { ...state, history, suspects: [], parked: [], inMods: [], cleared, culprit: null, phase: 'stopped' }
+  }
+  const next = split({ ...state, history, cleared }, suspects)
   if (next.phase === 'found') return next
   return { ...next, round: state.round + 1, phase: 'ready-to-test' }
 }

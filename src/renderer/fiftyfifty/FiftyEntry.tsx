@@ -3,7 +3,7 @@ import type { Scan } from '../../shared/model.ts'
 import { Button } from '../components/ui/button.tsx'
 import { Card } from '../components/ui/card.tsx'
 import { useNav } from '../nav.tsx'
-import { groupsWord, roundsWord } from './words.ts'
+import { expectedRounds, groupsWord, roundsWord } from './words.ts'
 
 export function FiftyEntry({ scan }: { scan: Scan }) {
   const { go } = useNav()
@@ -22,7 +22,7 @@ export function FiftyEntry({ scan }: { scan: Scan }) {
     )
   }
 
-  const rounds = Math.ceil(Math.log2(groups))
+  const rounds = expectedRounds(groups)
   return (
     <Card>
       <div className="flex items-start gap-3">
@@ -30,9 +30,9 @@ export function FiftyEntry({ scan }: { scan: Scan }) {
         <div className="flex flex-col gap-1">
           <h3 className="text-lg font-semibold leading-snug">Not sure which mod it is?</h3>
           <p className="text-[0.9375rem] text-muted-foreground">
-            The 50/50 test sets aside half your mods at a time until one is left. For your{' '}
-            <span className="tabular-nums">{groupsWord(groups)}</span> that takes about{' '}
-            <span className="tabular-nums">{roundsWord(Math.max(rounds, 1))}</span>, one game load each.
+            The 50/50 test first checks with all mods set aside, then narrows them down half at a time until one is left.
+            For your <span className="tabular-nums">{groupsWord(groups)}</span> that takes about{' '}
+            <span className="tabular-nums">{roundsWord(rounds)}</span>, one game load each.
           </p>
         </div>
       </div>
