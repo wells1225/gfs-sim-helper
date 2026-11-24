@@ -66,9 +66,9 @@ const FORBIDDEN_TEXT: [RegExp, string][] = [
   [/\beval\b|\bFunction\b/, 'runs made-up code'],
   [/\bimport\s*\(\s*(?!(?:'[^'`"\\]*'|"[^'`"\\]*")\s*\))/, 'loads a module whose name is not one plain string']
 ]
-// A module name that can write or start a program may not appear as a string anywhere but in a read import.
+// A module name that can write, start a program or open a network socket may not appear as a string outside an import.
 const DANGEROUS_NAME =
-  /(['"`])(?:node:)?(?:fs|fs\/promises|original-fs|child_process|module|vm|worker_threads|v8|sqlite|inspector|cluster|repl|wasi)\1/g
+  /(['"`])(?:(?:node:)?(?:fs|fs\/promises|original-fs|child_process|module|vm|worker_threads|v8|sqlite|inspector|cluster|repl|wasi)|node:(?:net|http|https|http2|tls|dgram))\1/g
 
 // Files under src/ that are not code and are never loaded as code.
 const PLAIN_FILE = /\.(css|html|json|svg|png|ico|woff2|md|txt|snap)$/
@@ -411,6 +411,9 @@ describe('read and write gate lint', () => {
       'renderer/test-setup.ts': "import { rm } from 'node:fs/promises'\n",
       'renderer/styles.css': 'body { color: red }\n',
       'main/tool.js': "require('fs').rmSync('x')\n",
+      'main/tool.mjs': "import { rm } from 'node:fs/promises'\n",
+      'main/tool.mts': "import { rm } from 'node:fs/promises'\n",
+      'main/tool.cts': "import { rm } from 'node:fs/promises'\n",
       'main/addon.node': 'binary',
       'preload/run.cjs': "require('fs')\n"
     }
@@ -427,7 +430,10 @@ describe('read and write gate lint', () => {
         'main/addon.node',
         'main/inventory/deep/down/save.ts',
         'main/locate/extra/run.ts',
+        'main/tool.cts',
         'main/tool.js',
+        'main/tool.mjs',
+        'main/tool.mts',
         'preload/run.cjs',
         'renderer/testing/helper.ts',
         'shared/testing/helper.ts'
@@ -533,14 +539,18 @@ describe('read and write gate lint', () => {
       ['main/inventory/index.ts', "export * as disk from 'node:fs'"],
       // require and dynamic import
       ['main/inventory/index.ts', "const fs = require('fs')"],
+      ['main/inventory/index.ts', "const fs = module.require('fs')"],
       ['main/inventory/index.ts', "import fs = require('node:fs')"],
       ['main/inventory/index.ts', 'const load = require'],
       ['main/inventory/index.ts', "const fs = await import('node:fs/promises')"],
       ['main/inventory/index.ts', 'const fs = await import(name)'],
       ['main/inventory/index.ts', 'const fs = await import(`node:fs`)'],
+      ['main/inventory/index.ts', 'const path = await import(`node:path`)'],
       ['main/inventory/index.ts', "const fs = await import('node:' + 'fs')"],
       ['main/inventory/index.ts', "const name = 'node:fs'"],
       ['main/inventory/index.ts', 'const name = "child_process"'],
+      ['main/inventory/index.ts', "const name = 'node:https'"],
+      ['main/inventory/index.ts', "const name = 'node:net'"],
       // built-in modules reached without an import
       ['main/inventory/index.ts', "const fs = process.binding('fs')"],
       ['main/inventory/index.ts', "const fs = process['binding']('fs')"],
@@ -551,9 +561,17 @@ describe('read and write gate lint', () => {
       ['main/inventory/index.ts', "eval('1')"],
       ['main/inventory/index.ts', "const run = new Function('return 1')"],
       ['main/inventory/index.ts', "const run = globalThis['Function']('return 1')"],
-      // built-in modules that can write, load code or start a program
+      // built-in modules that can write, load code, open the network or start a program
       ['main/inventory/index.ts', "import { createRequire } from 'node:module'"],
+      ['main/inventory/index.ts', "import Module from 'module'"],
       ['main/inventory/index.ts', "import { Worker } from 'node:worker_threads'"],
+      ['main/inventory/index.ts', "import net from 'node:net'"],
+      ['main/inventory/index.ts', "import { createConnection } from 'net'"],
+      ['main/inventory/index.ts', "import http from 'node:http'"],
+      ['main/inventory/index.ts', "import { get } from 'http'"],
+      ['main/inventory/index.ts', "import https from 'node:https'"],
+      ['main/inventory/index.ts', "import { request } from 'https'"],
+      ['main/inventory/index.ts', "import http2 from 'node:http2'"],
       ['main/inventory/index.ts', "import vm from 'node:vm'"],
       ['main/inventory/index.ts', "import { writeHeapSnapshot } from 'node:v8'"],
       ['main/inventory/index.ts', "import { DatabaseSync } from 'node:sqlite'"],
@@ -570,9 +588,13 @@ describe('read and write gate lint', () => {
       ['main/inventory/index.ts', "import trash from 'trash'"],
       ['main/inventory/index.ts', "import { execa } from 'execa'"],
       ['main/inventory/index.ts', "import { something } from 'a-package-nobody-listed'"],
-      // electron and the AI package stay in their own files
+      // electron and the AI package stay in their own files (including subpaths)
       ['main/scan/index.ts', "import { shell } from 'electron'"],
+      ['main/scan/index.ts', "import { app } from 'electron/main'"],
+      ['main/scan/index.ts', "import { clipboard } from 'electron/common'"],
+      ['renderer/App.tsx', "import { ipcRenderer } from 'electron/renderer'"],
       ['main/assist/index.ts', "import Anthropic from '@anthropic-ai/sdk'"],
+      ['main/assist/index.ts', "import { Messages } from '@anthropic-ai/sdk/resources'"],
       // a relative import may not leave src/, reach a test file, or point at nothing
       ['main/inventory/index.ts', "import { generateFixture } from '../../../scripts/fixtures/make-fixture.ts'"],
       ['main/inventory/index.ts', "import { helper } from './index.test.ts'"],
