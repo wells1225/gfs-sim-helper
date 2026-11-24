@@ -159,8 +159,8 @@ export function crashWithoutCauseWords(input: { crashCount: number; hasMods: boo
   const logPhrase = input.crashCount === 1 ? 'log only says' : 'logs only say'
   if (!input.hasMods) {
     return {
-      title: 'The game crashed even with no mods',
-      detail: `The crash ${logPhrase} when the game closed, not why. Since there are no mods in your mods folder, a mod didn't cause this. Try Repair in the EA app to check your game files.`
+      title: 'The game crashed, and there are no mods in your mods folder',
+      detail: `The crash ${logPhrase} when the game closed, not why. There are no mods in your mods folder right now, so a mod is unlikely to be the cause. Try Repair in the EA app to check your game files.`
     }
   }
   return {
