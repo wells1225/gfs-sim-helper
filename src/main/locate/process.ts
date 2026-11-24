@@ -9,7 +9,15 @@ export function isSimsProcessName(processName: string): boolean {
   return NORMALIZED_PROCESS_NAMES.has(normalized)
 }
 
-export async function isGameRunning(host: Pick<Host, 'listProcesses'>): Promise<boolean> {
-  const processes = await host.listProcesses()
-  return processes.some(isSimsProcessName)
+/** 'unknown' when the process list could not be read. Anything that changes files must treat it like 'running'. */
+export type GameRunState = 'running' | 'not-running' | 'unknown'
+
+export async function checkGameRunning(host: Pick<Host, 'listProcesses'>): Promise<GameRunState> {
+  let processes: string[]
+  try {
+    processes = await host.listProcesses()
+  } catch {
+    return 'unknown'
+  }
+  return processes.some(isSimsProcessName) ? 'running' : 'not-running'
 }

@@ -1,19 +1,18 @@
 // @vitest-environment node
-import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { generateFixture, loadSpec } from '../../../scripts/fixtures/make-fixture.ts'
+import { createFixtureHost, parsePeFileVersion } from './fixture-host.ts'
 import {
-  createFixtureHost,
+  checkGameRunning,
   findGameInstall,
   findUserFolders,
-  isGameRunning,
   isSimsProcessName,
   listInstalledPacks,
   locate,
-  parsePeFileVersion,
   parseRegQueryOutput,
   parseTasklistCsv,
   readGameVersionFromTxt,
@@ -59,7 +58,7 @@ describe('locate', () => {
   it('locates expected user folders and game install for every fixture spec', async () => {
     const cleanRoot = fixtureDirs.get('clean')!
     const clean = await locate(createFixtureHost(cleanRoot))
-    expect(clean.gameRunning).toBe(false)
+    expect(clean.gameRunning).toBe('not-running')
     expect(clean.userFolders).toEqual([
       {
         path: await realpath(join(cleanRoot, 'Users/Player/Documents/Electronic Arts/The Sims 4')),
@@ -289,8 +288,8 @@ describe('locate', () => {
     expect(isSimsProcessName('TS4_x64_helper.exe')).toBe(false)
     expect(isSimsProcessName('explorer.exe')).toBe(false)
 
-    expect(await isGameRunning({ listProcesses: async () => ['explorer.exe', 'TS4_DX9_x64.exe'] })).toBe(true)
-    expect(await isGameRunning({ listProcesses: async () => ['explorer.exe', 'CurseForge.exe'] })).toBe(false)
+    expect(await checkGameRunning({ listProcesses: async () => ['explorer.exe', 'TS4_DX9_x64.exe'] })).toBe('running')
+    expect(await checkGameRunning({ listProcesses: async () => ['explorer.exe', 'CurseForge.exe'] })).toBe('not-running')
   })
 
   it('parses Windows reg query output, tasklist CSV output, and invalid PE buffers safely', () => {

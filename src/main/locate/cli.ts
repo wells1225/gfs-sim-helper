@@ -1,4 +1,5 @@
-import { createFixtureHost, createRealHost, locate } from './index.ts'
+import { createFixtureHost } from './fixture-host.ts'
+import { createRealHost, locate } from './index.ts'
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2)

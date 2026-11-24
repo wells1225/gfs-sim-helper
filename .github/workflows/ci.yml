@@ -45,11 +45,21 @@ jobs:
           }
           Write-Host "PE FileVersionInfo OK: $peVersion"
 
-          # (2) Write HKLM WOW6432Node Install Dir and run locate through its real Host
+          # (2) Run locate through its real Host without, then with, HKLM WOW6432Node Install Dir
           $regPath = 'HKLM:\SOFTWARE\WOW6432Node\Maxis\The Sims 4'
           $tempDir = Join-Path $env:TEMP "sims-helper-locate-ci-$PID"
           $proc = $null
+          if (Test-Path $regPath) { throw "Runner already has $regPath; the missing-key check needs it absent" }
           try {
+            # (2a) Missing registry key: reg.exe exits 1, locate must still exit 0 with no install
+            $missingJson = (npm run --silent locate -- --real) -join "`n"
+            if ($LASTEXITCODE -ne 0) { throw "npm run locate -- --real failed with the registry key missing" }
+            $missing = $missingJson | ConvertFrom-Json
+            if ($null -ne $missing.gameInstall) {
+              throw "Expected gameInstall=null with the registry key missing, got '$($missing.gameInstall.path)'"
+            }
+            Write-Host "Missing registry key OK: gameInstall=null"
+
             New-Item -Path $regPath -Force | Out-Null
             Set-ItemProperty -Path $regPath -Name 'Install Dir' -Value $installDir
 
@@ -66,8 +76,8 @@ jobs:
             if ($packs -ne 'EP01,EP02,FP01,GP02,SP18') {
               throw "Expected packs 'EP01,EP02,FP01,GP02,SP18', got '$packs'"
             }
-            if ($result.gameRunning -ne $false) {
-              throw "Expected gameRunning=false before starting dummy process"
+            if ($result.gameRunning -ne 'not-running') {
+              throw "Expected gameRunning='not-running' before starting dummy process, got '$($result.gameRunning)'"
             }
             Write-Host "Registry + real Host locate OK: $($result.gameInstall.path) ($($result.gameInstall.version))"
 
@@ -81,8 +91,8 @@ jobs:
             $runningJson = (npm run --silent locate -- --real) -join "`n"
             if ($LASTEXITCODE -ne 0) { throw "npm run locate -- --real failed while game running" }
             $runningResult = $runningJson | ConvertFrom-Json
-            if ($runningResult.gameRunning -ne $true) {
-              throw "Expected gameRunning=true while dummy TS4_x64.exe is running"
+            if ($runningResult.gameRunning -ne 'running') {
+              throw "Expected gameRunning='running' while dummy TS4_x64.exe is running, got '$($runningResult.gameRunning)'"
             }
             Write-Host "Running-game check OK: gameRunning=$($runningResult.gameRunning)"
           } finally {

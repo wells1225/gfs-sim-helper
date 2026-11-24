@@ -9,8 +9,23 @@ export interface Host {
   documentsDir: string
   env: Record<string, string | undefined>
   readRegistry(key: string, value: string): Promise<string | undefined>
+  /** Rejects when the process list cannot be read, so callers never mistake "could not check" for "not running". */
   listProcesses(): Promise<string[]>
   fileVersion(filePath: string): Promise<string | undefined>
+}
+
+export type ExecRunner = (
+  file: string,
+  args: readonly string[],
+  options: { timeout: number; windowsHide: boolean; env?: Record<string, string | undefined> }
+) => Promise<{ stdout: string }>
+
+// A cold PowerShell start can take several seconds on a slow PC.
+const COMMAND_TIMEOUT_MS = 15_000
+
+const defaultRunner: ExecRunner = async (file, args, options) => {
+  const { stdout } = await execFileAsync(file, [...args], options)
+  return { stdout }
 }
 
 export function getEnvValue(env: Record<string, string | undefined>, name: string): string | undefined {
@@ -53,22 +68,26 @@ export function parseTasklistCsv(stdout: string): string[] {
   return names
 }
 
+// Prints the version string, then the numeric parts. The caller takes the first dotted
+// version, so a string such as "1, 129, 39, 1030" still yields the numeric version.
 const POWERSHELL_FILE_VERSION_SCRIPT =
   '$v = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($env:SIMS_HELPER_VERSION_PATH); ' +
-  'if ($v.FileVersion) { $v.FileVersion } ' +
-  'elseif ($v.FileMajorPart -or $v.FileMinorPart -or $v.FileBuildPart -or $v.FilePrivatePart) { ' +
+  '$v.FileVersion; ' +
+  'if ($v.FileMajorPart -or $v.FileMinorPart -or $v.FileBuildPart -or $v.FilePrivatePart) { ' +
   '"$($v.FileMajorPart).$($v.FileMinorPart).$($v.FileBuildPart).$($v.FilePrivatePart)" }'
 
 export function createWindowsHost(
   documentsDir: string = join(homedir(), 'Documents'),
-  env: Record<string, string | undefined> = process.env
+  env: Record<string, string | undefined> = process.env,
+  run: ExecRunner = defaultRunner
 ): Host {
   return {
     documentsDir,
     env,
     async readRegistry(key: string, value: string): Promise<string | undefined> {
       try {
-        const { stdout } = await execFileAsync('reg', ['query', key, '/v', value], {
+        const { stdout } = await run('reg', ['query', key, '/v', value], {
+          timeout: COMMAND_TIMEOUT_MS,
           windowsHide: true
         })
         return parseRegQueryOutput(stdout, value)
@@ -77,21 +96,24 @@ export function createWindowsHost(
       }
     },
     async listProcesses(): Promise<string[]> {
-      try {
-        const { stdout } = await execFileAsync('tasklist', ['/fo', 'csv', '/nh'], {
-          windowsHide: true
-        })
-        return parseTasklistCsv(stdout)
-      } catch {
-        return []
+      const { stdout } = await run('tasklist', ['/fo', 'csv', '/nh'], {
+        timeout: COMMAND_TIMEOUT_MS,
+        windowsHide: true
+      })
+      const names = parseTasklistCsv(stdout)
+      // A real Windows session always has processes; an empty list means tasklist did not work.
+      if (names.length === 0) {
+        throw new Error('tasklist returned no processes')
       }
+      return names
     },
     async fileVersion(filePath: string): Promise<string | undefined> {
       try {
-        const { stdout } = await execFileAsync(
+        const { stdout } = await run(
           'powershell.exe',
           ['-NoProfile', '-NonInteractive', '-Command', POWERSHELL_FILE_VERSION_SCRIPT],
           {
+            timeout: COMMAND_TIMEOUT_MS,
             windowsHide: true,
             env: {
               ...process.env,
