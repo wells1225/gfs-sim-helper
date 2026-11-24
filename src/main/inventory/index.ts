@@ -130,6 +130,48 @@ export async function buildInventory(input: {
 
   emitProgress({ task: 'scan', stage: 'counting', done: 0, total: null }, true)
 
+  const pendingLinks: { fullPath: string; relPath: RelPath; depth: number }[] = []
+
+  async function visitLink(fullPath: string, relPath: RelPath, depth: number): Promise<void> {
+    let targetReal: string
+    try {
+      targetReal = await realpath(fullPath)
+    } catch (err) {
+      skipped.push({ relPath, detail: formatError(err) })
+      return
+    }
+
+    if (!isInsideRoot(targetReal, modsRealRoot)) {
+      skipped.push({ relPath, detail: 'Link points outside Mods folder' })
+      return
+    }
+
+    let info
+    try {
+      info = await stat(fullPath)
+    } catch (err) {
+      skipped.push({ relPath, detail: formatError(err) })
+      return
+    }
+
+    if (info.isDirectory()) {
+      const dirKey = normalizePathKey(targetReal)
+      if (visitedDirs.has(dirKey)) return
+      visitedDirs.add(dirKey)
+      await walk(fullPath, relPath, depth + 1)
+    } else if (info.isFile()) {
+      discovered.push({
+        fullPath,
+        relPath,
+        depth,
+        bytes: info.size,
+        modifiedAt: info.mtime.toISOString(),
+        kind: classifyKind(fullPath)
+      })
+      emitProgress({ task: 'scan', stage: 'counting', done: discovered.length, total: null })
+    }
+  }
+
   async function walk(dirPath: string, relDir: string, depth: number): Promise<void> {
     let entries
     try {
@@ -138,14 +180,6 @@ export async function buildInventory(input: {
       skipped.push({ relPath: relDir, detail: formatError(err) })
       return
     }
-
-    // Walk real entries before symlinks so an alias never shadows a canonical directory path.
-    entries.sort((a, b) => {
-      const aLink = a.isSymbolicLink() ? 1 : 0
-      const bLink = b.isSymbolicLink() ? 1 : 0
-      if (aLink !== bLink) return aLink - bLink
-      return compareRelPath(a.name, b.name)
-    })
 
     for (const entry of entries) {
       if (depth === 0 && entry.name.toLowerCase() === 'resource.cfg') {
@@ -156,43 +190,8 @@ export async function buildInventory(input: {
       const fullPath = join(dirPath, entry.name)
 
       if (entry.isSymbolicLink()) {
-        let targetReal: string
-        try {
-          targetReal = await realpath(fullPath)
-        } catch (err) {
-          skipped.push({ relPath, detail: formatError(err) })
-          continue
-        }
-
-        if (!isInsideRoot(targetReal, modsRealRoot)) {
-          skipped.push({ relPath, detail: 'Link points outside Mods folder' })
-          continue
-        }
-
-        let info
-        try {
-          info = await stat(fullPath)
-        } catch (err) {
-          skipped.push({ relPath, detail: formatError(err) })
-          continue
-        }
-
-        if (info.isDirectory()) {
-          const dirKey = normalizePathKey(targetReal)
-          if (visitedDirs.has(dirKey)) continue
-          visitedDirs.add(dirKey)
-          await walk(fullPath, relPath, depth + 1)
-        } else if (info.isFile()) {
-          discovered.push({
-            fullPath,
-            relPath,
-            depth,
-            bytes: info.size,
-            modifiedAt: info.mtime.toISOString(),
-            kind: classifyKind(entry.name)
-          })
-          emitProgress({ task: 'scan', stage: 'counting', done: discovered.length, total: null })
-        }
+        // Links wait until the whole real tree is walked, so a file is listed under its real path.
+        pendingLinks.push({ fullPath, relPath, depth })
         continue
       }
 
@@ -240,6 +239,10 @@ export async function buildInventory(input: {
   }
 
   await walk(modsDir, '', 0)
+  for (let i = 0; i < pendingLinks.length; i += 1) {
+    const link = pendingLinks[i]!
+    await visitLink(link.fullPath, link.relPath, link.depth)
+  }
 
   discovered.sort((a, b) => compareRelPath(a.relPath, b.relPath))
   skipped.sort((a, b) => compareRelPath(a.relPath, b.relPath))
