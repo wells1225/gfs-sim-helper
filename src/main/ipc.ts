@@ -5,12 +5,19 @@ import { fiftyHandlers } from './fiftyfifty/handlers.ts'
 import { fixHandlers } from './fixes/handlers.ts'
 import type { AppContext } from './ports.ts'
 import { scanHandlers } from './scan/handlers.ts'
+import { updateHandlers } from './update/handlers.ts'
 
 export type IpcMainLike = Pick<IpcMain, 'handle'>
 export type IsAppWindow = (event: IpcMainInvokeEvent) => boolean
 
 export function collectHandlers(ctx: AppContext): Handlers<keyof IpcInvoke> {
-  const groups = [scanHandlers(ctx), fixHandlers(ctx), fiftyHandlers(ctx), assistHandlers(ctx)]
+  const groups = [
+    scanHandlers(ctx),
+    fixHandlers(ctx),
+    fiftyHandlers(ctx),
+    assistHandlers(ctx),
+    updateHandlers(ctx)
+  ]
   const merged: Record<string, (req: unknown) => Promise<unknown>> = {}
 
   for (const group of groups) {

@@ -21,7 +21,7 @@
     "test:e2e": "playwright test",
     "test:screens": "playwright test --project=screens",
     "test:live": "playwright test --project=live",
-    "dist:win": "npm run build && electron-builder --win nsis --x64",
+    "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never",
     "check": "npm run typecheck && npm test && npm run build"
   },
   "devDependencies": {
@@ -40,6 +40,7 @@
     "clsx": "^2.1.1",
     "electron": "^45.4.1",
     "electron-builder": "^26.18.0",
+    "electron-updater": "^6.8.11",
     "electron-vite": "^6.0.0",
     "fflate": "^0.8.3",
     "happy-dom": "^21.0.4",
