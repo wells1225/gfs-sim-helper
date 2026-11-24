@@ -574,6 +574,7 @@ describe('the built-in transport (the real SDK on a fake fetch)', () => {
   interface Call {
     url: string
     method: string | undefined
+    redirect: RequestInit['redirect']
     headers: Headers
     body: string
   }
@@ -584,6 +585,7 @@ describe('the built-in transport (the real SDK on a fake fetch)', () => {
       const call: Call = {
         url: typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url,
         method: init?.method,
+        redirect: init?.redirect,
         headers: new Headers(init?.headers),
         body: String(init?.body)
       }
@@ -761,6 +763,37 @@ describe('the built-in transport (the real SDK on a fake fetch)', () => {
     )
 
     expect(await sendWithKey(await stored(), MESSAGE)).toEqual({ status: 'failed', why: 'error' })
+    expect(output).toEqual([])
+  })
+
+  it('disables HTTP redirects so a 3xx response cannot forward the request or body to another host', async () => {
+    const calls = answerWith(
+      () =>
+        new Response(null, {
+          status: 307,
+          headers: { location: 'https://elsewhere.example/steal', 'x-should-retry': 'false' }
+        })
+    )
+
+    const reply = await sendWithKey(await stored(), MESSAGE)
+
+    expect(calls).toHaveLength(1)
+    expect(['manual', 'error']).toContain(calls[0]!.redirect)
+    expect(reply.status).toBe('failed')
+    expect(output).toEqual([])
+  })
+
+  it('ignores ANTHROPIC_CUSTOM_HEADERS so the environment cannot replace Authorization or inject headers', async () => {
+    vi.stubEnv('ANTHROPIC_CUSTOM_HEADERS', 'Authorization: Bearer FAKE-ENV-OVERRIDE\nX-Injected: yes')
+    const calls = answerWith(() => json(200, message([{ type: 'text', text: 'ok' }])))
+
+    const reply = await sendWithKey(await stored(), MESSAGE)
+
+    expect(reply).toEqual({ status: 'text', text: 'ok' })
+    expect(calls).toHaveLength(1)
+    expect(calls[0]!.headers.get('authorization')).toBe(`Bearer ${KEY}`)
+    expect(calls[0]!.headers.get('x-injected')).toBeNull()
+    expect(textIn([...calls[0]!.headers])).not.toContain('FAKE-ENV')
     expect(output).toEqual([])
   })
 })
