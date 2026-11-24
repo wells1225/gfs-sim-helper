@@ -346,6 +346,12 @@ function pathUses(op: WriteOp): [string, WriteUse | 'read'][] {
   return [[op.path, op.op === 'write' ? `write-${op.mode}` : op.op]]
 }
 
+/** The path is a saves or Tray folder, or inside one, wherever that folder is. */
+function hasForbiddenName(place: string): boolean {
+  const names = (looseParts(nativePath, place) ?? []).slice(1)
+  return names.some((name) => FORBIDDEN_NAMES.has(looseFold(name)))
+}
+
 /** Checks the folders a request stands on. Nothing here changes the disk. */
 async function checkGround(asked: Asked, glance: Glance): Promise<Ground | GateRefusal> {
   const { folderPath, dataDir } = asked
@@ -383,15 +389,15 @@ async function checkGround(asked: Asked, glance: Glance): Promise<Ground | GateR
     if (cloudRoots.some((root) => isInside(nativePath, place, root))) return outside(dataDir)
   }
 
-  // The Sims folder: a localized name from PR 3, with Options.ini inside. It may be a link or a junction:
-  // players move the folder to another drive. The real folder may then have any name, but it still holds
-  // Options.ini (stat follows the link), and it is never inside a saves or Tray folder.
+  // The Sims folder is the folder that holds Options.ini (stat follows a link), under any name: players move
+  // it to another drive, and PR 3 hands over the real path. It is never saves or Tray, nor inside one,
+  // neither by the path that was given nor by where that path really leads.
   let realFolder: string | null = null
   const realForbidden: string[] = []
   if (folderPath !== null) {
     const notSims: GateRefusal = { reason: 'not-a-sims-folder', path: folderPath }
     if (!isWellFormed(nativePath, folderPath)) return notSims
-    if (!SIMS_FOLDER_NAMES.has(normalizeSimsFolderName(nativePath.basename(folderPath)))) return notSims
+    if (hasForbiddenName(folderPath)) return notSims
     try {
       if (!(await statOrNull(folderPath))?.isDirectory()) return notSims
       if (!(await statOrNull(nativePath.join(folderPath, 'Options.ini')))?.isFile()) return notSims
@@ -400,8 +406,7 @@ async function checkGround(asked: Asked, glance: Glance): Promise<Ground | GateR
       return checkFailed(folderPath)
     }
     leads.push({ path: folderPath, real: realFolder })
-    const realNames = (looseParts(nativePath, realFolder) ?? []).slice(1)
-    if (realNames.some((name) => FORBIDDEN_NAMES.has(looseFold(name)))) return notSims
+    if (hasForbiddenName(realFolder)) return notSims
     // saves or Tray may itself be a link to another drive. Where it leads is forbidden too, and when that
     // cannot be found out (the drive is not plugged in), nothing is touched.
     for (const name of ['saves', 'Tray']) {
@@ -622,8 +627,14 @@ async function takeTurn(deps: GateDeps, request: WriteRequest): Promise<GateResu
       const refusal = await refusalNow(checked, index)
       if (refusal !== null) throw new OpFailure(`the path no longer passes its check (${refusal.reason})`)
     }
+    // Before the first op nothing has run, so a path that no longer passes refuses the whole request.
+    // `failed` is only for a stop after the disk may have changed.
+    if (index === 0) {
+      const refusal = await refusalNow(checked, 0)
+      if (refusal !== null) return refused(refusal)
+    }
     try {
-      await followAgain()
+      if (index > 0) await followAgain()
       await carryOut(op, checked, followAgain)
     } catch (err) {
       return { status: 'failed', opsDone: index, detail: `${what}: ${explain(err)}` }
