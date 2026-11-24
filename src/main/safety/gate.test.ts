@@ -922,6 +922,17 @@ describe('where the app data folder may be', () => {
     await expectEverythingRefused(w)
   })
 
+  it('under a symlinked OneDrive root whose env value has a trailing separator: every request is refused', async () => {
+    const w = await makeWorld()
+    const cloud = join(w.root, 'pc', 'Users', 'Player', 'Cloud')
+    await mkdir(cloud, { recursive: true })
+    const cloudLink = join(w.root, 'pc', 'Users', 'Player', 'SyncLink')
+    await linkFolder(cloud, cloudLink)
+    await moveDataDir(w, join(cloud, 'AppData'))
+    w.paths.oneDriveRoots = [`${cloudLink}${sep}`]
+    await expectEverythingRefused(w)
+  })
+
   it('not written out in full: every request is refused', async () => {
     const w = await makeWorld()
     for (const dataDir of ['SimsHelper', '', `${w.dataDir}${sep}..${sep}SimsHelper`]) {
