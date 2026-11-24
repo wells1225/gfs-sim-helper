@@ -132,7 +132,8 @@ Her game crashes now, and the app is weeks away. Two things can help this week.
 - [ ] Change:
   - Finds every candidate user folder. It looks under `app.getPath('documents')`, under both OneDrive Documents paths
     and in every localized folder name. A candidate counts when it holds `Options.ini`.
-  - For each candidate it reports `inOneDrive` and the newest file date.
+  - For each candidate it reports `inOneDrive` and the newest date of the files the game writes (`Options.ini`, logs,
+    `saves/`). `Mods/` does not count, because CurseForge can install into a stale folder.
   - Finds the game from the registry value `Install Dir` (`HKLM\SOFTWARE\WOW6432Node\Maxis\The Sims 4`), then from the
     EA app, Steam and Origin default paths.
   - Reads the version from the file version of `Game\Bin\TS4_x64.exe`, and from `GameVersion.txt` as a fallback.
