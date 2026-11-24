@@ -19,6 +19,7 @@ export const ASSIST_SYSTEM_PROMPT = [
 ].join('\n')
 
 export const PREVIEW_CHARS_AT_MOST = 40_000
+const LINE_CHARS_AT_MOST = 1_000
 const CUT_MARK = '(list cut)'
 const REPORTS_AT_MOST = 5
 const FRAMES_AT_MOST = 15
@@ -34,64 +35,178 @@ const SYMPTOM_WORDS: Record<Symptom, string> = {
   'not-sure': 'Not sure'
 }
 
-// Where a path starts in free text: a drive (C:\ or C:/), a network share (\\server), a root path ( /Users),
-// or a Saves or Tray folder named on its own.
-const PATH_STARTS: readonly RegExp[] = [
+// Absolute, UNC, file URL, environment-variable, home and dot-relative paths.
+const ABS_OR_ENV_PATH_STARTS: readonly RegExp[] = [
   /[A-Za-z]:[\\/]/,
   /\\\\/,
-  /(?<![\w.:-])\/(?=\w)/,
-  /(?<![\w.-])(?:saves|tray)[\\/]/i
+  /file:[\\/]+/i,
+  /(?<![\w.:-])\/\/(?=[^\s/])/,
+  /(?<!\w)%[A-Za-z_][A-Za-z0-9_()]*%/,
+  /(?<![\w.-])~[\\/]/,
+  /(?<![\w.-])\$(?:HOME|USERPROFILE|APPDATA|LOCALAPPDATA|env:[A-Za-z_]\w*)(?:[\\/]|(?![\w]))/i,
+  /(?<![\w.-])\.{1,2}[\\/]/,
+  /(?<!:\/)(?<![\w.])\/(?=[^\s/])/
 ]
-const SAVES_OR_TRAY_PART = /(?:^|[\\/\s'"(])(?:saves|tray)(?:[\\/]|$)/im
-const MODS_PART = /[\\/]mods[\\/]/i
+const SAVES_OR_TRAY_PATH = /(?:[\\/](?:saves|tray)(?![\w-])|(?<![\w.-])(?:saves|tray)[\\/])/i
+const BARE_SAVES_OR_TRAY = /^['"]?(?:saves|tray)['"]?$/i
+const HAS_PARENT_REF = /(?:^|[\\/])\.\.(?:[\\/]|$|[\s'")\]},;:])/
+const OUTSIDE_MODS_SEGMENT =
+  /(?:^|[\s'"(\[{,=;:])(?:Users|Documents|Desktop|Downloads|AppData|OneDrive|Program Files(?:\s*\(x86\))?|Windows|Electronic Arts|The Sims 4)[\\/]/i
+const FREE_TEXT_PATH_STARTS: readonly RegExp[] = [
+  ...ABS_OR_ENV_PATH_STARTS,
+  SAVES_OR_TRAY_PATH,
+  OUTSIDE_MODS_SEGMENT,
+  /<user>[\\/]/
+]
+const NOT_PATH_CHAR = /[\s\\/:*?"<>|]/
+const PRECEDING_WORD = /[\w.-]/
+const DATE_TOKEN = /^\d{1,4}\/\d{1,2}\/\d{1,4}$/
+const UNC_OR_ENV_START =
+  /^(?:\\\\|\/\/|file:|%[A-Za-z_][A-Za-z0-9_()]*%|~[\\/]|\$(?:HOME|USERPROFILE|APPDATA|LOCALAPPDATA|env:[A-Za-z_]\w*))/i
+const MODS_PART = /(?:^|[\\/])mods[\\/]/i
 
-function firstPathStart(text: string): number {
+function firstMatch(text: string, patterns: readonly RegExp[]): number {
   let first = -1
-  for (const pattern of PATH_STARTS) {
+  for (const pattern of patterns) {
     const match = pattern.exec(text)
     if (match && (first === -1 || match.index < first)) first = match.index
   }
   return first
 }
 
+/** Linear-time search for a relative Windows backslash path such as `Lila\Documents\file.txt`. */
+function firstBackslashPath(text: string): number {
+  let pos = 0
+  while (pos < text.length) {
+    const slash = text.indexOf('\\', pos)
+    if (slash === -1) return -1
+    const next = text[slash + 1]
+    if (next !== undefined && !/\s/.test(next) && next !== '\\') {
+      let start = slash
+      while (start > 0 && !NOT_PATH_CHAR.test(text[start - 1]!)) start -= 1
+      if (start < slash && (start === 0 || !PRECEDING_WORD.test(text[start - 1]!))) {
+        return start
+      }
+    }
+    pos = slash + 1
+  }
+  return -1
+}
+
+/** Linear-time search for a multi-segment relative forward-slash path (2+ slashes), skipping dates like 11/23/26. */
+function firstMultiSlashPath(text: string): number {
+  let pos = 0
+  while (pos < text.length) {
+    const slash = text.indexOf('/', pos)
+    if (slash === -1) return -1
+    let start = slash
+    while (start > 0 && !NOT_PATH_CHAR.test(text[start - 1]!)) start -= 1
+    let end = slash + 1
+    while (end < text.length && !/[\s'"()\[\]{},;:]/.test(text[end]!)) end += 1
+    const token = text.slice(start, end)
+    const secondSlash = token.indexOf('/', slash - start + 1)
+    if (start < slash && secondSlash !== -1 && secondSlash + 1 < token.length && !DATE_TOKEN.test(token)) {
+      return start
+    }
+    pos = Math.max(end, slash + 1)
+  }
+  return -1
+}
+
+function firstFreeTextPath(text: string): number {
+  let first = firstMatch(text, FREE_TEXT_PATH_STARTS)
+  for (const candidate of [firstBackslashPath(text), firstMultiSlashPath(text)]) {
+    if (candidate !== -1 && (first === -1 || candidate < first)) first = candidate
+  }
+  return first
+}
+
+/** Also applies `redact` to the leading segment of any path-like token (one containing `/` or `\`). */
+function redactPathTokens(text: string, redact: (text: string) => string): string {
+  const base = redact(text)
+  if (!base.includes('/') && !base.includes('\\')) return base
+  return base.replace(/[^\s'"()\[\]{},;:=]+/g, (token) =>
+    token.includes('/') || token.includes('\\') ? redact(token) : token
+  )
+}
+
 /** The part of a path after its Mods folder, as 'Mods/...', or null when the path is not safely inside Mods. */
 function insideMods(path: string): string | null {
-  if (SAVES_OR_TRAY_PART.test(path)) return null
+  if (UNC_OR_ENV_START.test(path)) return null
+  if (SAVES_OR_TRAY_PATH.test(path) || HAS_PARENT_REF.test(path)) return null
   const match = MODS_PART.exec(path)
   if (!match) return null
   const after = path.slice(match.index + match[0].length)
-  if (after === '' || firstPathStart(after) !== -1) return null
+  if (after === '') return null
+  if (firstMatch(after, ABS_OR_ENV_PATH_STARTS) !== -1) return null
+  if (OUTSIDE_MODS_SEGMENT.test(after)) return null
   return `Mods/${after.replace(/\\/g, '/')}`
 }
 
 /**
- * Free text with every path taken out. A path can hold spaces ("Electronic Arts\The Sims 4"), so everything from
- * where a path starts to the end of the line goes, unless it is inside Mods.
+ * Redacts and strips paths from free text, collapsing newlines onto one line so a split path or
+ * username after a line break cannot slip through and a mod name cannot forge preview sections.
  */
-function withoutPaths(text: string): string {
-  const start = firstPathStart(text)
-  if (start === -1) return text
-  return text.slice(0, start) + (insideMods(text.slice(start)) ?? '<path>')
+function cleanFreeText(text: string, redact: (text: string) => string): string {
+  const rawLines = text.split(/\r\n|\r|\n/)
+  const out: string[] = []
+  for (const rawLine of rawLines) {
+    const redacted = redactPathTokens(rawLine, redact)
+    const start = firstFreeTextPath(redacted)
+    if (start === -1) {
+      out.push(redacted)
+      continue
+    }
+    const mods = insideMods(redacted.slice(start))
+    if (mods === null) {
+      // A non-Mods path may wrap across later lines, so drop the rest of the field from here.
+      out.push(`${redacted.slice(0, start)}<path>`)
+      break
+    }
+    out.push(`${redacted.slice(0, start)}${mods}`)
+  }
+  return redact(out.join(' ').replace(/ {2,}/g, ' ').trim())
 }
 
 /** A frame keeps its place in Mods, or else only its folder and file name: never the rest of the path. */
-function framePath(path: string): string {
-  if (firstPathStart(path) === -1 && !path.includes('\\')) return withoutPaths(path) // e.g. ActionScript names
-  if (SAVES_OR_TRAY_PART.test(path)) return '<path>'
-  const mods = insideMods(path)
+function framePath(rawPath: string, redact: (text: string) => string): string {
+  if (/[\r\n]/.test(rawPath)) return '<path>'
+  const stripped = redact(rawPath).trim().replace(/^(['"])(.*)\1$/, '$2')
+  if (stripped === '' || BARE_SAVES_OR_TRAY.test(stripped) || SAVES_OR_TRAY_PATH.test(stripped)) return '<path>'
+  if (HAS_PARENT_REF.test(stripped) || UNC_OR_ENV_START.test(stripped)) return '<path>'
+  if (firstFreeTextPath(stripped) === -1 && !stripped.includes('\\')) return stripped
+  const mods = insideMods(stripped)
   if (mods !== null) return mods
-  const parts = path.split(/[\\/]+/).filter((part) => part !== '' && !/^[A-Za-z]:$/.test(part))
+  const parts = stripped
+    .split(/[\\/]+/)
+    .filter((part) => part !== '' && part !== '<user>' && !/^[A-Za-z]:$/.test(part))
   return parts.slice(-2).join('/') || '<path>'
 }
 
+function modFilePath(file: string, redact: (text: string) => string): string {
+  if (/[\r\n]/.test(file)) return '<path>'
+  const normalized = redact(file).replace(/\\/g, '/')
+  if (
+    normalized === '' ||
+    normalized.startsWith('/') ||
+    HAS_PARENT_REF.test(normalized) ||
+    UNC_OR_ENV_START.test(normalized) ||
+    SAVES_OR_TRAY_PATH.test(normalized) ||
+    firstMatch(normalized, ABS_OR_ENV_PATH_STARTS) !== -1
+  ) {
+    return '<path>'
+  }
+  return redact(`Mods/${normalized}`)
+}
+
 function frameLine(frame: LogFrame, redact: (text: string) => string): string {
-  const where = framePath(redact(frame.path))
+  const where = framePath(frame.path, redact)
   const line = frame.line === null ? '' : ` line ${frame.line}`
   return `     ${where}${line} (${frame.origin === 'mod' ? 'mod' : 'game'})`
 }
 
 function field(value: string | null, redact: (text: string) => string): string {
-  return value === null ? 'none' : withoutPaths(redact(value))
+  return value === null ? 'none' : cleanFreeText(value, redact)
 }
 
 function reportLines(report: LogReport, n: number, redact: (text: string) => string): string[] {
@@ -124,6 +239,29 @@ function wellFormed(text: string): string {
   return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD')
 }
 
+function safeSlice(text: string, maxChars: number): string {
+  let end = Math.min(text.length, maxChars)
+  if (end > 0) {
+    const code = text.charCodeAt(end - 1)
+    if (code >= 0xd800 && code <= 0xdbff) end -= 1
+  }
+  const tail = text.slice(Math.max(0, end - 12), end)
+  const incomplete =
+    /(?:<(?:user|use|us|u|path|pat|pa|p)?|&(?:#x?[0-9a-fA-F]+|[a-zA-Z]+)?|\\(?:u\{[0-9a-fA-F]*|u[0-9a-fA-F]{0,3}|x[0-9a-fA-F]?)?)$/.exec(
+      tail
+    )
+  if (incomplete && incomplete[0].length > 0) {
+    end -= incomplete[0].length
+  }
+  return text.slice(0, end)
+}
+
+function capLine(line: string): string {
+  const clean = wellFormed(line)
+  if (clean.length <= LINE_CHARS_AT_MOST) return clean
+  return `${safeSlice(clean, LINE_CHARS_AT_MOST - 3)}...`
+}
+
 /** Whole lines up to the cap, then "(list cut)" when anything was left out. */
 function capped(lines: string[]): string {
   const all = lines.join('\n')
@@ -132,7 +270,7 @@ function capped(lines: string[]): string {
   const kept: string[] = []
   let length = 0
   for (const line of lines) {
-    const next = length === 0 ? line.length : length + 1 + line.length
+    const next = kept.length === 0 ? line.length : length + 1 + line.length
     if (next > room) break
     kept.push(line)
     length = next
@@ -156,7 +294,7 @@ export function buildPreview(scan: Scan, redact: (text: string) => string, id: s
 
   const lines: string[] = [
     'Sims 4 crash summary from the helper app',
-    `Game version: ${withoutPaths(redact(gameVersion(scan, newest)))}`,
+    `Game version: ${cleanFreeText(gameVersion(scan, newest), redact)}`,
     `What happened: ${SYMPTOM_WORDS[scan.symptom] ?? SYMPTOM_WORDS['not-sure']}`,
     `Mod groups: ${groups.length}`,
     ''
@@ -174,15 +312,15 @@ export function buildPreview(scan: Scan, redact: (text: string) => string, id: s
   for (const group of groups.slice(0, GROUPS_AT_MOST)) {
     const from = group.source === 'curseforge' ? 'from CurseForge' : group.source === 'folder' ? 'a folder' : 'a single file'
     const script = group.hasScript ? ', has a script mod' : ''
-    lines.push(`- ${withoutPaths(redact(group.label))} (${from}${script})`)
-    for (const file of group.files.slice(0, FILES_PER_GROUP_AT_MOST)) lines.push(`    ${redact(`Mods/${file}`)}`)
+    lines.push(`- ${cleanFreeText(group.label, redact)} (${from}${script})`)
+    for (const file of group.files.slice(0, FILES_PER_GROUP_AT_MOST)) lines.push(`    ${modFilePath(file, redact)}`)
     if (group.files.length > FILES_PER_GROUP_AT_MOST) {
       lines.push(`    (and ${group.files.length - FILES_PER_GROUP_AT_MOST} more files)`)
     }
   }
   if (groups.length > GROUPS_AT_MOST) lines.push(`(and ${groups.length - GROUPS_AT_MOST} more mod groups)`)
 
-  return { id, text: capped(lines.map((line) => wellFormed(redact(line)))) }
+  return { id, text: capped(lines.map((line) => capLine(redact(line)))) }
 }
 
 export async function ask(keyStore: KeyStore, preview: AssistPreview): Promise<AssistAnswer> {

@@ -21,16 +21,18 @@ export function AskScreen() {
   const { go } = useNav()
   const [state, setState] = useState<Step>({ step: 'loading' })
   const live = useRef(true)
+  const reqId = useRef(0)
 
   const loadPreview = useCallback(() => {
+    const id = ++reqId.current
     setState({ step: 'loading' })
     api.invoke('assist:preview').then(
       (preview) => {
-        if (!live.current) return
+        if (!live.current || reqId.current !== id) return
         setState(preview === null ? { step: 'no-scan' } : { step: 'preview', preview, sending: false })
       },
       () => {
-        if (live.current) setState({ step: 'no-answer', why: 'error' })
+        if (live.current && reqId.current === id) setState({ step: 'no-answer', why: 'error' })
       }
     )
   }, [api])
@@ -40,18 +42,20 @@ export function AskScreen() {
     loadPreview()
     return () => {
       live.current = false
+      reqId.current += 1
     }
   }, [loadPreview])
 
   const send = (preview: AssistPreview) => {
+    const id = ++reqId.current
     setState({ step: 'preview', preview, sending: true })
     api.invoke('assist:send', { previewId: preview.id }).then(
       (answer) => {
-        if (!live.current) return
+        if (!live.current || reqId.current !== id) return
         setState(answer.status === 'answered' ? { step: 'answered', text: answer.text } : { step: 'no-answer', why: answer.why })
       },
       () => {
-        if (live.current) setState({ step: 'no-answer', why: 'error' })
+        if (live.current && reqId.current === id) setState({ step: 'no-answer', why: 'error' })
       }
     )
   }
@@ -141,25 +145,28 @@ export function AskScreen() {
         </Card>
       )}
 
-      {state.step === 'no-answer' && (
-        <>
-          <Alert variant="info">
-            <AlertTitle>{NO_ANSWER_WORDS[state.why].title}</AlertTitle>
-            <AlertDescription>{NO_ANSWER_WORDS[state.why].detail}</AlertDescription>
-          </Alert>
-          <div className="flex gap-2">
-            {NO_ANSWER_WORDS[state.why].canRetry && (
-              <Button onClick={loadPreview}>
-                <RefreshCw className="size-4" strokeWidth={1.75} aria-hidden="true" />
-                Try again
+      {state.step === 'no-answer' && (() => {
+        const copy = NO_ANSWER_WORDS[state.why] ?? NO_ANSWER_WORDS.error
+        return (
+          <>
+            <Alert variant="info">
+              <AlertTitle>{copy.title}</AlertTitle>
+              <AlertDescription>{copy.detail}</AlertDescription>
+            </Alert>
+            <div className="flex gap-2">
+              {copy.canRetry && (
+                <Button onClick={loadPreview}>
+                  <RefreshCw className="size-4" strokeWidth={1.75} aria-hidden="true" />
+                  Try again
+                </Button>
+              )}
+              <Button variant="outline" onClick={backToCheckUp}>
+                Back to the check-up
               </Button>
-            )}
-            <Button variant="outline" onClick={backToCheckUp}>
-              Back to the check-up
-            </Button>
-          </div>
-        </>
-      )}
+            </div>
+          </>
+        )
+      })()}
     </main>
   )
 }

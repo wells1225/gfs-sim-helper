@@ -32,7 +32,7 @@ export function assistHandlers(ctx: AppContext): Handlers<AssistChannel> {
     async 'assist:preview'() {
       const scan = ctx.session.scan
       kept = scan === null ? null : buildPreview(scan, ctx.redact, ctx.newId())
-      return kept
+      return kept === null ? null : { id: kept.id, text: kept.text }
     },
 
     async 'assist:send'(req) {
@@ -49,7 +49,8 @@ export function assistHandlers(ctx: AppContext): Handlers<AssistChannel> {
       try {
         return await ctx.keyStore.set(typeof key === 'string' ? key : '')
       } catch {
-        return keyStatus()
+        const status = await keyStatus()
+        return status === 'set' ? 'not-saved' : status
       }
     },
 

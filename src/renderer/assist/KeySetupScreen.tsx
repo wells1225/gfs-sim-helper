@@ -19,36 +19,40 @@ export function KeySetupScreen() {
   const api = useApi()
   const field = useRef<HTMLInputElement>(null)
   const live = useRef(true)
+  const reqId = useRef(0)
   const [status, setStatus] = useState<KeyStatus | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     live.current = true
+    const id = ++reqId.current
     api.invoke('assist:status').then(
       (answer) => {
-        if (live.current) setStatus(answer.key)
+        if (live.current && reqId.current === id) setStatus(answer.key)
       },
       () => {
-        if (live.current) setStatus('not-set')
+        if (live.current && reqId.current === id) setStatus('not-set')
       }
     )
     return () => {
       live.current = false
+      reqId.current += 1
+      if (field.current) field.current.value = ''
     }
   }, [api])
 
-  const finish = (next: KeyStatus, note: string | null = null) => {
-    if (!live.current) return
+  const finish = (id: number, next: KeyStatus, note: string | null = null) => {
+    if (!live.current || reqId.current !== id) return
     setStatus(next)
     setNote(note)
     setBusy(false)
   }
 
-  const saved = (result: KeySetResult) => {
+  const saved = (id: number, result: KeySetResult) => {
     // not-saved: the new key was refused and the one stored before stays, so the status is still 'set'
-    if (result === 'not-saved') finish('set', OLD_KEY_KEPT)
-    else finish(result, result === 'not-set' ? NOT_SAVED : null)
+    if (result === 'not-saved') finish(id, 'set', OLD_KEY_KEPT)
+    else finish(id, result, result === 'not-set' ? NOT_SAVED : null)
   }
 
   const save = (event: FormEvent) => {
@@ -57,21 +61,27 @@ export function KeySetupScreen() {
     if (input === null) return
     const key = input.value
     input.value = ''
-    if (key.trim() === '') return
+    if (busy || status === null || status === 'encryption-unavailable' || key.trim() === '') return
+    const prior = status
+    const id = ++reqId.current
     setBusy(true)
     api.invoke('assist:set-key', { key }).then(
-      saved,
-      () => finish('not-set', NOT_SAVED)
+      (result) => saved(id, result),
+      () => finish(id, prior, prior === 'set' ? OLD_KEY_KEPT : NOT_SAVED)
     )
   }
 
   const remove = () => {
+    const prior = status
+    const id = ++reqId.current
     setBusy(true)
     api.invoke('assist:clear-key').then(
-      (next) => finish(next),
-      () => finish(status ?? 'not-set')
+      (next) => finish(id, next),
+      () => finish(id, prior ?? 'not-set')
     )
   }
+
+  const entryDisabled = busy || status === null || status === 'encryption-unavailable'
 
   return (
     <main className="mx-auto flex max-w-xl flex-col gap-4 py-6">
@@ -110,13 +120,13 @@ export function KeySetupScreen() {
               spellCheck={false}
               autoCapitalize="off"
               autoCorrect="off"
-              disabled={busy || status === null}
+              disabled={entryDisabled}
             />
           </form>
         </CardContent>
 
         <CardFooter className="gap-2">
-          <Button type="submit" form="key-setup-form" disabled={busy || status === null}>
+          <Button type="submit" form="key-setup-form" disabled={entryDisabled}>
             Save
           </Button>
           <Button variant="outline" onClick={remove} disabled={busy || status !== 'set'}>
