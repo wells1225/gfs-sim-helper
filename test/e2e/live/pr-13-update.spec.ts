@@ -8,7 +8,6 @@ import { readdir, readFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
-import { readLatest } from '../../../scripts/release/stage.ts'
 import { launchApp, type LaunchedApp } from '../support/app.ts'
 
 const run = promisify(execFile)
@@ -26,7 +25,9 @@ let versionB = ''
 
 test.beforeAll(async () => {
   const dir = FEED_DIR!
-  versionB = readLatest(await readFile(join(dir, 'latest.yml'), 'utf8')).version
+  // Read here, not with scripts/release/stage.ts: Playwright loads specs as CommonJS, and that script is a module.
+  versionB = /^version: *(\S+)/m.exec(await readFile(join(dir, 'latest.yml'), 'utf8'))?.[1] ?? ''
+  if (!versionB) throw new Error(`no version in ${join(dir, 'latest.yml')}`)
   server = createServer((req, res) => {
     // The updater adds ?noCache=..., so only the file name counts. Nothing outside the feed folder is served.
     const name = basename(decodeURIComponent(new URL(req.url ?? '/', 'http://feed').pathname))
