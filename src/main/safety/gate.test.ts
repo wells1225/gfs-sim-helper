@@ -1576,4 +1576,14 @@ describe('sortPath, the name check, with Windows paths (runs on any machine)', (
       wellFormed: true
     })
   })
+
+  it('Unicode Kelvin sign U+212A is not folded into ASCII k on allow checks', () => {
+    expect(sortPath(win32, roots, `${sims}\\localthumbcache.pac\u212aage`).zone).toBe('sims-other')
+    const kateRoots: GateRoots = {
+      folderPath: null,
+      dataDir: 'C:\\Users\\Kate\\AppData\\Local\\SimsHelper',
+      desktopDir: null
+    }
+    expect(sortPath(win32, kateRoots, 'C:\\Users\\\u212aate\\AppData\\Local\\SimsHelper\\x').zone).toBe('none')
+  })
 })
