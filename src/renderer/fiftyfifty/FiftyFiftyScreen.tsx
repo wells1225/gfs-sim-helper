@@ -177,7 +177,13 @@ export function FiftyFiftyScreen() {
   if (view.kind === 'damaged') {
     return (
       <main className="flex flex-col gap-4">
-        <DamagedProgress onFixed={() => void reread(null)} />
+        <DamagedProgress
+          onFixed={() => {
+            // The notice of the call that found the damage is about a test that is gone now.
+            setNotice(null)
+            void reread(null)
+          }}
+        />
       </main>
     )
   }
