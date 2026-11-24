@@ -708,3 +708,41 @@ describe('review: Options.ini is never rewritten from a guess', () => {
     expect(step.kind === 'edit' && step.newText).toBe('﻿[options]\r\nmodsdisabled=0\r\nscriptmodsenabled=1\r\n')
   })
 })
+
+describe('review: one entry id for the journal entry and its holding folder', () => {
+  const at = { holdingDir: join('/data', 'holding'), entryId: 'entry-77' }
+
+  it('every plan planFix returns carries at.entryId, and its holding paths use that same id', () => {
+    const scan = sampleScan()
+    const groupId = scan.inventory.groups[0]!.id
+    const requests: { request: Parameters<typeof planFix>[1]; extra?: object }[] = [
+      { request: { fix: 'turn-mods-on' }, extra: { optionsText: '[options]\r\nmodsdisabled=1\r\n' } },
+      { request: { fix: 'clear-caches' } },
+      { request: { fix: 'set-aside-files', files: [scan.inventory.files[0]!.relPath] } },
+      { request: { fix: 'disable-group', groupId } }
+    ]
+    for (const { request, extra } of requests) {
+      const result = planFix(scan, request, { ...at, ...extra })
+      expect(result.status).toBe('planned')
+      if (result.status !== 'planned') continue
+      expect(result.plan.entryId).toBe('entry-77')
+      for (const step of result.plan.steps) {
+        if (step.kind === 'move' && step.to.startsWith(at.holdingDir)) {
+          expect(step.to.startsWith(join(at.holdingDir, 'entry-77'))).toBe(true)
+        }
+      }
+    }
+  })
+
+  it('setAside gives each plan the id its holding folder uses', async () => {
+    const safety = makeFakeSafety()
+    const deps = makeDeps(safety)
+    const group: ModGroup = {
+      id: 'dir:a', label: 'Mod A', source: 'folder', files: ['A/a.package'], bytes: 1, hasScript: false, curseForge: null
+    }
+    await setAside(deps, '/sims/The Sims 4', [group], { by: 'fix' })
+    const plan = safety.ranPlans[0]!
+    const move = plan.steps[0]!
+    expect(move.kind === 'move' && move.to.startsWith(join(deps.paths.holdingDir, plan.entryId))).toBe(true)
+  })
+})

@@ -70,6 +70,13 @@ function gateRefusalMessage(refusal: GateRefusal): RefusalCopy {
         canRetry: false,
         tone: 'destructive'
       }
+    case 'check-failed':
+      return {
+        title: 'A safety check did not finish',
+        detail: 'Something got in the way of a safety check, so nothing was changed. Try again in a moment.',
+        canRetry: true,
+        tone: 'warn'
+      }
     case 'no-verified-backup':
       return {
         title: 'A safety copy is needed first',
@@ -102,6 +109,14 @@ function backupRefusalMessage(reason: BackupRefusal | 'backup-failed'): RefusalC
         title: 'Safety copy folder is inside OneDrive',
         detail:
           'Your safety copy folder is synced by OneDrive, which can interrupt backups. Nothing in your Sims folder was changed.',
+        canRetry: false,
+        tone: 'warn'
+      }
+    case 'backup-folder-in-sims-folder':
+      return {
+        title: 'Safety copy folder is inside your Sims folder',
+        detail:
+          'The safety copy cannot be kept inside your Sims 4 folder. Nothing in your Sims folder was changed. Tell Tyler so he can fix the setup.',
         canRetry: false,
         tone: 'warn'
       }

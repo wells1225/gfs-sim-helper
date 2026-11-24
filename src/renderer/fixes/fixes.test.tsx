@@ -78,9 +78,11 @@ describe('FIXES_READY and words', () => {
       { why: 'gate', refusal: { reason: 'game-running' } },
       { why: 'gate', refusal: { reason: 'game-state-unknown' } },
       { why: 'gate', refusal: { reason: 'no-verified-backup', backup: 'stale' } },
+      { why: 'gate', refusal: { reason: 'check-failed', path: '/sims/Mods' } },
       { why: 'backup', reason: 'game-running' },
       { why: 'backup', reason: 'game-state-unknown' },
       { why: 'backup', reason: 'backup-folder-in-onedrive' },
+      { why: 'backup', reason: 'backup-folder-in-sims-folder' },
       { why: 'backup', reason: 'not-enough-space' },
       { why: 'backup', reason: 'sims-folder-missing' },
       { why: 'backup', reason: 'backup-already-running' },
@@ -111,6 +113,9 @@ describe('FIXES_READY and words', () => {
     expect(refusalMessage({ why: 'gate', refusal: { reason: 'game-state-unknown' } }).detail).toContain(
       'nothing was changed'
     )
+    expect(refusalMessage({ why: 'gate', refusal: { reason: 'check-failed', path: '/sims/Mods' } })).toMatchObject({
+      canRetry: true
+    })
   })
 })
 

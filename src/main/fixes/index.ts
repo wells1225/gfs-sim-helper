@@ -140,6 +140,7 @@ export function planFix(
       return {
         status: 'planned',
         plan: {
+          entryId: at.entryId,
           action: 'turn-mods-on',
           summary: 'Turned mods and script mods back on',
           origin,
@@ -203,6 +204,7 @@ export function planFix(
       return {
         status: 'planned',
         plan: {
+          entryId: at.entryId,
           action: 'move-script-up',
           summary:
             steps.length === 1
@@ -257,6 +259,7 @@ export function planFix(
       return {
         status: 'planned',
         plan: {
+          entryId: at.entryId,
           action: 'set-aside-files',
           summary: summarizeSetAsideFiles(matchedFiles),
           origin,
@@ -289,6 +292,7 @@ export function planFix(
       return {
         status: 'planned',
         plan: {
+          entryId: at.entryId,
           action: 'clear-caches',
           summary:
             steps.length === 1
@@ -327,6 +331,7 @@ export function planFix(
       return {
         status: 'planned',
         plan: {
+          entryId: at.entryId,
           action: 'disable-group',
           summary: `Set aside ${group.label}`,
           origin,
@@ -449,6 +454,7 @@ export async function setAside(
 
     const outcome = await deps.safety.runAction(
       {
+        entryId,
         action: 'disable-group',
         summary: `Set aside ${group.label}`,
         origin,
@@ -561,6 +567,7 @@ export async function clearCaches(deps: FixDeps, folderPath: string): Promise<Fi
   }))
 
   return deps.safety.runAction({
+    entryId: deps.newId(),
     action: 'clear-caches',
     summary:
       steps.length === 1
