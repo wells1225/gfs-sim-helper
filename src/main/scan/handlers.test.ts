@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -30,7 +30,8 @@ async function makeFixtureEnv(): Promise<{
   emitted: Progress[]
   revealed: string[]
 }> {
-  const root = await mkdtemp(join(tmpdir(), 'sims-helper-handlers-'))
+  // locate() returns realpath'd folders (macOS /private/var, Windows RUNNER~1 expanded)
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'sims-helper-handlers-')))
   tempDirs.push(root)
 
   const userDir = join(root, 'Users', 'Lila')
