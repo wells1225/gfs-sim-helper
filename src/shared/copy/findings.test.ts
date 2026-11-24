@@ -96,6 +96,11 @@ describe('finding words', () => {
     }
   })
 
+  it('use the right pronoun for a folder of mods', () => {
+    expect(ALL_WORDS['log-names-mod: folder, Better Exceptions']!.detail).toContain('so they may be part of the problem')
+    expect(ALL_WORDS['log-names-mod: folder, Better Exceptions']!.detail).toContain('Setting them aside')
+  })
+
   it('use no error codes, file extensions of scripts, or developer words', () => {
     for (const [key, words] of Object.entries(ALL_WORDS)) {
       const text = `${words.title} ${words.detail}`

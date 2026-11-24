@@ -14,10 +14,10 @@ function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
-function modPhrase(mod: ModName): { name: string; it: 'it' | 'them'; is: 'is' | 'are' } {
-  if (mod.source === 'folder') return { name: `the mods in your “${mod.label}” folder`, it: 'them', is: 'are' }
-  if (mod.source === 'loose') return { name: `“${mod.label}”`, it: 'it', is: 'is' }
-  return { name: mod.label, it: 'it', is: 'is' }
+function modPhrase(mod: ModName): { name: string; it: 'it' | 'they'; itObject: 'it' | 'them' } {
+  if (mod.source === 'folder') return { name: `the mods in your “${mod.label}” folder`, it: 'they', itObject: 'them' }
+  if (mod.source === 'loose') return { name: `“${mod.label}”`, it: 'it', itObject: 'it' }
+  return { name: mod.label, it: 'it', itObject: 'it' }
 }
 
 function itThem(count: number): 'it' | 'them' {
@@ -72,7 +72,7 @@ export function logNamesModWords(input: { mod: ModName; logKinds: Exclude<LogKin
   const logs = kinds.length === 1 ? `${LOG_PHRASE[kinds[0]!]} mentions` : 'Your error logs mention'
   return {
     title: `${capitalize(mod.name)} may be causing errors`,
-    detail: `${logs} a file from ${mod.name}, so ${mod.it} may be part of the problem. That is a strong clue, not proof: one mod's error can show up while a different mod is the real cause. Setting ${mod.it} aside for a while is a safe way to test.`
+    detail: `${logs} a file from ${mod.name}, so ${mod.it} may be part of the problem. That is a strong clue, not proof: one mod's error can show up while a different mod is the real cause. Setting ${mod.itObject} aside for a while is a safe way to test.`
   }
 }
 
@@ -133,7 +133,7 @@ export function duplicateFilesWords(input: { extraCount: number }): FindingWords
   const one = input.extraCount === 1
   return {
     title: one ? 'A mod file is in your mods folder twice' : `${input.extraCount} mod files are extra copies`,
-    detail: `${one ? 'One file is an exact copy' : `${input.extraCount} files are exact copies`} of another file in your mods folder. Two copies of the same mod can clash and cause errors. Setting the extra ${one ? 'copy' : 'copies'} aside leaves one of each in place.`
+    detail: `${one ? 'One file is an exact copy of another file' : `${input.extraCount} files are exact copies of other files`} in your mods folder. Two copies of the same mod can clash and cause errors. Setting the extra ${one ? 'copy' : 'copies'} aside leaves one of each in place.`
   }
 }
 

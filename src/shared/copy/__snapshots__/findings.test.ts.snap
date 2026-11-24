@@ -31,7 +31,7 @@ exports[`finding words > match the reviewed snapshot 1`] = `
     "title": "A mod file is in your mods folder twice",
   },
   "duplicate-files: 2": {
-    "detail": "2 files are exact copies of another file in your mods folder. Two copies of the same mod can clash and cause errors. Setting the extra copies aside leaves one of each in place.",
+    "detail": "2 files are exact copies of other files in your mods folder. Two copies of the same mod can clash and cause errors. Setting the extra copies aside leaves one of each in place.",
     "title": "2 mod files are extra copies",
   },
   "folder-in-onedrive": {
@@ -47,7 +47,7 @@ exports[`finding words > match the reviewed snapshot 1`] = `
     "title": "MC Command Center may be causing errors",
   },
   "log-names-mod: folder, Better Exceptions": {
-    "detail": "Your Better Exceptions report mentions a file from the mods in your “Gameplay” folder, so them may be part of the problem. That is a strong clue, not proof: one mod's error can show up while a different mod is the real cause. Setting them aside for a while is a safe way to test.",
+    "detail": "Your Better Exceptions report mentions a file from the mods in your “Gameplay” folder, so they may be part of the problem. That is a strong clue, not proof: one mod's error can show up while a different mod is the real cause. Setting them aside for a while is a safe way to test.",
     "title": "The mods in your “Gameplay” folder may be causing errors",
   },
   "log-names-mod: loose file, UI exception": {
