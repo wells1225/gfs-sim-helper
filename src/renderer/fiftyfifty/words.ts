@@ -54,6 +54,8 @@ export function partWayWords(again = 'click Try again'): string {
   return `Some mods were moved but not all. To finish moving them, ${again}. If that does not finish it, you can put them back from History.`
 }
 export const PART_WAY = partWayWords()
+export const NOT_COUNTED =
+  'Your mods were not set up the way this round needs, so that answer was not counted. Set up the round and test once more.'
 
 /** One plain sentence or two per refusal. */
 export function refusalWords(refusal: FixRefusal, again = 'click Try again'): string {
@@ -67,9 +69,9 @@ export function refusalWords(refusal: FixRefusal, again = 'click Try again'): st
         case 'game-state-unknown':
           return gameUnknown
         case 'no-verified-backup':
-          return `We need a fresh safety copy before moving mods, so nothing was moved. Please ${again}.`
+          return `We need a fresh safety copy before moving mods, so we stopped. Please ${again}.`
         case 'check-failed':
-          return `Something got in the way of a safety check, so nothing was moved. Wait a moment, then ${again}.`
+          return `Something got in the way of a safety check, so we stopped. Wait a moment, then ${again}.`
         default:
           return "Something about this folder doesn't look safe to change, so nothing was moved. Send a report to Tyler."
       }
@@ -97,7 +99,7 @@ export function refusalWords(refusal: FixRefusal, again = 'click Try again'): st
           return 'There is nothing to do right now. Run the check-up again.'
       }
     case 'not-started':
-      return `Something got in the way before we could start, so nothing was moved. Wait a moment, then ${again}.`
+      return `Something got in the way before we could move your mods, so we stopped. Wait a moment, then ${again}.`
     case 'fifty-fifty-running':
       return 'A 50/50 test is already running.'
   }

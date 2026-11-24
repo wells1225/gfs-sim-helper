@@ -153,6 +153,14 @@ describe('FiftyFiftyScreen', () => {
     expect(api.calls.find((c) => c.channel === 'fifty:answer')?.req).toEqual({ answer: 'crashed', round: 1 })
   })
 
+  it('says so when an answer was not counted because the mods were not set up for the round', async () => {
+    const { user } = setup(<FiftyFiftyScreen />, { 'fifty:get': round(), 'fifty:answer': ok(round({ phase: 'ready-to-test' })) })
+    await user.click(await screen.findByRole('button', { name: "I've tested it" }))
+    await user.click(screen.getByRole('button', { name: 'No crash, it worked!' }))
+    expect(await screen.findByText(/that answer was not counted/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Set up round 2' })).toBeEnabled()
+  })
+
   it('locks the answer buttons while an answer is being saved', async () => {
     const { user } = setup(<FiftyFiftyScreen />, {
       'fifty:get': round(),
@@ -219,7 +227,15 @@ describe('FiftyFiftyScreen', () => {
   })
 
   it('an action that never started asks her to try again', () => {
-    expect(refusalWords({ why: 'not-started' })).toMatch(/nothing was moved.*click Try again/)
+    expect(refusalWords({ why: 'not-started' })).toMatch(/click Try again/)
+    // A round puts mods back before it sets others aside, so a refusal half way cannot promise nothing moved.
+    for (const refusal of [
+      { why: 'not-started' },
+      { why: 'gate', refusal: { reason: 'check-failed', path: 'x' } },
+      { why: 'gate', refusal: { reason: 'no-verified-backup', backup: 'stale' } }
+    ] as const) {
+      expect(refusalWords(refusal)).not.toMatch(/nothing was moved/)
+    }
   })
 
   it('files that changed during the test point her to stopping, not to a check-up that cannot help', () => {

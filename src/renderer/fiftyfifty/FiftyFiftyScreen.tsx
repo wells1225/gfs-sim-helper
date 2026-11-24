@@ -8,7 +8,7 @@ import { useNav } from '../nav.tsx'
 import { useSession } from '../session.tsx'
 import { AnswerStep, CloseCurseForgeStep, Ended, FoundStep, Intro, ReadyStep, TestStep, type EndedHow } from './steps.tsx'
 import { StopDialog } from './StopDialog.tsx'
-import { CURSEFORGE_OPEN, groupLabel, isNotModsResult, PART_WAY, refusalWords } from './words.ts'
+import { CURSEFORGE_OPEN, groupLabel, isNotModsResult, NOT_COUNTED, PART_WAY, refusalWords } from './words.ts'
 
 type View = { kind: 'loading' } | { kind: 'session'; state: FiftyFifty | null } | { kind: 'ended'; how: EndedHow; label: string }
 
@@ -101,6 +101,10 @@ export function FiftyFiftyScreen() {
         return
       }
       show(next)
+      // Main only hands the same round back unarranged when it found the files were not as the round set them.
+      if (answer !== 'not-sure' && next?.phase === 'ready-to-test' && next.round === round && next.culprit === null) {
+        setNotice({ text: NOT_COUNTED })
+      }
     })
   }
 
