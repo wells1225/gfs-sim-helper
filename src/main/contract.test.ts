@@ -359,6 +359,8 @@ describe('auto-update contract (PR 13)', () => {
   })
 
   // Both the stub and PR 13's updater decide these before they touch electron-updater, so this holds on either.
+  // Outside Electron the real updater is also off as 'not-installed-app' once it reaches the engine, so that
+  // reason means the install folder was let through.
   it('the updater is off for an install folder that is, holds or sits in the app data folder', async () => {
     const dataDir = 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper'
     const keepOutOf = updaterKeepOutOf(['C:\\Users\\Lila\\Documents'], { dataDir, oneDriveRoots: [] })
@@ -367,7 +369,9 @@ describe('auto-update contract (PR 13)', () => {
         { isPackaged: true, version: '0.2.0', installDir, argv: [], env: {}, keepOutOf, platform: 'win32' },
         { busy: () => false }
       )
-      expect(updater.state().state).toBe('off')
+      const state = updater.state()
+      expect(state).toMatchObject({ state: 'off' })
+      expect(state.state === 'off' ? state.why : null).not.toBe('not-installed-app')
       expect((await updater.check()).state).toBe('off')
       expect(updater.install()).toEqual({ status: 'refused', why: 'not-ready' })
     }
