@@ -291,7 +291,8 @@ describe('auto-update contract (PR 13)', () => {
   }
 
   it('builds the installer with a GitHub publish entry but never publishes from a build', async () => {
-    const builder = await readFile(join(REPO_ROOT, 'electron-builder.yml'), 'utf8')
+    // Windows checkouts may have CRLF line ends.
+    const builder = (await readFile(join(REPO_ROOT, 'electron-builder.yml'), 'utf8')).replaceAll('\r\n', '\n')
     expect(builder).toMatch(/^publish:\n {2}provider: github\n {2}owner: wells1225\n {2}repo: gfs-sim-helper\n/m)
     const pkg = JSON.parse(await readFile(join(REPO_ROOT, 'package.json'), 'utf8')) as {
       scripts: Record<string, string>
