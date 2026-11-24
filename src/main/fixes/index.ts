@@ -1,54 +1,603 @@
+import { lstat, readFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import type {
   DisabledGroup,
   FixOutcome,
   FixRefusal,
   FixRequest,
+  JournalEntry,
   JournalOrigin,
+  ModFile,
   ModGroup,
+  RelPath,
   Scan
 } from '../../shared/model.ts'
-import type { ActionPlan, FixDeps, GroupsOutcome, OnProgress } from '../ports.ts'
+import {
+  CACHE_NAMES,
+  type ActionPlan,
+  type FixDeps,
+  type GroupsOutcome,
+  type OnProgress,
+  type PlannedStep
+} from '../ports.ts'
+import { DISABLE, holdingModPath } from './disable.ts'
+import { editOptionsIni } from './options-ini.ts'
+
+export interface PlanFixAt {
+  holdingDir: string
+  entryId: string
+  optionsText?: string
+  existingCaches?: readonly string[]
+  existingModPaths?: readonly RelPath[]
+  origin?: JournalOrigin
+}
+
+function normRelPath(relPath: string): string {
+  return relPath.replaceAll('\\', '/').replace(/^\/+|\/+$/g, '').toLowerCase()
+}
+
+function isSafeRelPath(relPath: string): boolean {
+  if (!relPath || relPath.startsWith('/') || relPath.startsWith('\\') || relPath.includes(':')) {
+    return false
+  }
+  const parts = relPath.replaceAll('\\', '/').split('/')
+  return parts.length > 0 && parts.every((p) => p !== '' && p !== '.' && p !== '..')
+}
+
+export function samePath(a: string, b: string): boolean {
+  const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase()
+  return norm(a) === norm(b)
+}
+
+function stripTrailingSlash(name: string): string {
+  return name.endsWith('/') ? name.slice(0, -1) : name
+}
+
+function describeRefusalDetail(refusal: FixRefusal): string {
+  switch (refusal.why) {
+    case 'gate':
+      return `Stopped by safety gate (${refusal.refusal.reason})`
+    case 'backup':
+      return `Stopped before backup (${refusal.reason})`
+    case 'out-of-date':
+      return `Stopped because files changed (${refusal.detail})`
+    case 'fifty-fifty-running':
+      return 'Stopped because a 50/50 test is in progress'
+  }
+}
+
+export function extractGroupLabel(entry: JournalEntry): string {
+  const summary = entry.summary.trim()
+  for (const prefix of ['Set aside ', 'Turned off ', 'Disabled ']) {
+    if (summary.startsWith(prefix) && summary.length > prefix.length) {
+      return summary.slice(prefix.length)
+    }
+  }
+  return summary || entry.groupId || entry.id
+}
+
+function summarizeSetAsideFiles(files: readonly ModFile[]): string {
+  const n = files.length
+  if (files.every((f) => f.kind === 'archive')) {
+    return n === 1 ? 'Set aside 1 zipped file from Mods' : `Set aside ${n} zipped files from Mods`
+  }
+  if (
+    files.every(
+      (f) =>
+        (f.kind === 'package' && f.dbpf.status === 'broken') ||
+        (f.kind === 'script' && f.script.status === 'broken')
+    )
+  ) {
+    return n === 1 ? 'Set aside 1 broken file from Mods' : `Set aside ${n} broken files from Mods`
+  }
+  if (files.every((f) => f.kind === 'package' && f.dbpf.status === 'wrong-game')) {
+    return n === 1
+      ? 'Set aside 1 wrong-game package from Mods'
+      : `Set aside ${n} wrong-game packages from Mods`
+  }
+  return n === 1 ? 'Set aside 1 file from Mods' : `Set aside ${n} files from Mods`
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await lstat(filePath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function findExistingCaches(folderPath: string): Promise<string[]> {
+  const found: string[] = []
+  for (const cacheName of CACHE_NAMES) {
+    const cleanName = stripTrailingSlash(cacheName)
+    if (await pathExists(join(folderPath, cleanName))) {
+      found.push(cacheName)
+    }
+  }
+  return found
+}
 
 export function planFix(
-  _scan: Scan,
-  _request: FixRequest,
-  _at: { holdingDir: string; entryId: string }
+  scan: Scan,
+  request: FixRequest,
+  at: PlanFixAt
 ): { status: 'planned'; plan: ActionPlan } | { status: 'refused'; refusal: FixRefusal } {
-  throw new Error('not implemented: planFix')
+  const origin: JournalOrigin = at.origin ?? { by: 'fix' }
+  const folderPath = scan.folder.path
+  const modsDir = scan.inventory.modsDir
+
+  switch (request.fix) {
+    case 'turn-mods-on': {
+      let newText: string
+      if (at.optionsText !== undefined) {
+        newText = editOptionsIni(at.optionsText)
+        if (newText === at.optionsText) {
+          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+        }
+      } else {
+        if (scan.facts.options.status !== 'ok') {
+          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
+        }
+        if (scan.facts.options.mods === 'on' && scan.facts.options.scriptMods === 'on') {
+          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+        }
+        newText = editOptionsIni('')
+      }
+
+      return {
+        status: 'planned',
+        plan: {
+          action: 'turn-mods-on',
+          summary: 'Turned mods and script mods back on',
+          origin,
+          folderPath,
+          groupId: null,
+          steps: [{ kind: 'edit', path: join(folderPath, 'Options.ini'), newText }]
+        }
+      }
+    }
+
+    case 'move-script-up': {
+      if (request.files.length === 0) {
+        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+      }
+
+      const fileMap = new Map<string, ModFile>()
+      for (const file of scan.inventory.files) {
+        fileMap.set(normRelPath(file.relPath), file)
+      }
+      const extraExisting = new Set((at.existingModPaths ?? []).map(normRelPath))
+      const plannedDestinations = new Set<string>()
+      const seenSources = new Set<string>()
+      const steps: PlannedStep[] = []
+
+      for (const relPath of request.files) {
+        if (!isSafeRelPath(relPath)) {
+          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
+        }
+        const key = normRelPath(relPath)
+        if (seenSources.has(key)) continue
+        seenSources.add(key)
+
+        const file = fileMap.get(key)
+        if (!file) {
+          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
+        }
+
+        const parts = file.relPath.split('/')
+        if (parts.length <= 2) {
+          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+        }
+
+        const destRel = `${parts[0]!}/${parts[parts.length - 1]!}`
+        const destKey = normRelPath(destRel)
+        if (fileMap.has(destKey) || extraExisting.has(destKey) || plannedDestinations.has(destKey)) {
+          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
+        }
+
+        plannedDestinations.add(destKey)
+        steps.push({
+          kind: 'move',
+          from: join(modsDir, ...parts),
+          to: join(modsDir, parts[0]!, parts[parts.length - 1]!)
+        })
+      }
+
+      if (steps.length === 0) {
+        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+      }
+
+      return {
+        status: 'planned',
+        plan: {
+          action: 'move-script-up',
+          summary:
+            steps.length === 1
+              ? 'Moved 1 script mod up a folder'
+              : `Moved ${steps.length} script mods up a folder`,
+          origin,
+          folderPath,
+          groupId: null,
+          steps
+        }
+      }
+    }
+
+    case 'set-aside-files': {
+      if (request.files.length === 0) {
+        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+      }
+
+      const fileMap = new Map<string, ModFile>()
+      for (const file of scan.inventory.files) {
+        fileMap.set(normRelPath(file.relPath), file)
+      }
+
+      const seenSources = new Set<string>()
+      const matchedFiles: ModFile[] = []
+      const steps: PlannedStep[] = []
+
+      for (const relPath of request.files) {
+        if (!isSafeRelPath(relPath)) {
+          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
+        }
+        const key = normRelPath(relPath)
+        if (seenSources.has(key)) continue
+        seenSources.add(key)
+
+        const file = fileMap.get(key)
+        if (!file) {
+          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
+        }
+        matchedFiles.push(file)
+        steps.push({
+          kind: 'move',
+          from: join(modsDir, ...file.relPath.split('/')),
+          to: holdingModPath(at.holdingDir, at.entryId, file.relPath)
+        })
+      }
+
+      if (steps.length === 0) {
+        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+      }
+
+      return {
+        status: 'planned',
+        plan: {
+          action: 'set-aside-files',
+          summary: summarizeSetAsideFiles(matchedFiles),
+          origin,
+          folderPath,
+          groupId: null,
+          steps
+        }
+      }
+    }
+
+    case 'clear-caches': {
+      const existingSet =
+        at.existingCaches !== undefined
+          ? new Set(at.existingCaches.map((name) => stripTrailingSlash(name).toLowerCase()))
+          : null
+
+      const steps: PlannedStep[] = []
+      for (const cacheName of CACHE_NAMES) {
+        const cleanName = stripTrailingSlash(cacheName)
+        if (existingSet !== null && !existingSet.has(cleanName.toLowerCase())) {
+          continue
+        }
+        steps.push({ kind: 'remove-cache', path: join(folderPath, cleanName) })
+      }
+
+      if (steps.length === 0) {
+        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+      }
+
+      return {
+        status: 'planned',
+        plan: {
+          action: 'clear-caches',
+          summary:
+            steps.length === 1
+              ? 'Cleared 1 temporary cache item'
+              : `Cleared ${steps.length} temporary cache items`,
+          origin,
+          folderPath,
+          groupId: null,
+          steps
+        }
+      }
+    }
+
+    case 'disable-group': {
+      const group = scan.inventory.groups.find((g) => g.id === request.groupId)
+      if (!group) {
+        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-group' } }
+      }
+      if (group.files.length === 0) {
+        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+      }
+
+      const fileSet = new Set(scan.inventory.files.map((f) => normRelPath(f.relPath)))
+      for (const relPath of group.files) {
+        if (!isSafeRelPath(relPath) || !fileSet.has(normRelPath(relPath))) {
+          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
+        }
+      }
+
+      const steps = DISABLE.plan(group, {
+        modsDir,
+        holdingDir: at.holdingDir,
+        entryId: at.entryId
+      })
+
+      return {
+        status: 'planned',
+        plan: {
+          action: 'disable-group',
+          summary: `Set aside ${group.label}`,
+          origin,
+          folderPath,
+          groupId: group.id,
+          steps
+        }
+      }
+    }
+
+    case 'enable-group': {
+      return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+    }
+  }
 }
 
 export async function applyFix(
-  _deps: FixDeps,
-  _scan: Scan,
-  _request: FixRequest,
-  _onProgress?: OnProgress
+  deps: FixDeps,
+  scan: Scan,
+  request: FixRequest,
+  onProgress?: OnProgress
 ): Promise<FixOutcome> {
-  throw new Error('not implemented: applyFix')
+  if (request.fix === 'enable-group') {
+    const journal = await deps.safety.listJournal()
+    const match = journal.find(
+      (entry) =>
+        entry.action === 'disable-group' &&
+        entry.status === 'done' &&
+        entry.groupId === request.groupId &&
+        samePath(entry.folderPath, scan.folder.path)
+    )
+    if (!match) {
+      return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-group' } }
+    }
+    return deps.safety.undo(match.id, onProgress)
+  }
+
+  if (request.fix === 'disable-group') {
+    const journal = await deps.safety.listJournal()
+    const alreadyDisabled = journal.some(
+      (entry) =>
+        entry.action === 'disable-group' &&
+        entry.status === 'done' &&
+        entry.groupId === request.groupId &&
+        samePath(entry.folderPath, scan.folder.path)
+    )
+    if (alreadyDisabled) {
+      return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+    }
+  }
+
+  const at: PlanFixAt = {
+    holdingDir: deps.paths.holdingDir,
+    entryId: deps.newId()
+  }
+
+  if (request.fix === 'turn-mods-on') {
+    try {
+      at.optionsText = await readFile(join(scan.folder.path, 'Options.ini'), 'utf8')
+    } catch {
+      return { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
+    }
+  } else if (request.fix === 'clear-caches') {
+    at.existingCaches = await findExistingCaches(scan.folder.path)
+  } else if (request.fix === 'move-script-up') {
+    const existingDestinations: RelPath[] = []
+    for (const relPath of request.files) {
+      if (!isSafeRelPath(relPath)) continue
+      const parts = relPath.split('/')
+      if (parts.length <= 2) continue
+      const destRel = `${parts[0]!}/${parts[parts.length - 1]!}`
+      const destNative = join(scan.inventory.modsDir, parts[0]!, parts[parts.length - 1]!)
+      if (await pathExists(destNative)) {
+        existingDestinations.push(destRel)
+      }
+    }
+    if (existingDestinations.length > 0) {
+      at.existingModPaths = existingDestinations
+    }
+  }
+
+  const planned = planFix(scan, request, at)
+  if (planned.status === 'refused') {
+    return planned
+  }
+
+  return deps.safety.runAction(planned.plan, onProgress)
 }
 
 export async function setAside(
-  _deps: FixDeps,
-  _folderPath: string,
-  _groups: ModGroup[],
-  _origin: JournalOrigin,
-  _onProgress?: OnProgress
+  deps: FixDeps,
+  folderPath: string,
+  groups: ModGroup[],
+  origin: JournalOrigin,
+  onProgress?: OnProgress
 ): Promise<GroupsOutcome> {
-  throw new Error('not implemented: setAside')
+  if (groups.length === 0) {
+    return { status: 'done', entries: [] }
+  }
+
+  const modsDir = join(folderPath, 'Mods')
+  const entries: JournalEntry[] = []
+
+  for (const group of groups) {
+    if (group.files.length === 0) continue
+
+    const entryId = deps.newId()
+    const steps = DISABLE.plan(group, {
+      modsDir,
+      holdingDir: deps.paths.holdingDir,
+      entryId
+    })
+
+    const outcome = await deps.safety.runAction(
+      {
+        action: 'disable-group',
+        summary: `Set aside ${group.label}`,
+        origin,
+        folderPath,
+        groupId: group.id,
+        steps
+      },
+      onProgress
+    )
+
+    if (outcome.status === 'done') {
+      entries.push(outcome.entry)
+      continue
+    }
+
+    if (outcome.status === 'refused') {
+      if (entries.length === 0) {
+        return { status: 'refused', refusal: outcome.refusal }
+      }
+      return {
+        status: 'stopped-part-way',
+        entries,
+        detail: describeRefusalDetail(outcome.refusal)
+      }
+    }
+
+    entries.push(outcome.entry)
+    return {
+      status: 'stopped-part-way',
+      entries,
+      detail: outcome.detail
+    }
+  }
+
+  return { status: 'done', entries }
 }
 
 export async function putBack(
-  _deps: FixDeps,
-  _folderPath: string,
-  _groupIds: string[],
-  _onProgress?: OnProgress
+  deps: FixDeps,
+  folderPath: string,
+  groupIds: string[],
+  onProgress?: OnProgress
 ): Promise<GroupsOutcome> {
-  throw new Error('not implemented: putBack')
+  if (groupIds.length === 0) {
+    return { status: 'done', entries: [] }
+  }
+
+  const journal = await deps.safety.listJournal()
+  const entriesByGroup = new Map<string, JournalEntry[]>()
+  for (const entry of journal) {
+    if (
+      entry.action === 'disable-group' &&
+      entry.status === 'done' &&
+      entry.groupId !== null &&
+      samePath(entry.folderPath, folderPath)
+    ) {
+      const list = entriesByGroup.get(entry.groupId) ?? []
+      list.push(entry)
+      entriesByGroup.set(entry.groupId, list)
+    }
+  }
+
+  const seenGroups = new Set<string>()
+  const undoneEntries: JournalEntry[] = []
+
+  for (const groupId of groupIds) {
+    if (seenGroups.has(groupId)) continue
+    seenGroups.add(groupId)
+
+    const matching = entriesByGroup.get(groupId) ?? []
+    for (const entry of matching) {
+      const outcome = await deps.safety.undo(entry.id, onProgress)
+      if (outcome.status === 'done') {
+        undoneEntries.push(outcome.entry)
+        continue
+      }
+
+      if (outcome.status === 'refused') {
+        if (undoneEntries.length === 0) {
+          return { status: 'refused', refusal: outcome.refusal }
+        }
+        return {
+          status: 'stopped-part-way',
+          entries: undoneEntries,
+          detail: describeRefusalDetail(outcome.refusal)
+        }
+      }
+
+      undoneEntries.push(outcome.entry)
+      return {
+        status: 'stopped-part-way',
+        entries: undoneEntries,
+        detail: outcome.detail
+      }
+    }
+  }
+
+  return { status: 'done', entries: undoneEntries }
 }
 
-export async function clearCaches(_deps: FixDeps, _folderPath: string): Promise<FixOutcome> {
-  throw new Error('not implemented: clearCaches')
+export async function clearCaches(deps: FixDeps, folderPath: string): Promise<FixOutcome> {
+  const existing = await findExistingCaches(folderPath)
+  if (existing.length === 0) {
+    return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+  }
+
+  const steps: PlannedStep[] = existing.map((cacheName) => ({
+    kind: 'remove-cache',
+    path: join(folderPath, stripTrailingSlash(cacheName))
+  }))
+
+  return deps.safety.runAction({
+    action: 'clear-caches',
+    summary:
+      steps.length === 1
+        ? 'Cleared 1 temporary cache item'
+        : `Cleared ${steps.length} temporary cache items`,
+    origin: { by: 'fix' },
+    folderPath,
+    groupId: null,
+    steps
+  })
 }
 
-export async function disabledGroups(_deps: FixDeps, _folderPath: string): Promise<DisabledGroup[]> {
-  throw new Error('not implemented: disabledGroups')
+export async function disabledGroups(deps: FixDeps, folderPath: string): Promise<DisabledGroup[]> {
+  const journal = await deps.safety.listJournal()
+  const seen = new Set<string>()
+  const result: DisabledGroup[] = []
+
+  for (const entry of journal) {
+    if (
+      entry.action !== 'disable-group' ||
+      entry.status !== 'done' ||
+      entry.groupId === null ||
+      !samePath(entry.folderPath, folderPath)
+    ) {
+      continue
+    }
+    if (seen.has(entry.groupId)) continue
+    seen.add(entry.groupId)
+
+    result.push({
+      groupId: entry.groupId,
+      label: extractGroupLabel(entry),
+      entryId: entry.id,
+      at: entry.at
+    })
+  }
+
+  return result
 }
