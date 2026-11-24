@@ -358,18 +358,19 @@ describe('auto-update contract (PR 13)', () => {
     ])
   })
 
-  it('the stub updater from update/updater.ts is always off', async () => {
-    const updater = createUpdater({
-      isPackaged: true,
-      version: '0.2.0',
-      installDir: 'C:\\Users\\Lila\\AppData\\Local\\Programs\\Sims Helper',
-      argv: [],
-      env: {},
-      keepOutOf: ['C:\\Users\\Lila\\Documents'],
-      platform: 'win32'
-    })
-    expect(updater.state().state).toBe('off')
-    expect((await updater.check()).state).toBe('off')
+  // Both the stub and PR 13's updater decide these before they touch electron-updater, so this holds on either.
+  it('the updater is off for an install folder that is, holds or sits in the app data folder', async () => {
+    const dataDir = 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper'
+    const keepOutOf = updaterKeepOutOf(['C:\\Users\\Lila\\Documents'], { dataDir, oneDriveRoots: [] })
+    for (const installDir of [dataDir, 'C:\\Users\\Lila\\AppData\\Local', `${dataDir}\\app`]) {
+      const updater = createUpdater(
+        { isPackaged: true, version: '0.2.0', installDir, argv: [], env: {}, keepOutOf, platform: 'win32' },
+        { busy: () => false }
+      )
+      expect(updater.state().state).toBe('off')
+      expect((await updater.check()).state).toBe('off')
+      expect(updater.install()).toEqual({ status: 'refused', why: 'not-ready' })
+    }
   })
 
   it('busy() is true while a safety or fixes call is in flight', async () => {
