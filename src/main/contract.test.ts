@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { Page } from '@playwright/test'
 import { afterAll, describe, expect, it } from 'vitest'
-import { rm } from 'node:fs/promises'
+import { readFile, rm } from 'node:fs/promises'
 import { INVOKE_CHANNELS } from '../shared/ipc.ts'
 import type { GameRunState as ModelGameRunState } from '../shared/model.ts'
 import { appPaths } from './app-paths.ts'
@@ -127,5 +127,17 @@ describe('e2e support shoot()', () => {
       expect(switched).toBeGreaterThanOrEqual(0)
       expect(events.slice(switched + 1, shot)).toContain('frame')
     }
+  })
+})
+
+describe('renderer index.html', () => {
+  it('sets the Content-Security-Policy the contract names', async () => {
+    const html = await readFile(join(REPO_ROOT, 'src/renderer/index.html'), 'utf8')
+    const match = html.match(/<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]*)"\s*\/?>/)
+    expect(match?.[1]).toBe(
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+        "font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'; " +
+        "form-action 'none'"
+    )
   })
 })
