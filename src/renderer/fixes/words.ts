@@ -167,17 +167,6 @@ export const LOAD_FAILED_COPY = {
   detail: 'Nothing was changed. Try again in a moment.'
 } as const
 
-/**
- * The mod's name for a set-aside entry. The journal entry has no label field yet, so this reads it out of the
- * summary that planFix wrote ("Set aside <label>").
- */
-export function groupLabelFromEntry(entry: JournalEntry): string {
-  const summary = entry.summary.trim()
-  const prefix = 'Set aside '
-  if (summary.startsWith(prefix) && summary.length > prefix.length) return summary.slice(prefix.length)
-  return summary || 'A mod'
-}
-
 export function refusalMessage(refusal: FixRefusal): RefusalCopy {
   switch (refusal.why) {
     case 'gate':
@@ -231,7 +220,21 @@ export function refusalMessage(refusal: FixRefusal): RefusalCopy {
         canRetry: true,
         tone: 'warn'
       }
+    case 'not-started':
+      // Also the answer after a set-aside stopped part way and was put straight back, so it says only what holds then.
+      return {
+        title: "That didn't go through",
+        detail: 'Your mods are just as they were. Try again in a moment.',
+        canRetry: true,
+        tone: 'warn'
+      }
   }
+}
+
+/** Your mods: the same words, except that a set-aside which did not go through says so by name. */
+export function setAsideRefusalMessage(refusal: FixRefusal, label: string): RefusalCopy {
+  const copy = refusalMessage(refusal)
+  return refusal.why === 'not-started' ? { ...copy, title: `${label} was not set aside` } : copy
 }
 
 export function progressCopy(progress: Progress | null): {

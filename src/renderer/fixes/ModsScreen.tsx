@@ -17,9 +17,9 @@ import {
   UNEXPECTED_COPY,
   formatBytes,
   formatEntryTimestamp,
-  groupLabelFromEntry,
   progressCopy,
-  refusalMessage
+  refusalMessage,
+  setAsideRefusalMessage
 } from './words.ts'
 
 interface ModListItem {
@@ -46,7 +46,8 @@ export function ModsScreen() {
   const { go } = useNav()
 
   const [disabled, setDisabled] = useState<DisabledGroup[]>([])
-  const [stuck, setStuck] = useState<JournalEntry[]>([])
+  /** Every set-aside entry for one group: the stuck ones get a row, and the done ones give a script mark. */
+  const [groupEntries, setGroupEntries] = useState<JournalEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [loadFailed, setLoadFailed] = useState(false)
   const [query, setQuery] = useState('')
@@ -84,14 +85,7 @@ export function ModsScreen() {
         setDisabled(list.value)
       }
       if (journal.status === 'fulfilled') {
-        setStuck(
-          journal.value.filter(
-            (e) =>
-              e.action === 'disable-group' &&
-              e.groupId !== null &&
-              (e.status === 'needs-attention' || e.status === 'in-progress')
-          )
-        )
+        setGroupEntries(journal.value.filter((e) => e.action === 'disable-group' && e.groupId !== null))
       }
       setLoadFailed(list.status === 'rejected' || journal.status === 'rejected')
     } finally {
@@ -115,7 +109,7 @@ export function ModsScreen() {
     const control = target ? document.getElementById(`mods-control-${target}`) : null
     if (control instanceof HTMLElement && !control.hasAttribute('disabled')) control.focus()
     else headingRef.current?.focus()
-  }, [busyGroupId, loading, loadFailed, disabled, stuck])
+  }, [busyGroupId, loading, loadFailed, disabled, groupEntries])
 
   useEffect(() => {
     if (!api || !busyGroupId) {
@@ -135,8 +129,10 @@ export function ModsScreen() {
       disabledById.set(entry.groupId, entry)
     }
 
+    const entriesById = new Map(groupEntries.map((e) => [e.id, e]))
     const stuckById = new Map<string, JournalEntry>()
-    for (const entry of stuck) {
+    for (const entry of groupEntries) {
+      if (entry.status !== 'needs-attention' && entry.status !== 'in-progress') continue
       if (entry.groupId === null || stuckById.has(entry.groupId)) continue
       if (scan && !sameFolder(entry.folderPath, scan.folder.path)) continue
       stuckById.set(entry.groupId, entry)
@@ -169,7 +165,7 @@ export function ModsScreen() {
         groupId: entry.groupId,
         label: entry.label,
         enabled: false,
-        hasScript: false,
+        hasScript: entriesById.get(entry.entryId)?.hasScript ?? false,
         source: entry.groupId.startsWith('cf:') ? 'curseforge' : null,
         fileCount: null,
         bytes: null,
@@ -183,9 +179,9 @@ export function ModsScreen() {
       if (seen.has(groupId)) continue
       combined.push({
         groupId,
-        label: groupLabelFromEntry(entry),
+        label: entry.groupLabel ?? 'A mod',
         enabled: false,
-        hasScript: false,
+        hasScript: entry.hasScript,
         source: groupId.startsWith('cf:') ? 'curseforge' : null,
         fileCount: null,
         bytes: null,
@@ -198,7 +194,7 @@ export function ModsScreen() {
       if (a.hasScript !== b.hasScript) return a.hasScript ? -1 : 1
       return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
     })
-  }, [disabled, scan, stuck])
+  }, [disabled, scan, groupEntries])
 
   const filtered = useMemo(() => {
     const trimmed = query.trim().toLowerCase()
@@ -236,9 +232,10 @@ export function ModsScreen() {
             setDisabled((prev) => [
               {
                 groupId: item.groupId,
-                label: item.label,
+                label: entry.groupLabel ?? item.label,
                 entryId: entry.id,
-                at: entry.at
+                at: entry.at,
+                origin: entry.origin.by
               },
               ...prev.filter((d) => d.groupId !== item.groupId)
             ])
@@ -393,7 +390,11 @@ export function ModsScreen() {
 
       {refusalState && (() => {
         const copy =
-          refusalState.refusal === 'unexpected' ? UNEXPECTED_COPY : refusalMessage(refusalState.refusal)
+          refusalState.refusal === 'unexpected'
+            ? UNEXPECTED_COPY
+            : refusalState.targetEnabled
+              ? refusalMessage(refusalState.refusal)
+              : setAsideRefusalMessage(refusalState.refusal, refusalState.label)
         const variant =
           copy.tone === 'destructive' ? 'destructive' : copy.tone === 'info' ? 'info' : 'warn'
         const Icon =
