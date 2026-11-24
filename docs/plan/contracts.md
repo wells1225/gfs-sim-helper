@@ -358,7 +358,8 @@ export interface AppContext {
   gameState(): Promise<GameRunState>
   scan: ScanDeps; gate: Gate; safety: Safety; fixes: Fixes; keyStore: KeyStore
   updater: Updater // createContext's optional `updater`: an Updater, or (seams) => Updater called once with this busy(); without one, always 'off'
-  busy(): boolean // true while a safety or fixes call runs (services.ts counts them); update:install refuses 'busy'
+  busy(): boolean // true while any gate.run or any changing IPC call (CHANGING_CHANNELS in src/main/ipc.ts) is in flight; update:install refuses 'busy'
+  holdBusy?(): () => void // optional; registerIpc holds busy for the whole of every changing call
   session: { scan: Scan | null } // the last finished scan
   emit(progress: Progress): void // sends the 'progress' event to the window
   reveal(file: string): void // shows a file in Explorer
