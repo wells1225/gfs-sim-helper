@@ -199,6 +199,41 @@ describe('runAction', () => {
     expect(await snapshotTree(ws.simsFolder)).toEqual(before)
   })
 
+  it('undo after a part-way stop ignores the step that never ran, even when its file changed since', async () => {
+    const ws = await backedUp()
+    const lampA = await sha256File(join(ws.mods, 'BuildBuy', 'lamp_a.package'))
+    ws.gate.hooks.beforeOp = (op, _i, request) =>
+      request.reason === 'fix' && op.op === 'move' && op.from.endsWith('lamp_b.package') ? 'file in use' : undefined
+    const outcome = await runAction(ws.deps, disablePlan(ws))
+    if (outcome.status !== 'stopped-part-way') throw new Error(outcome.status)
+    ws.gate.hooks.beforeOp = undefined
+    await writeFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), 'updated by CurseForge')
+
+    const undone = await undo(ws.deps, outcome.entry.id)
+
+    expect(undone).toMatchObject({ status: 'done', entry: { status: 'undone' } })
+    expect(await sha256File(join(ws.mods, 'BuildBuy', 'lamp_a.package'))).toBe(lampA)
+    expect(await readFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), 'utf8')).toBe('updated by CurseForge')
+  })
+
+  it('counts a cache that is already gone as cleared', async () => {
+    const ws = await backedUp()
+    const outcome = await runAction(ws.deps, {
+      action: 'clear-caches',
+      summary: 'Cleared caches',
+      origin: { by: 'fix' },
+      folderPath: ws.simsFolder,
+      groupId: null,
+      steps: [
+        { kind: 'remove-cache', path: join(ws.simsFolder, 'clientDB.package') },
+        { kind: 'remove-cache', path: join(ws.simsFolder, 'localthumbcache.package') }
+      ]
+    })
+    expect(outcome).toMatchObject({ status: 'done', entry: { status: 'done', undo: 'cannot-undo' } })
+    if (outcome.status === 'done') expect(outcome.entry.steps.every((s) => s.state === 'applied')).toBe(true)
+    expect(await pathExists(join(ws.simsFolder, 'localthumbcache.package'))).toBe(false)
+  })
+
   it('records a cache clear as one that cannot be undone', async () => {
     const ws = await backedUp()
     const outcome = await runAction(ws.deps, {
