@@ -359,7 +359,9 @@ describe('a full session', () => {
       const movesBeforeFinish = fixes.moves()
       await finish(deps, keep)
       expect(fixes.asideIds()).toEqual(keep === 'put-back' ? [] : ['dir:g1'])
-      if (keep === 'keep-set-aside') expect(fixes.moves()).toBe(movesBeforeFinish)
+      // Keeping moves only the culprit: back, then aside again as her own.
+      if (keep === 'keep-set-aside') expect(fixes.calls.slice(-2).map((c) => [c.method, c.ids])).toEqual([['putBack', ['dir:g1']], ['setAside', ['dir:g1']]])
+      if (keep === 'keep-set-aside') expect(fixes.moves()).toBe(movesBeforeFinish + 2)
     }
   })
 

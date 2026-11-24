@@ -243,23 +243,49 @@ export async function giveAnswer(
   return beginRound(deps)
 }
 
-async function endWith(deps: FiftyDeps, state: FiftyFifty, keep: string[]): Promise<FiftyResult> {
-  const moved = await arrange(deps, state, keep)
-  if (moved) return withState(moved, state)
-  const ended: FiftyFifty = { ...state, phase: 'stopped', parked: keep, inMods: [] }
+/** The last step of every ending: the progress file goes, so her switches work again. */
+async function endSession(deps: FiftyDeps, state: FiftyFifty, parked: string[]): Promise<FiftyResult> {
+  const ended: FiftyFifty = { ...state, phase: 'stopped', parked, inMods: [] }
   const problem = await clearState(deps)
   return problem ? withState(problem, state) : { status: 'ok', state: ended }
+}
+
+/**
+ * "Keep it set aside" makes the culprit's set-aside her own: put back, then set aside again the way her switch
+ * on Your mods does (origin 'fix'). Left tagged as the test's, a later stop on a damaged progress file would
+ * put a known-bad mod back. Each step looks at what is set aside now, so a try after a refusal does only what
+ * is left. Between the two steps the culprit is in Mods; the session is kept until both are done.
+ */
+async function makeHers(deps: FiftyDeps, state: FiftyFifty, culprit: string): Promise<Problem | null> {
+  const ofTest = await sessionAside(deps, state)
+  const others = await arrange(deps, state, ofTest.has(culprit) ? [culprit] : [])
+  if (others) return others
+
+  if (ofTest.has(culprit)) {
+    const back = await moveProblem(() => deps.fixes.putBack(state.folderPath, [culprit]))
+    if (back) return back
+  }
+
+  const now = (await deps.fixes.disabledGroups(state.folderPath)).find((d) => d.groupId === culprit)
+  if (now?.origin === 'fix') return null
+  if (now) return { status: 'stopped-part-way', detail: 'The mod is still set aside by the 50/50 test.' }
+  const group = state.groups.find((g) => g.id === culprit)
+  if (!group) return null
+  return moveProblem(() => deps.fixes.setAside(state.folderPath, [group], { by: 'fix' }))
 }
 
 export async function stop(deps: FiftyDeps): Promise<FiftyStopResult> {
   const saved = await readSaved(deps)
   if (saved.kind === 'damaged') return stopDamaged(deps, saved.folderPath)
   if (saved.kind === 'none') return { status: 'ok', state: null }
-  return endWith(deps, saved.state, [])
+  const moved = await arrange(deps, saved.state, [])
+  return moved ? withState(moved, saved.state) : endSession(deps, saved.state, [])
 }
 
 export async function finish(deps: FiftyDeps, keep: 'keep-set-aside' | 'put-back'): Promise<FiftyResult> {
   const state = await loadState(deps)
   if (!state || state.phase !== 'found' || !state.culprit) return NO_SESSION
-  return endWith(deps, state, keep === 'keep-set-aside' ? [state.culprit] : [])
+  const kept = keep === 'keep-set-aside'
+  const moved = kept ? await makeHers(deps, state, state.culprit) : await arrange(deps, state, [])
+  return moved ? withState(moved, state) : endSession(deps, state, kept ? [state.culprit] : [])
 }
