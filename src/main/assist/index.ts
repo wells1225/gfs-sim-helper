@@ -149,7 +149,8 @@ function insideMods(path: string): string | null {
 
 /**
  * Where a Mods path in a sentence ends: after its file extension, or at the first white space when it has none.
- * A path with no Mods folder runs to the end, and the caller drops all of it.
+ * Only the file name may hold a space: a space with a slash somewhere after it could be the start of a second
+ * path, so the Mods path ends at that space. A path with no Mods folder runs to the end, and the caller drops it.
  */
 function modsPathEnd(path: string): number {
   const mods = MODS_PART.exec(path)
@@ -157,9 +158,12 @@ function modsPathEnd(path: string): number {
   const from = mods.index + mods[0].length
   PATH_FILE_END.lastIndex = from
   const fileEnd = PATH_FILE_END.exec(path)
-  if (fileEnd) return fileEnd.index + fileEnd[0].length
-  const space = path.slice(from).search(/\s/)
-  return space === -1 ? path.length : from + space
+  const limit = fileEnd ? fileEnd.index + fileEnd[0].length : path.length
+  const inside = path.slice(from, limit)
+  const space = inside.search(/\s/)
+  const lastSlash = Math.max(inside.lastIndexOf('\\'), inside.lastIndexOf('/'))
+  if (space !== -1 && (space < lastSlash || !fileEnd)) return from + space
+  return limit
 }
 
 /**
