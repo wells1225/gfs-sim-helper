@@ -1,8 +1,8 @@
 // The write gate: the only code in the app that changes the disk (contracts.md, section 5).
 // It checks a whole request first, and only then does the ops itself. Any doubt while checking refuses.
 import { createHash, randomBytes } from 'node:crypto'
-import type { Stats } from 'node:fs'
-import { lstat, mkdir, open, realpath, rename, rm, stat, unlink, utimes } from 'node:fs/promises'
+import type { BigIntStats, Stats } from 'node:fs'
+import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink, utimes } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
 import nativePath from 'node:path'
 import type { PlatformPath } from 'node:path'
@@ -191,6 +191,31 @@ async function statOrNull(target: string): Promise<Stats | null> {
   }
 }
 
+// A file can have a second name (a hard link) that no path check can see through. The file id can.
+const fileId = (info: BigIntStats): string => `${info.dev}:${info.ino}`
+
+/** The ids of the files under these folders that have more than one name. Links are not followed. */
+async function manyNamedFilesUnder(folders: string[]): Promise<Set<string>> {
+  const ids = new Set<string>()
+  async function walk(folder: string): Promise<void> {
+    let names: string[]
+    try {
+      names = await readdir(folder)
+    } catch (err) {
+      if (isMissing(err)) return
+      throw err
+    }
+    for (const name of names) {
+      const entry = nativePath.join(folder, name)
+      const info = await lstat(entry, { bigint: true })
+      if (info.isDirectory()) await walk(entry)
+      else if (info.isFile() && info.nlink > 1n) ids.add(fileId(info))
+    }
+  }
+  for (const folder of folders) await walk(folder)
+  return ids
+}
+
 /** The name exists and leads nowhere. That is an answer about the path, not a check that failed. */
 class LinkToNowhere extends Error {}
 
@@ -356,6 +381,22 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
     return sorted.zone === 'forbidden' ? null : sorted
   }
 
+  // A file in Mods or app data may be one file with a save, under a second name. A file with one name costs
+  // nothing here: saves and Tray are read only when a path in the request has a second name, and then once.
+  let forbiddenIds: Promise<Set<string>> | null = null
+  async function isAlsoInForbidden(target: string): Promise<boolean> {
+    let found: BigIntStats
+    try {
+      found = await lstat(target, { bigint: true })
+    } catch (err) {
+      if (isMissing(err)) return false
+      throw err
+    }
+    if (!found.isFile() || found.nlink <= 1n) return false
+    forbiddenIds ??= manyNamedFilesUnder(realForbidden)
+    return (await forbiddenIds).has(fileId(found))
+  }
+
   let guarded = false
   async function refusalForWrite(use: WriteUse, target: string): Promise<GateRefusal | null> {
     const named = sortPath(nativePath, roots, target)
@@ -370,6 +411,11 @@ async function checkRequest(deps: GateDeps, request: WriteRequest): Promise<Appr
     }
     if (real === null) return { reason: 'saves-or-tray', path: target }
     if (real.zone !== named.zone || !mayWrite(use, real)) return { reason: 'link-escape', path: target }
+    try {
+      if (await isAlsoInForbidden(target)) return { reason: 'saves-or-tray', path: target }
+    } catch {
+      return checkFailed(target)
+    }
     if (GUARDED_ZONES.includes(named.zone)) guarded = true
     return null
   }

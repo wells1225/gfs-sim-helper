@@ -31,6 +31,8 @@ const disk = vi.hoisted(() => ({
   corruptNewFiles: null as null | { hits: number },
   realpathFails: null as null | { under: string; code: string; hits: number },
   statFails: null as null | { file: string; code: string; hits: number },
+  readdirFails: null as null | { under: string; code: string; hits: number },
+  foldersRead: [] as string[],
   unlinkFails: null as null | { file: string; hits: number },
   writeFileQuotesItsData: null as null | { hits: number },
   whenTempOpens: null as null | (() => Promise<void>)
@@ -56,6 +58,14 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       }
       return await real.realpath(target)
     }) as unknown as typeof real.realpath,
+    readdir: (async (folder: string, options?: object) => {
+      disk.foldersRead.push(String(folder))
+      if (disk.readdirFails && String(folder).startsWith(disk.readdirFails.under)) {
+        disk.readdirFails.hits += 1
+        throw errno(disk.readdirFails.code, 'scandir')
+      }
+      return await real.readdir(folder, options as undefined)
+    }) as unknown as typeof real.readdir,
     stat: (async (target: string, options?: object) => {
       if (disk.statFails && String(target) === disk.statFails.file) {
         disk.statFails.hits += 1
@@ -178,6 +188,8 @@ afterEach(async () => {
   disk.corruptNewFiles = null
   disk.realpathFails = null
   disk.statFails = null
+  disk.readdirFails = null
+  disk.foldersRead = []
   disk.unlinkFails = null
   disk.writeFileQuotesItsData = null
   disk.whenTempOpens = null
@@ -412,6 +424,76 @@ describe('saves and Tray are never written', () => {
       reason: 'saves-or-tray',
       path: hardLink
     })
+  })
+
+  it('refuses every write to a hard link that shares a file with saves or Tray, wherever it is', async () => {
+    const w = await makeWorld()
+    const tray = w.inFolder('Tray', 'Deep', 'kept.trayitem')
+    await mkdir(dirname(tray), { recursive: true })
+    await writeFile(tray, 'a household')
+    await mkdir(w.dataDir, { recursive: true })
+    const inData = w.inData('second-name.bin')
+    await link(tray, inData)
+    const cache = w.inFolder('clientDB.package')
+    await link(w.inFolder(...SAVE), cache)
+    const options = w.inFolder('Options.ini')
+    await rm(options)
+    await link(w.inFolder(...SAVE), options)
+    const requests: [WriteOp, string][] = [
+      [{ op: 'remove', path: inData }, inData],
+      [{ op: 'write', path: inData, data: 'x', mode: 'replace' }, inData],
+      [{ op: 'move', from: inData, to: w.inData('elsewhere.bin') }, inData],
+      [{ op: 'move', from: w.inFolder(...MOD), to: inData }, inData],
+      [{ op: 'remove', path: cache }, cache],
+      [{ op: 'write', path: options, data: 'x', mode: 'replace' }, options]
+    ]
+    for (const [op, path] of requests) {
+      await expectRefusal(w, () => w.run([op]), { reason: 'saves-or-tray', path })
+    }
+    expect(w.asked).toEqual([])
+  })
+
+  it('a second name that shares no file with saves or Tray moves like any file', async () => {
+    const w = await makeWorld()
+    const twin = w.inFolder('Mods', 'twin.package')
+    await link(w.inFolder(...MOD), twin)
+    const to = w.inData('holding', 'twin.package')
+    expect(await w.run([{ op: 'move', from: twin, to }])).toEqual({ status: 'done' })
+    expect(await exists(twin)).toBe(false)
+    expect(await sha256(to)).toBe(await sha256(w.inFolder(...MOD)))
+  })
+
+  it('a file with one name is never compared: saves and Tray are not read', async () => {
+    const w = await makeWorld()
+    disk.foldersRead = []
+    expect(
+      await w.run([{ op: 'move', from: w.inFolder(...MOD), to: w.inData('holding', 'cozy_rug.package') }])
+    ).toEqual({ status: 'done' })
+    expect(disk.foldersRead).toEqual([])
+  })
+
+  it('check-failed: saves cannot be read when a second name has to be compared', async () => {
+    const w = await makeWorld()
+    const twin = w.inFolder('Mods', 'twin.package')
+    await link(w.inFolder(...MOD), twin)
+    const before = await snapshotTree(w.root)
+    disk.readdirFails = { under: w.inFolder('saves'), code: 'EACCES', hits: 0 }
+    expect(await w.run([{ op: 'move', from: twin, to: w.inData('holding', 'twin.package') }])).toEqual(
+      refusedWith({ reason: 'check-failed', path: twin })
+    )
+    expect(disk.readdirFails.hits, 'the injected error was really hit').toBe(1)
+    disk.readdirFails = null
+    expect(await snapshotTree(w.root)).toEqual(before)
+  })
+
+  it('a save with a second name is still backed up: the source of a copy is only read', async () => {
+    const w = await makeWorld()
+    await link(w.inFolder(...SAVE), w.inFolder('saves', 'Slot_00000002.save.twin'))
+    const to = w.inData('backups', 'b1', 'saves', 'Slot_00000002.save')
+    expect(await w.run([{ op: 'copy', from: w.inFolder(...SAVE), to }], { reason: 'backup' })).toEqual({
+      status: 'done'
+    })
+    expect(await sha256(to)).toBe(await sha256(w.inFolder(...SAVE)))
   })
 
   it('refuses a link in the app data folder that points into Tray', async () => {
