@@ -1214,6 +1214,51 @@ describe('undo of an entry that never ran (nothing-to-do)', () => {
   })
 })
 
+describe('FindingActions Try again keeps the never-ran mark of a stopped fix', () => {
+  it('after a refused Undo, Try again that answers nothing-to-do brings back the fix button with no alert', async () => {
+    const user = userEvent.setup()
+    const stoppedEntry = sampleJournalEntry({
+      id: 'e-never-ran',
+      action: 'turn-mods-on',
+      summary: 'Turned mods and script mods back on',
+      status: 'needs-attention',
+      undo: 'can-undo',
+      steps: sampleJournalEntry().steps.map((s) => ({ ...s, state: 'pending' as const }))
+    })
+    let undoAttempt = 0
+    const api = fakeApi({
+      'fix:apply': () => ({
+        status: 'stopped-part-way',
+        entry: stoppedEntry,
+        detail: 'This change stopped part way through. You can undo what already moved from History.'
+      }),
+      'journal:undo': () => {
+        undoAttempt += 1
+        if (undoAttempt === 1) {
+          return { status: 'refused', refusal: { why: 'gate', refusal: { reason: 'game-running' } } }
+        }
+        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+      }
+    })
+
+    render(
+      <Harness api={api}>
+        <FindingActions finding={sampleFinding()} />
+      </Harness>
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Turn mods back on' }))
+    await user.click(await screen.findByRole('button', { name: 'Undo' }))
+    await user.click(await screen.findByRole('button', { name: 'Try again' }))
+
+    expect(await screen.findByRole('button', { name: 'Turn mods back on' })).toBeInTheDocument()
+    expect(undoAttempt).toBe(2)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByText('Already taken care of')).not.toBeInTheDocument()
+    expect(api.calls.filter((c) => c.channel === 'fix:apply')).toHaveLength(1)
+  })
+})
+
 describe('FindingActions resets quietly on nothing-to-do only for a stopped fix that never ran', () => {
   const nothingToDo: FixOutcome = { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
   const doneEntry = sampleJournalEntry({
