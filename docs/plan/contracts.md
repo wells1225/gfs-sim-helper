@@ -525,7 +525,9 @@ The source of a `copy` is only read, so it may be anywhere inside the Sims folde
   `none`, `stale` and `unknown` refuse with `no-verified-backup`. A probe that throws counts as `unknown`.
 - `folderPath` must be a real Sims folder: any name, `Options.ini` inside, not a drive or filesystem root (given or
   real path), and not inside a `saves` or `Tray` folder. Otherwise the request is refused with `not-a-sims-folder`. A path that sits in an allowed zone by name but resolves somewhere
-  else is refused with `link-escape`. A `dataDir` inside a Sims folder or OneDrive refuses every request.
+  else is refused with `link-escape`. A path in app data must also lead to its own name below the real `dataDir`: one
+  that goes through a link, even to another part of app data (holding into backups, one holding entry into another), is
+  refused with `link-escape` (PR 8, 8680637). A `dataDir` inside a Sims folder or OneDrive refuses every request.
 - **Op semantics (as built in PR 8):** `mkdir` creates parents and succeeds if the folder exists. `copy`, `move` and
   `write` create missing parent folders, in the mods and app-data zones only. `remove` of a missing path counts as
   done. `replace` creates a missing file. `copy` and `move` take plain files only: a folder or a link as the source
