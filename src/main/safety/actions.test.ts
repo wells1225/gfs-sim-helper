@@ -771,6 +771,66 @@ describe('runAction', () => {
     expect(await listJournal(ws.deps)).toEqual([])
   })
 
+  it('a fix the gate refuses whose entry cannot be taken back never ran: the next start says nothing and marks nothing undone', async () => {
+    const ws = await backedUp()
+    const before = await snapshotTree(ws.simsFolder)
+    ws.gate.hooks.beforeRequest = (request) => {
+      if (request.reason === 'fix') return { status: 'refused', refusal: { reason: 'game-running' } }
+      if (request.reason === 'journal' && request.ops.some((op) => op.op === 'remove')) {
+        return { status: 'failed', opsDone: 0, detail: 'the disk said no' }
+      }
+      return undefined
+    }
+
+    expect(await runAction(ws.deps, disablePlan(ws))).toEqual({
+      status: 'refused',
+      refusal: { why: 'gate', refusal: { reason: 'game-running' } }
+    })
+    expect(await journalFiles(ws)).toEqual(['hold-1.json']) // the take-back failed
+    ws.gate.hooks.beforeRequest = undefined
+
+    expect(await recover(ws.deps)).toEqual([])
+    expect(await listJournal(ws.deps)).toEqual([])
+    expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+  })
+
+  it('a failed create whose take-back also fails never ran: the next start says nothing and marks nothing undone', async () => {
+    const ws = await backedUp()
+    ws.gate.hooks.beforeRequest = async (request) => {
+      if (request.reason !== 'journal') return undefined
+      if (request.ops.some((op) => op.op === 'remove')) return { status: 'failed', opsDone: 0, detail: 'the disk said no' }
+      const write = request.ops.find((op) => op.op === 'write' && op.mode === 'create')
+      if (!write || write.op !== 'write') return undefined
+      await mkdir(dirname(write.path), { recursive: true })
+      await writeFile(write.path, write.data)
+      return { status: 'failed', opsDone: request.ops.length - 1, detail: 'flush failed' }
+    }
+
+    expect(await runAction(ws.deps, disablePlan(ws))).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
+    expect(await journalFiles(ws)).toEqual(['hold-1.json'])
+    ws.gate.hooks.beforeRequest = undefined
+
+    expect(await recover(ws.deps)).toEqual([])
+    expect(await listJournal(ws.deps)).toEqual([])
+  })
+
+  it('an entry that never ran and still cannot be taken back at the next start is left alone, never marked undone', async () => {
+    const ws = await backedUp()
+    ws.gate.hooks.beforeRequest = (request) => {
+      if (request.reason === 'fix') return { status: 'refused', refusal: { reason: 'game-running' } }
+      if (request.reason === 'journal' && request.ops.some((op) => op.op === 'remove')) {
+        return { status: 'failed', opsDone: 0, detail: 'the disk said no' }
+      }
+      return undefined
+    }
+    await runAction(ws.deps, disablePlan(ws))
+    const backups = ws.gate.count('backup')
+
+    expect(await recover(ws.deps)).toEqual([])
+    expect((await listJournal(ws.deps)).map((e) => e.status)).toEqual(['in-progress'])
+    expect(ws.gate.count('backup')).toBe(backups) // nothing to put back, so no backup was made for it
+  })
+
   it('never takes back an older entry that already has the id when the create fails', async () => {
     const ws = await backedUp()
     const first = await runAction(ws.deps, disablePlan(ws))
@@ -1169,10 +1229,16 @@ describe('recover', () => {
 
       const touched = await recover(ws.deps)
 
-      expect(touched.map((e) => e.id), `movesThatRan=${movesThatRan}`).toEqual([entry.id])
-      expect(touched[0]!.status, `movesThatRan=${movesThatRan}`).toBe('undone')
       expect(await snapshotTree(ws.simsFolder), `movesThatRan=${movesThatRan}`).toEqual(before)
-      expect((await listJournal(ws.deps))[0]!.status).toBe('undone')
+      if (movesThatRan === 0) {
+        // Nothing had moved: a change that never ran is taken back, and the start tells her nothing.
+        expect(touched, 'movesThatRan=0').toEqual([])
+        expect(await listJournal(ws.deps)).toEqual([])
+      } else {
+        expect(touched.map((e) => e.id), `movesThatRan=${movesThatRan}`).toEqual([entry.id])
+        expect(touched[0]!.status, `movesThatRan=${movesThatRan}`).toBe('undone')
+        expect((await listJournal(ws.deps))[0]!.status).toBe('undone')
+      }
       expect(await recover(ws.deps)).toEqual([])
     }
   })
@@ -1242,7 +1308,8 @@ describe('recover', () => {
 
       const touched = await recover(ws.deps)
 
-      expect(touched.map((e) => e.status), stage).toEqual(['undone'])
+      // Before the write, Options.ini is as it was: the change never ran, and its entry is taken back.
+      expect(touched.map((e) => e.status), stage).toEqual(stage === 'after-write' ? ['undone'] : [])
       expect(await snapshotTree(ws.simsFolder), stage).toEqual(before)
     }
   })
