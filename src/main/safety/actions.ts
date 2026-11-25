@@ -165,7 +165,7 @@ async function removeCopiesLeft(deps: SafetyDeps, entry: JournalEntry, indexes: 
       continue
     }
     if (step.kind !== 'move' || now.where !== 'copy-left' || !(await isHoldingCopy(deps, step, now.file))) {
-      detail ??= notBack(deps, step, now)
+      detail ??= notBack(deps, entry, step, now)
       continue
     }
     try {
@@ -175,22 +175,27 @@ async function removeCopiesLeft(deps: SafetyDeps, entry: JournalEntry, indexes: 
     }
     const after = await inspect(step)
     if (after.where === 'not-done') step.state = 'reverted'
-    else detail ??= notBack(deps, step, after)
+    else detail ??= notBack(deps, entry, step, after)
   }
   return detail
 }
 
-function copyLeftDetail(deps: SafetyDeps, file: string): string {
+/** Says where the copy is only when the path proves it: the holding folder, or her Mods folder. */
+function copyLeftDetail(deps: SafetyDeps, entry: JournalEntry, file: string): string {
   const name = basename(file)
   if (isInside(file, deps.paths.holdingDir) && !samePath(file, deps.paths.holdingDir)) {
     return `This file is back where it was, and a copy of it is still in the holding folder: ${name}`
   }
-  return `This file is back where it was, and an extra copy is still in your Mods folder (${name}). The app left it there to be safe.`
+  const mods = join(entry.folderPath, 'Mods')
+  if (isInside(file, mods) && !samePath(file, mods)) {
+    return `This file is back where it was, and an extra copy is still in your Mods folder (${name}). The app left it there to be safe.`
+  }
+  return `This file is back where it was, and an extra copy of it was left where the change put it (${name}). The app left it there to be safe.`
 }
 
 /** What History says about a step whose file is not back. Never includes full paths or raw error text. */
-function notBack(deps: SafetyDeps, step: JournalStep, onDisk: StepOnDisk): string {
-  if (onDisk.where === 'copy-left') return copyLeftDetail(deps, onDisk.file)
+function notBack(deps: SafetyDeps, entry: JournalEntry, step: JournalStep, onDisk: StepOnDisk): string {
+  if (onDisk.where === 'copy-left') return copyLeftDetail(deps, entry, onDisk.file)
   if (onDisk.where === 'unclear') return `This file is not as the change left it: ${basename(onDisk.file)}`
   return `This file did not come back as it was: ${basename(step.kind === 'move' ? step.from : step.path)}`
 }
@@ -382,14 +387,14 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
       const after = await inspect(step)
       if (after.where === 'not-done') step.state = 'reverted'
       else if (after.where === 'copy-left' && result.status === 'done') copiesLeft.push(index)
-      else if (after.where === 'copy-left') detail ??= copyLeftDetail(deps, after.file)
-      else if (completed || after.where === 'unclear') detail ??= notBack(deps, step, after)
+      else if (after.where === 'copy-left') detail ??= copyLeftDetail(deps, entry, after.file)
+      else if (completed || after.where === 'unclear') detail ??= notBack(deps, entry, step, after)
     }
     if (result.status === 'failed') {
       // After an undo request that failed, the copies are left for the next undo, which looks at the disk afresh.
       undoFailed = true
       const firstCopy = copiesLeft.length > 0 ? entry.steps[copiesLeft[0]!] : undefined
-      if (firstCopy?.kind === 'move') detail ??= copyLeftDetail(deps, firstCopy.to)
+      if (firstCopy?.kind === 'move') detail ??= copyLeftDetail(deps, entry, firstCopy.to)
       detail ??= UNDO_STOPPED
     }
   }
