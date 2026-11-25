@@ -31,6 +31,82 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      - name: Verify locate on real Windows (PE version, registry, running game)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installDir = (Resolve-Path 'test/fixtures/clean/Program Files/EA Games/The Sims 4').Path
+          $exePath = Join-Path $installDir 'Game\Bin\TS4_x64.exe'
+
+          # (1) Check the fixture PE with PowerShell FileVersionInfo
+          $peVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($exePath).FileVersion
+          if ($peVersion -ne '1.129.39.1030') {
+            throw "Expected fixture PE FileVersion '1.129.39.1030', got '$peVersion'"
+          }
+          Write-Host "PE FileVersionInfo OK: $peVersion"
+
+          # (2) Run locate through its real Host without, then with, HKLM WOW6432Node Install Dir
+          $regPath = 'HKLM:\SOFTWARE\WOW6432Node\Maxis\The Sims 4'
+          $tempDir = Join-Path $env:TEMP "sims-helper-locate-ci-$PID"
+          $proc = $null
+          if (Test-Path $regPath) { throw "Runner already has $regPath; the missing-key check needs it absent" }
+          try {
+            # (2a) Missing registry key: reg.exe exits 1, locate must still exit 0 with no install
+            $missingJson = (npm run --silent locate -- --real) -join "`n"
+            if ($LASTEXITCODE -ne 0) { throw "npm run locate -- --real failed with the registry key missing" }
+            $missing = $missingJson | ConvertFrom-Json
+            if ($null -ne $missing.gameInstall) {
+              throw "Expected gameInstall=null with the registry key missing, got '$($missing.gameInstall.path)'"
+            }
+            Write-Host "Missing registry key OK: gameInstall=null"
+
+            New-Item -Path $regPath -Force | Out-Null
+            Set-ItemProperty -Path $regPath -Name 'Install Dir' -Value $installDir
+
+            $locateJson = (npm run --silent locate -- --real) -join "`n"
+            if ($LASTEXITCODE -ne 0) { throw "npm run locate -- --real failed" }
+            $result = $locateJson | ConvertFrom-Json
+            if ($result.gameInstall.path -ne $installDir) {
+              throw "Expected gameInstall.path '$installDir', got '$($result.gameInstall.path)'"
+            }
+            if ($result.gameInstall.version -ne '1.129.39.1030') {
+              throw "Expected gameInstall.version '1.129.39.1030', got '$($result.gameInstall.version)'"
+            }
+            $packs = ($result.gameInstall.packs -join ',')
+            if ($packs -ne 'EP01,EP02,FP01,GP02,SP18') {
+              throw "Expected packs 'EP01,EP02,FP01,GP02,SP18', got '$packs'"
+            }
+            if ($result.gameRunning -ne 'not-running') {
+              throw "Expected gameRunning='not-running' before starting dummy process, got '$($result.gameRunning)'"
+            }
+            Write-Host "Registry + real Host locate OK: $($result.gameInstall.path) ($($result.gameInstall.version))"
+
+            # (3) Copy a small exe as TS4_x64.exe, start it, assert gameRunning='running', then stop it
+            New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+            $fakeExe = Join-Path $tempDir 'TS4_x64.exe'
+            Copy-Item -Path (Join-Path $env:SystemRoot 'System32\cmd.exe') -Destination $fakeExe
+            $proc = Start-Process -FilePath $fakeExe -ArgumentList '/c','ping -n 30 127.0.0.1 >nul' -PassThru -WindowStyle Hidden
+            Start-Sleep -Milliseconds 300
+
+            $runningJson = (npm run --silent locate -- --real) -join "`n"
+            if ($LASTEXITCODE -ne 0) { throw "npm run locate -- --real failed while game running" }
+            $runningResult = $runningJson | ConvertFrom-Json
+            if ($runningResult.gameRunning -ne 'running') {
+              throw "Expected gameRunning='running' while dummy TS4_x64.exe is running, got '$($runningResult.gameRunning)'"
+            }
+            Write-Host "Running-game check OK: gameRunning=$($runningResult.gameRunning)"
+          } finally {
+            if ($proc -and -not $proc.HasExited) {
+              & taskkill /F /T /PID $proc.Id 2>$null | Out-Null
+            }
+            if (Test-Path $tempDir) {
+              Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            if (Test-Path $regPath) {
+              Remove-Item -Path $regPath -Recurse -Force -ErrorAction SilentlyContinue
+            }
+          }
+
       - name: Build Windows installer
         run: npm run dist:win
 

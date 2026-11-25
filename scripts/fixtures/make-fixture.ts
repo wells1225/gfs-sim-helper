@@ -3,6 +3,7 @@ import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseHexUint32, parseHexUint64, writeDbpf } from './dbpf.ts'
 import type { ResourceKey } from './dbpf.ts'
+import { writeMinimalVersionPe } from './pe.ts'
 import { createRng } from './prng.ts'
 import type { FixtureSpec, GameInstallSpec, UserFolderSpec } from './spec-types.ts'
 import {
@@ -95,10 +96,10 @@ function parseKeys(keys: ReadonlyArray<{ type: string; group: string; instance: 
 function planGameInstall(install: GameInstallSpec, baseDate: Date, files: PlannedFile[]): void {
   const root = install.relPath
 
-  // Stub Windows executable & base Data folder
+  // Minimal valid PE64 executable carrying a VS_VERSIONINFO resource + base Data folder
   files.push({
     relPath: joinPosix(root, 'Game/Bin/TS4_x64.exe'),
-    data: Buffer.from(`MZ-FIXTURE-TS4-EXE:${install.version}\n`, 'ascii'),
+    data: writeMinimalVersionPe(install.version),
     mtime: baseDate
   })
   files.push({
