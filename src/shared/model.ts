@@ -207,8 +207,8 @@ export type ScanResult =
   | { status: 'failed'; why: 'folder-not-found' | 'folder-unreadable' | 'unexpected'; detail: string }
 
 export interface Progress {
-  task: 'scan' | 'backup' | 'fix'
-  stage: 'counting' | 'mods' | 'logs' | 'rules' | 'copying' | 'checking' | 'moving'
+  task: 'scan' | 'backup' | 'fix' | 'share'
+  stage: 'counting' | 'mods' | 'logs' | 'rules' | 'copying' | 'checking' | 'moving' | 'sending' | 'getting'
   done: number
   total: number | null // null while still counting
 }
@@ -237,6 +237,7 @@ export type GateRefusal =
   | { reason: 'game-running' }
   | { reason: 'game-state-unknown' }
   | { reason: 'no-verified-backup'; backup: 'none' | 'stale' | 'unknown' }
+  | { reason: 'check-failed'; path: string } // a check itself errored; fail closed
 
 export type BackupStatus =
   | { state: 'verified'; backupId: string; at: IsoTime }
@@ -260,6 +261,7 @@ export type BackupRefusal =
   | 'not-enough-space'
   | 'sims-folder-missing'
   | 'backup-already-running'
+  | 'backup-folder-in-sims-folder'
 
 export type BackupResult =
   | { status: 'verified'; record: BackupRecord }
@@ -273,9 +275,13 @@ export type JournalStep =
   | { kind: 'edit'; path: string; savedCopy: string; beforeSha256: Sha256; afterSha256: Sha256; state: StepState }
   | { kind: 'remove-cache'; path: string; state: StepState } // never undone: the game rebuilds caches
 
-export type ActionKind = Exclude<FixId, 'enable-group'> // enabling a group is the undo of its disable entry
+/** Enabling a group is the undo of its disable entry. The two share kinds are a save swap (PR 14). */
+export type ActionKind = Exclude<FixId, 'enable-group'> | 'share-receive' | 'share-restore'
 
-export type JournalOrigin = { by: 'fix' } | { by: 'fifty-fifty'; sessionId: string; round: number }
+export type JournalOrigin =
+  | { by: 'fix' }
+  | { by: 'fifty-fifty'; sessionId: string; round: number }
+  | { by: 'share'; shareId: string; seq: number | null } // seq null: an old copy put back
 
 export interface JournalEntry {
   id: string
@@ -285,12 +291,17 @@ export interface JournalEntry {
   origin: JournalOrigin
   folderPath: string
   groupId: string | null
-  backupId: string
+  groupLabel: string | null // the group's label when the entry is about one group, copied from ActionPlan
+  hasScript: boolean // the group has a .ts4script; false when groupId is null
+  backupId: string | null // null: the entry made no backup, which is every save swap (share-receive, share-restore)
   steps: JournalStep[]
   status: 'in-progress' | 'done' | 'undone' | 'needs-attention'
   undo: 'can-undo' | 'cannot-undo'
   undoneAt: IsoTime | null
 }
+
+/** What the start-up recovery did (journal:recovery): the entries it settled, or that it could not run at all. */
+export type StartupRecovery = { status: 'finished'; touched: JournalEntry[] } | { status: 'failed' }
 
 // ── Fixes (PR 10)
 /** What the renderer sends. Main looks the request up in its own last scan. */
@@ -303,6 +314,7 @@ export type FixRefusal =
   | { why: 'backup'; reason: BackupRefusal | 'backup-failed' }
   | { why: 'out-of-date'; detail: 'no-scan' | 'unknown-finding' | 'unknown-group' | 'file-changed' | 'nothing-to-do' }
   | { why: 'fifty-fifty-running' }
+  | { why: 'not-started' } // the action failed before anything changed (for example the journal could not be written)
 
 export type FixOutcome =
   | { status: 'done'; entry: JournalEntry }
@@ -314,6 +326,7 @@ export interface DisabledGroup {
   label: string
   entryId: string
   at: IsoTime
+  origin: JournalOrigin['by'] // 'fix' or 'fifty-fifty': who set the group aside
 }
 
 // ── 50/50 (PR 11)
@@ -325,8 +338,8 @@ export interface FiftyFifty {
   startedAt: IsoTime
   folderPath: string
   phase: FiftyPhase
-  round: number
-  roundsAtMost: number // rounds start at 1; roundsAtMost is ceil(log2(groups at the start))
+  round: number // 0 is the control round: every group set aside. The halving rounds follow from 1
+  roundsAtMost: number // ceil(log2(groups at the start)) + 1, the control round included
   groups: ModGroup[] // as scanned when the test started
   suspects: string[] // group ids that may still be the cause; script groups first, then by label
   parked: string[]
@@ -336,13 +349,38 @@ export interface FiftyFifty {
   history: { round: number; parked: string[]; answer: FiftyAnswer }[]
 }
 
+/** fiftyfifty.json is there but cannot be read as a session. Her way out is `fifty:stop`, which puts every group back. */
+export interface FiftyDamaged {
+  status: 'damaged'
+}
+
+/** What `fifty:get` answers: the session, null when there is none, or FiftyDamaged. FiftyFifty has no `status`. */
+export type FiftyGet = FiftyFifty | null | FiftyDamaged
+
 export type FiftyResult =
   | { status: 'ok'; state: FiftyFifty | null }
   | { status: 'refused'; refusal: FixRefusal }
   | { status: 'stopped-part-way'; state: FiftyFifty; detail: string }
 
+/**
+ * A stop on a damaged progress file that ended part way: there is no session to hand back, so `state` is null.
+ * notBack: the labels of the groups the 50/50 test set aside that are still out of Mods, in every folder it ran
+ * on. Groups she set aside herself (origin 'fix') are never listed. Stop can be tried again.
+ */
+export interface FiftyStopPartWay {
+  status: 'stopped-part-way'
+  state: null
+  notBack: string[]
+  detail: string
+}
+
+/** What `fifty:stop` answers: a FiftyResult, or FiftyStopPartWay when the damaged-file put-back ends part way. */
+export type FiftyStopResult = FiftyResult | FiftyStopPartWay
+
 // ── AI help (PR 12)
 export type KeyStatus = 'set' | 'not-set' | 'encryption-unavailable'
+/** What setKey answers: a KeyStatus, or 'not-saved' when the new key was refused and the old one is still stored. */
+export type KeySetResult = KeyStatus | 'not-saved'
 
 export interface AssistStatus {
   key: KeyStatus
@@ -356,4 +394,126 @@ export interface AssistPreview {
 
 export type AssistAnswer =
   | { status: 'answered'; text: string }
-  | { status: 'no-answer'; why: 'no-key' | 'declined' | 'offline' | 'limit-reached' | 'preview-expired' | 'error' }
+  | { status: 'no-answer'; why: 'no-key' | 'key-rejected' | 'declined' | 'offline' | 'limit-reached' | 'preview-expired' | 'error' } // key-rejected: HTTP 401
+
+// ── Updates (PR 13)
+export type UpdateState =
+  | { state: 'off'; current: string; why: 'not-installed-app' | 'switched-off' | 'unsafe-install-folder' } // current: About shows it
+  | { state: 'idle'; current: string; checkedAt: IsoTime | null; justUpdated: boolean }
+  | { state: 'checking'; current: string }
+  | { state: 'available'; current: string; next: string }
+  | { state: 'downloading'; current: string; next: string; percent: number }
+  | { state: 'ready'; current: string; next: string } // downloaded, checksum passed, waits for her click
+  | { state: 'failed'; current: string; step: 'check' | 'download'; why: 'offline' | 'bad-file' | 'error' }
+
+export type UpdateInstall = { status: 'restarting' } | { status: 'refused'; why: 'busy' | 'not-ready' }
+
+// ── Share saves (PR 14)
+export type PcRole = 'lila' | 'tyler'
+
+export type ShareLinkState =
+  | { state: 'no-role' }
+  | { state: 'no-folder' }
+  | { state: 'folder-missing' } // chosen before, not there now
+  | { state: 'waiting'; since: IsoTime }
+  | { state: 'same-role' } // the other PC says it is this PC
+  | { state: 'connected'; otherSeenAt: IsoTime; otherHeardUs: boolean }
+  | { state: 'damaged' } // share.json cannot be read
+
+export interface ShareSettings {
+  role: PcRole | null
+  folderLabel: string | null
+  keepOld: number
+  keepInDrive: number
+}
+
+export interface LocalSave {
+  slotId: string // 'Slot_0000000a', never a path
+  savedAt: IsoTime
+  bytes: number
+  shareId: string | null
+}
+
+export type ModNeed = { key: string; name: string; hasScript: boolean; state: 'missing' | 'other-version' } & (
+  | { source: 'curseforge'; linkId: string }
+  | { source: 'other'; files: string[]; linkId: string | null; shownLink: string | null } // shownLink: the full address
+)
+
+export interface ShareNeeds {
+  game: 'same' | 'theirs-newer' | 'theirs-older' | 'unknown'
+  theirVersion: string | null
+  packs: { code: PackCode; name: string | null }[]
+  mods: ModNeed[]
+  modsOff: boolean // mods are off on this PC
+}
+
+export interface IncomingSave {
+  seq: number
+  from: PcRole
+  sentAt: IsoTime
+  state: 'arriving' | 'ready' | 'damaged' | 'needs-newer-app'
+  will: 'replace' | 'add' | 'ask' | null
+  needs: ShareNeeds | null // null until the manifest can be read
+}
+
+export interface SharedSave {
+  shareId: string
+  name: string
+  here: { slotId: string; savedAt: IsoTime; changed: boolean } | null // changed: played here since the last handoff
+  lastSent: { seq: number; at: IsoTime; gotAt: IsoTime | null } | null
+  incoming: IncomingSave | null
+  ask: 'which-to-keep' | null
+  canSend: 'yes' | 'nothing-new' | 'get-first' | 'answer-first' | 'save-missing'
+}
+
+export interface ShareView {
+  link: ShareLinkState
+  settings: ShareSettings
+  saves: SharedSave[]
+  aiFind: 'offer' | 'hide'
+}
+
+export type ShareRefusal =
+  | { why: 'gate'; refusal: GateRefusal }
+  | { why: 'backup'; reason: BackupRefusal | 'backup-failed' }
+  | { why: 'game-running' }
+  | { why: 'game-state-unknown' }
+  | { why: 'fifty-fifty-running' }
+  | { why: 'not-connected' }
+  | { why: 'state-damaged' }
+  | { why: 'not-ready'; state: 'arriving' | 'damaged' | 'needs-newer-app' }
+  | { why: 'game-older'; theirs: string; ours: string }
+  | { why: 'nothing-new' }
+  | { why: 'get-first' }
+  | { why: 'answer-first' }
+  | { why: 'out-of-date'; detail: 'unknown-save' | 'unknown-share' | 'file-changed' | 'no-free-slot' }
+
+export type ShareSendResult =
+  | { status: 'sent'; view: ShareView }
+  | { status: 'refused'; refusal: ShareRefusal }
+  | { status: 'failed'; detail: string }
+
+export type ShareReceiveResult =
+  | { status: 'replaced' | 'added' | 'kept-both' | 'restored'; entry: JournalEntry; view: ShareView }
+  | { status: 'already-here'; view: ShareView }
+  | { status: 'refused'; refusal: ShareRefusal }
+  | { status: 'stopped-part-way'; entry: JournalEntry; detail: string }
+
+export interface OldSave {
+  oldId: string
+  shareId: string
+  name: string
+  savedAt: IsoTime
+  replacedAt: IsoTime
+  bytes: number
+}
+
+export interface FindPreview {
+  id: string
+  text: string // exactly what will be sent
+}
+
+export type FindAnswer =
+  | { status: 'found'; linkId: string; shownLink: string; host: string; place: 'usual' | 'creator-site' | 'not-usual'; why: string }
+  | { status: 'not-found' }
+  | { status: 'no-answer'; why: Extract<AssistAnswer, { status: 'no-answer' }>['why'] }
