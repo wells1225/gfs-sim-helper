@@ -245,6 +245,18 @@ describe('fix contract requests from PR 10', () => {
     expect([sampleJournalEntry().groupLabel, sampleJournalEntry().hasScript]).toEqual([null, false])
   })
 
+  it('a save swap journal entry has no backup id: backupId is null, a fix keeps its string', () => {
+    // PR 14: a save swap makes no backup, so it has no honest backup id. The tsc test above fails if null is refused.
+    const swap = sampleJournalEntry({
+      action: 'share-receive',
+      origin: { by: 'share', shareId: 'share-1', seq: 1 },
+      backupId: null,
+      steps: []
+    })
+    const backupIds: (string | null)[] = [swap.backupId, sampleJournalEntry().backupId]
+    expect(backupIds).toEqual([null, '20261124-120400-e5f6'])
+  })
+
   it('lets planFix take what applyFix read from the disk', () => {
     const at: PlanFixAt = {
       holdingDir: 'C:\\Data\\holding',
@@ -599,6 +611,8 @@ describe('start-up recovery (PR 10)', () => {
     const ctx = makeContext()
     expect(ctx.busy()).toBe(false)
     const run = ctx.startupRecovery()
+    // Counted from its first line: built from an uncounted recover, Restart now could restart mid-put-back.
+    expect(ctx.busy()).toBe(true)
     expect(ctx.startupRecovery()).toBe(run)
     // 'failed' while recover is the contract's throwing stub; 'finished' once PR 9's real recover lands.
     // That a throw becomes 'failed' is pinned by the onceRecovery test above.
