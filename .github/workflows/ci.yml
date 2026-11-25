@@ -31,6 +31,10 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      # The app ships on Electron's Node, not Node 22. Fails if a worker ran on plain Node.
+      - name: Safety tests on Electron's own Node (gate and backup)
+        run: npm run test:electron-node
+
       - name: Verify locate on real Windows (PE version, registry, running game)
         shell: pwsh
         run: |

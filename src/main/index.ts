@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, safeStorage, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, screen, shell } from 'electron'
 import type { IpcMainInvokeEvent } from 'electron'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -157,10 +157,21 @@ if (!gotSingleInstanceLock) {
       },
       reveal: (file) => {
         shell.showItemInFolder(file)
-      }
+      },
+      pickFolder: async () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return null
+        const picked = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] })
+        return picked.canceled ? null : (picked.filePaths[0] ?? null)
+      },
+      // services.ts hands this only the url safeWebLink gave back.
+      openExternal: (url) => shell.openExternal(url)
     })
 
     registerIpc(ipcMain, ctx, isAppWindowEvent)
+
+    // A change a crash cut off is put back before the window opens (AGENTS.md: the one thing done without a click).
+    // This is the only start; it runs once, never rejects, and journal:recovery tells her what it did.
+    void ctx.startupRecovery()
 
     nativeTheme.on('updated', () => {
       if (mainWindow && !mainWindow.isDestroyed()) {

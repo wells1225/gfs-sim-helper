@@ -2,9 +2,8 @@ import type { UpdateState } from '../../shared/model.ts'
 import type { Updater, UpdaterInput } from '../ports.ts'
 
 // Stub from the contract commit. PR 13 (Fable) replaces it: the only file that may load electron-updater.
-const OFF: UpdateState = { state: 'off', why: 'switched-off' }
-
-export function createUpdater(_input: UpdaterInput, _seams: { busy?: () => boolean } = {}): Updater {
+export function createUpdater(input: UpdaterInput, _seams: { busy?: () => boolean } = {}): Updater {
+  const OFF: UpdateState = { state: 'off', why: 'switched-off', current: input.version }
   return {
     state: () => OFF,
     check: async () => OFF,
