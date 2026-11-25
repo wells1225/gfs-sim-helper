@@ -124,7 +124,15 @@ async function inspect(step: JournalStep): Promise<StepOnDisk> {
     if (now === step.afterSha256) return { where: 'done' }
     return { where: 'unclear', file: step.path }
   }
-  return (await exists(step.path)) ? { where: 'not-done' } : { where: 'done' }
+  // A file that is still there proves the remove did not run. A folder that still exists does not prove nothing
+  // inside was removed by a recursive remove, so it counts as unclear (maybe-ran).
+  try {
+    const info = await lstat(step.path)
+    return info.isFile() ? { where: 'not-done' } : { where: 'unclear', file: step.path }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code
+    return code === 'ENOENT' || code === 'ENOTDIR' ? { where: 'done' } : { where: 'unclear', file: step.path }
+  }
 }
 
 /** Every step still pending, and the disk shows none of them ran: a change that never started. Reads only. */
@@ -320,7 +328,10 @@ export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgres
     result = await deps.gate.run({ reason: 'fix', folderPath: plan.folderPath, ops })
   } catch (err) {
     // We cannot know which ops ran: ask the disk, and treat unclear steps as applied so undo still checks them.
-    for (const step of entry.steps) if ((await inspect(step)).where !== 'not-done') step.state = 'applied'
+    for (const step of entry.steps) {
+      const onDisk = await inspect(step)
+      if (step.kind === 'remove-cache' ? onDisk.where === 'done' : onDisk.where !== 'not-done') step.state = 'applied'
+    }
     result = { status: 'failed', opsDone: -1, detail: (err as Error).message }
   }
 
@@ -329,7 +340,7 @@ export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgres
     await removeEntry(deps, entry.id)
     return { status: 'refused', refusal: { why: 'gate', refusal: result.refusal } }
   }
-  if (result.status === 'failed' && entry.undo === 'cannot-undo') return await stoppedCacheClear(deps, entry)
+  if (result.status === 'failed' && entry.undo === 'cannot-undo') return await stoppedCacheClear(deps, entry, result)
   if (result.status === 'failed') {
     if (result.opsDone >= 0) {
       for (const [i, step] of entry.steps.entries()) if (lastOp[i]! < result.opsDone) step.state = 'applied'
@@ -513,9 +524,21 @@ async function settleCacheClear(deps: SafetyDeps, entry: JournalEntry): Promise<
   return saved.status === 'done' ? entry : null
 }
 
-/** A cache clear whose gate request failed. One that cleared nothing never ran: its entry is taken back. */
-async function stoppedCacheClear(deps: SafetyDeps, entry: JournalEntry): Promise<FixOutcome> {
-  if (await neverRan(entry)) {
+/**
+ * A cache clear whose gate request failed. Only ops up to opsDone could have run (or any op when the gate threw):
+ * if every reached step is still a file on disk, nothing was cleared and the entry is taken back. A folder that
+ * still exists may have lost files inside it, so it settles as done with CACHE_STOPPED.
+ */
+async function stoppedCacheClear(
+  deps: SafetyDeps,
+  entry: JournalEntry,
+  result: Extract<GateResult, { status: 'failed' }>
+): Promise<FixOutcome> {
+  const reached = result.opsDone < 0 ? entry.steps : entry.steps.slice(0, result.opsDone + 1)
+  const untouched =
+    entry.steps.every((s) => s.state === 'pending') &&
+    (await Promise.all(reached.map((step) => inspect(step)))).every((onDisk) => onDisk.where === 'not-done')
+  if (untouched) {
     // If this removal fails, the entry stays in progress with every step pending, and the next start sees the same.
     await removeEntry(deps, entry.id)
     return NOT_STARTED
