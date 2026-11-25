@@ -51,6 +51,9 @@ export function collectHandlers(ctx: AppContext): Handlers<keyof IpcInvoke> {
  * restart for an update cannot land between two of its steps. Never true for update:*: update:install asks busy()
  * itself, and update:check's one write (the time of the last check, through the gate) is busy-counted by gate.run.
  * The start-up recovery is busy-counted by safety.recover, so the journal reads that wait for it stay false.
+ * share:get is false on purpose: its two small housekeeping writes (a link put back after an undone Get, through
+ * gate.run, and safety.closeUndo for a slot she has played since) are each busy-counted on their own and each is
+ * done again on the next look if the app stops between them. A look every 60 s must not make Restart now answer busy.
  * A new channel fails typecheck until it is named here.
  */
 export const CHANGING_CHANNELS = {
