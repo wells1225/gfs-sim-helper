@@ -26,6 +26,7 @@ export type StubIpcMap = {
 export interface LaunchAppOptions {
   fixture?: string
   env?: Record<string, string | undefined>
+  shareDir?: string // PR 14: a local folder that stands in for Google Drive, as SIMS_HELPER_SHARE_DIR
 }
 
 export interface LaunchedApp {
@@ -39,20 +40,33 @@ export interface LaunchedApp {
   close(): Promise<void>
 }
 
+function deleteCaseInsensitive(map: Record<string, string>, key: string): void {
+  const lower = key.toLowerCase()
+  for (const existing of Object.keys(map)) {
+    if (existing.toLowerCase() === lower) {
+      delete map[existing]
+    }
+  }
+}
+
 function cleanEnv(base: NodeJS.ProcessEnv, overrides: Record<string, string | undefined>): Record<string, string> {
   const result: Record<string, string> = {}
   for (const [k, v] of Object.entries(base)) {
     if (typeof v === 'string') result[k] = v
   }
-  delete result['ELECTRON_RUN_AS_NODE']
+  deleteCaseInsensitive(result, 'ELECTRON_RUN_AS_NODE')
   for (const [k, v] of Object.entries(overrides)) {
-    if (v === undefined) {
-      delete result[k]
-    } else {
+    deleteCaseInsensitive(result, k)
+    if (v !== undefined) {
       result[k] = v
     }
   }
   return result
+}
+
+/** The environment for a launched app: updates are off and no host share dir leaks unless the caller says otherwise. */
+export function launchEnv(base: NodeJS.ProcessEnv, overrides: Record<string, string | undefined>): Record<string, string> {
+  return cleanEnv(base, { SIMS_HELPER_UPDATES: 'off', SIMS_HELPER_SHARE_DIR: undefined, ...overrides })
 }
 
 export async function launchApp(options: LaunchAppOptions = {}): Promise<LaunchedApp> {
@@ -98,6 +112,11 @@ export async function launchApp(options: LaunchAppOptions = {}): Promise<Launche
     }
   }
 
+  const shareDir = options.shareDir?.trim()
+  if (shareDir) {
+    envOverrides = { ...envOverrides, SIMS_HELPER_SHARE_DIR: shareDir }
+  }
+
   if (options.env) {
     envOverrides = { ...envOverrides, ...options.env }
   }
@@ -110,7 +129,7 @@ export async function launchApp(options: LaunchAppOptions = {}): Promise<Launche
     throw new Error(`Installed executable not found at: ${installedExe}`)
   }
 
-  const env = cleanEnv(process.env, envOverrides)
+  const env = launchEnv(process.env, envOverrides)
   const launchOptions = installedExe
     ? { executablePath: installedExe, env }
     : { args: [resolve(process.cwd(), 'out/main/index.js')], env }
@@ -188,12 +207,28 @@ export async function shoot(page: Page, prSlug: string, name: string): Promise<v
   const outDir = resolve(process.cwd(), 'test-results', 'screens', prSlug)
   await mkdir(outDir, { recursive: true })
   await page.setViewportSize({ width: 960, height: 700 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
 
-  await page.emulateMedia({ colorScheme: 'light' })
+  await setColorScheme(page, 'light')
   await page.screenshot({ path: join(outDir, `${name}-light.png`) })
 
-  await page.emulateMedia({ colorScheme: 'dark' })
+  await setColorScheme(page, 'dark')
   await page.screenshot({ path: join(outDir, `${name}-dark.png`) })
 
   await page.emulateMedia({ colorScheme: 'light' })
+}
+
+export async function setColorScheme(page: Page, colorScheme: 'light' | 'dark'): Promise<void> {
+  await page.emulateMedia({ colorScheme })
+  await nextFrame(page)
+}
+
+async function nextFrame(page: Page): Promise<void> {
+  await page.evaluate(
+    () =>
+      new Promise<void>((done) => {
+        const g = globalThis as unknown as { requestAnimationFrame(cb: () => void): number }
+        g.requestAnimationFrame(() => g.requestAnimationFrame(() => done()))
+      })
+  )
 }

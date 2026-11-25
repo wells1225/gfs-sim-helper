@@ -3,18 +3,46 @@ import { execFile } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
-import { describe, expect, it } from 'vitest'
-import { INVOKE_CHANNELS } from '../shared/ipc.ts'
-import type { GameRunState as ModelGameRunState } from '../shared/model.ts'
+import type { Page } from '@playwright/test'
+import { afterAll, describe, expect, it } from 'vitest'
+import { readFile, rm } from 'node:fs/promises'
+import { INVOKE_CHANNELS, type Handlers, type IpcInvoke } from '../shared/ipc.ts'
+import type {
+  ActionKind,
+  AssistAnswer,
+  BackupRefusal,
+  DisabledGroup,
+  FiftyDamaged,
+  FiftyStopPartWay,
+  FixRefusal,
+  GameRunState as ModelGameRunState,
+  GateRefusal,
+  JournalOrigin,
+  KeySetResult,
+  Progress,
+  ShareRefusal,
+  ShareView,
+  StartupRecovery,
+  UpdateInstall,
+  UpdateState
+} from '../shared/model.ts'
+import { sampleFiftyFifty, sampleJournalEntry, sampleShareView } from '../shared/testing/sample.ts'
 import { appPaths } from './app-paths.ts'
 import { assistHandlers } from './assist/handlers.ts'
 import { fiftyHandlers } from './fiftyfifty/handlers.ts'
 import { fixHandlers } from './fixes/handlers.ts'
-import { collectHandlers } from './ipc.ts'
+import type { IpcMainInvokeEvent } from 'electron'
+import { CHANGING_CHANNELS, collectHandlers, registerIpc } from './ipc.ts'
 import type { Host } from './locate/host.ts'
+import type { ActionPlan, AssistReply, KeyStore, PlanFixAt, PlannedStep, Updater } from './ports.ts'
 import type { GameRunState as LocateGameRunState } from './locate/process.ts'
 import { scanHandlers } from './scan/handlers.ts'
-import { createContext } from './services.ts'
+import { createContext, makeOpenWeb, onceRecovery, updaterKeepOutOf, type CreateContextInput } from './services.ts'
+import { shareHandlers } from './share/handlers.ts'
+import { updateHandlers } from './update/handlers.ts'
+import { createUpdater } from './update/updater.ts'
+import { launchEnv, shoot } from '../../test/e2e/support/app.ts'
+import { cspAtBuild, RENDERER_CSP } from '../../electron.vite.config.ts'
 
 const execFileAsync = promisify(execFile)
 const THIS_DIR = dirname(fileURLToPath(import.meta.url))
@@ -69,7 +97,14 @@ describe('contract', () => {
       reveal: () => {}
     })
 
-    const groups = [scanHandlers(ctx), fixHandlers(ctx), fiftyHandlers(ctx), assistHandlers(ctx)]
+    const groups = [
+      scanHandlers(ctx),
+      fixHandlers(ctx),
+      fiftyHandlers(ctx),
+      assistHandlers(ctx),
+      updateHandlers(ctx),
+      shareHandlers(ctx)
+    ]
     const seen = new Map<string, number>()
     for (const group of groups) {
       for (const channel of Object.keys(group)) {
@@ -88,5 +123,643 @@ describe('contract', () => {
 
   it('keeps GameRunState identical between shared/model.ts and locate/process.ts', () => {
     expect(GAME_RUN_STATE_MATCHES).toBe(true)
+  })
+})
+
+describe('e2e support shoot()', () => {
+  const slug = 'contract-shoot-unit'
+
+  afterAll(async () => {
+    await rm(join(process.cwd(), 'test-results', 'screens', slug), { recursive: true, force: true })
+  })
+
+  it('turns on reduced motion and waits a frame after each colour switch before a screenshot', async () => {
+    const events: string[] = []
+    const page = {
+      async setViewportSize() {},
+      async emulateMedia(media: { colorScheme?: string; reducedMotion?: string }) {
+        if (media.reducedMotion) events.push(`reducedMotion:${media.reducedMotion}`)
+        if (media.colorScheme) events.push(`colorScheme:${media.colorScheme}`)
+      },
+      async evaluate() {
+        events.push('frame')
+      },
+      async screenshot(options: { path: string }) {
+        events.push(`shot:${options.path.endsWith('-dark.png') ? 'dark' : 'light'}`)
+      }
+    } as unknown as Page
+
+    await shoot(page, slug, 'sample')
+
+    const firstShot = events.findIndex((e) => e.startsWith('shot:'))
+    expect(events.slice(0, firstShot)).toContain('reducedMotion:reduce')
+    for (const scheme of ['light', 'dark']) {
+      const shot = events.indexOf(`shot:${scheme}`)
+      const switched = events.lastIndexOf(`colorScheme:${scheme}`, shot)
+      expect(switched).toBeGreaterThanOrEqual(0)
+      expect(events.slice(switched + 1, shot)).toContain('frame')
+    }
+  })
+})
+
+const CONTRACT_CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+  "font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'; " +
+  "form-action 'none'"
+
+describe('renderer Content-Security-Policy', () => {
+  it('is added only at build time, so the dev server can inject its inline script', async () => {
+    const html = await readFile(join(REPO_ROOT, 'src/renderer/index.html'), 'utf8')
+    expect(html).not.toMatch(/Content-Security-Policy/i)
+    const plugin = cspAtBuild()
+    expect(plugin.apply).toBe('build')
+    expect(RENDERER_CSP).toBe(CONTRACT_CSP)
+  })
+
+  it('puts the exact policy first in the built page head', () => {
+    const transform = cspAtBuild().transformIndexHtml as () => unknown
+    expect(transform()).toEqual([
+      {
+        tag: 'meta',
+        attrs: { 'http-equiv': 'Content-Security-Policy', content: CONTRACT_CSP },
+        injectTo: 'head-prepend'
+      }
+    ])
+  })
+})
+
+describe('GateRefusal', () => {
+  it('has a check-failed reason so an error inside a gate check fails closed', () => {
+    const refusal: GateRefusal = { reason: 'check-failed', path: 'C:\\Sims\\Mods\\a.package' }
+    expect(refusal.reason).toBe('check-failed')
+  })
+})
+
+describe('backup and action plan contract', () => {
+  it('refuses a backup folder inside the Sims folder', () => {
+    const reason: BackupRefusal = 'backup-folder-in-sims-folder'
+    expect(reason).toBe('backup-folder-in-sims-folder')
+  })
+
+  it('lets the planner choose the journal entry id that runAction uses', () => {
+    const plan: ActionPlan = {
+      entryId: 'entry-1',
+      action: 'disable-group',
+      summary: 'Set aside one mod',
+      origin: { by: 'fix' },
+      folderPath: 'C:\\Sims',
+      groupId: 'g1',
+      groupLabel: 'Group one',
+      hasScript: false,
+      steps: []
+    }
+    expect(plan.entryId).toBe('entry-1')
+  })
+})
+
+describe('fix contract requests from PR 10', () => {
+  it('has a refusal for an action that failed before anything changed', () => {
+    const refusal: FixRefusal = { why: 'not-started' }
+    expect(refusal.why).toBe('not-started')
+  })
+
+  it('carries the hash the edit was planned against, so runAction can refuse a changed file', () => {
+    const step: PlannedStep = { kind: 'edit', path: 'C:\\Sims\\Options.ini', newText: 'a', beforeSha256: 'b'.repeat(64) }
+    expect(step.kind === 'edit' && step.beforeSha256).toBe('b'.repeat(64))
+  })
+
+  it('carries the group label and script flag on the plan and on the journal entry', () => {
+    const plan: ActionPlan = {
+      entryId: 'entry-2',
+      action: 'disable-group',
+      summary: 'Set aside Wicked Wardrobe',
+      origin: { by: 'fix' },
+      folderPath: 'C:\\Sims',
+      groupId: 'cf:901234',
+      groupLabel: 'Wicked Wardrobe',
+      hasScript: true,
+      steps: []
+    }
+    const entry = sampleJournalEntry({ groupId: plan.groupId, groupLabel: plan.groupLabel, hasScript: plan.hasScript })
+    expect([entry.groupLabel, entry.hasScript]).toEqual(['Wicked Wardrobe', true])
+    expect([sampleJournalEntry().groupLabel, sampleJournalEntry().hasScript]).toEqual([null, false])
+  })
+
+  it('a save swap journal entry has no backup id: backupId is null, a fix keeps its string', () => {
+    // PR 14: a save swap makes no backup, so it has no honest backup id. The tsc test above fails if null is refused.
+    const swap = sampleJournalEntry({
+      action: 'share-receive',
+      origin: { by: 'share', shareId: 'share-1', seq: 1 },
+      backupId: null,
+      steps: []
+    })
+    const backupIds: (string | null)[] = [swap.backupId, sampleJournalEntry().backupId]
+    expect(backupIds).toEqual([null, '20261124-120400-e5f6'])
+  })
+
+  it('lets planFix take what applyFix read from the disk', () => {
+    const at: PlanFixAt = {
+      holdingDir: 'C:\\Data\\holding',
+      entryId: 'entry-3',
+      optionsText: '[options]\n',
+      existingCaches: ['localthumbcache.package'],
+      existingModPaths: ['Scripts/a.ts4script']
+    }
+    const bare: PlanFixAt = { holdingDir: 'C:\\Data\\holding', entryId: 'entry-3' }
+    expect([at.optionsText, bare.optionsText]).toEqual(['[options]\n', undefined])
+  })
+})
+
+describe('50/50 contract requests from PR 11', () => {
+  it('sends the round the answer is for, so a stale click cannot answer the next round', () => {
+    const req: IpcInvoke['fifty:answer']['req'] = { answer: 'worked', round: 2 }
+    expect(req.round).toBe(2)
+  })
+
+  it('says whether a disabled group was set aside by a fix or by the 50/50 test', () => {
+    const groups: DisabledGroup[] = [
+      { groupId: 'dir:hair', label: 'Hair', entryId: 'e1', at: '2026-11-24T12:00:00.000Z', origin: 'fix' },
+      { groupId: 'cf:1', label: 'Zed', entryId: 'e2', at: '2026-11-24T12:01:00.000Z', origin: 'fifty-fifty' }
+    ]
+    expect(groups.map((g) => g.origin)).toEqual(['fix', 'fifty-fifty'])
+  })
+
+  it('answers fifty:get with a typed damaged result, beside the session or null', () => {
+    const answers: IpcInvoke['fifty:get']['res'][] = [sampleFiftyFifty(), null, { status: 'damaged' }]
+    const damaged = answers.filter((a): a is FiftyDamaged => a !== null && 'status' in a)
+    expect(damaged).toEqual([{ status: 'damaged' }])
+  })
+
+  it('lets fifty:stop end part way with no session, naming the groups not back yet', () => {
+    const partWay: FiftyStopPartWay = {
+      status: 'stopped-part-way',
+      state: null,
+      notBack: ['Wicked Wardrobe'],
+      detail: 'put-back stopped'
+    }
+    const res: IpcInvoke['fifty:stop']['res'] = partWay
+    const other: IpcInvoke['fifty:start']['res'] = { status: 'stopped-part-way', state: sampleFiftyFifty(), detail: 'x' }
+    expect([res.status, res.state, partWay.notBack, other.state?.id]).toEqual([
+      'stopped-part-way',
+      null,
+      ['Wicked Wardrobe'],
+      sampleFiftyFifty().id
+    ])
+  })
+})
+
+describe('AI key contract requests from PR 12', () => {
+  it('tells a key the service rejected (HTTP 401) apart from no key at all', () => {
+    const reply: AssistReply = { status: 'failed', why: 'key-rejected' }
+    const answer: AssistAnswer = { status: 'no-answer', why: 'key-rejected' }
+    expect([reply.status === 'failed' && reply.why, answer.status === 'no-answer' && answer.why]).toEqual([
+      'key-rejected',
+      'key-rejected'
+    ])
+  })
+
+  it('lets setKey say a new key was not saved while the old one stays stored', () => {
+    const results: KeySetResult[] = ['set', 'not-set', 'encryption-unavailable', 'not-saved']
+    const res: IpcInvoke['assist:set-key']['res'] = 'not-saved'
+    const set: KeyStore['set'] = async () => 'not-saved'
+    expect([results.at(-1), res, typeof set]).toEqual(['not-saved', 'not-saved', 'function'])
+  })
+})
+
+describe('auto-update contract (PR 13)', () => {
+  function makeContext(updater?: CreateContextInput['updater']) {
+    return createContext({
+      host: makeFakeHost(),
+      paths: appPaths({ localAppData: '/fake/LocalAppData', appData: '/fake/Roaming', desktopDir: '/fake/Desktop', env: {} }),
+      safeStorage: {
+        isEncryptionAvailable: () => false,
+        encryptString: (text) => Buffer.from(text, 'utf8'),
+        decryptString: (data) => Buffer.from(data).toString('utf8')
+      },
+      emit: () => {},
+      reveal: () => {},
+      ...(updater ? { updater } : {})
+    })
+  }
+
+  it('builds the installer with a GitHub publish entry but never publishes from a build', async () => {
+    // Windows checkouts may have CRLF line ends.
+    const builder = (await readFile(join(REPO_ROOT, 'electron-builder.yml'), 'utf8')).replaceAll('\r\n', '\n')
+    expect(builder).toMatch(/^publish:\n {2}provider: github\n {2}owner: wells1225\n {2}repo: gfs-sim-helper\n/m)
+    const pkg = JSON.parse(await readFile(join(REPO_ROOT, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>
+      devDependencies: Record<string, string>
+    }
+    expect(pkg.scripts['dist:win']).toMatch(/ --publish never$/)
+    expect(pkg.devDependencies['electron-updater']).toBe('^6.8.11')
+  })
+
+  it('always installs per user, so no update asks for admin', async () => {
+    const nsh = await readFile(join(REPO_ROOT, 'build/installer.nsh'), 'utf8')
+    expect(nsh).toMatch(/!macro customInstallMode\s+StrCpy \$isForceCurrentInstall "1"\s+!macroend/)
+    expect(nsh).toContain('Made for Lila, with love from Tyler')
+  })
+
+  it('registers the update channels from updateHandlers', () => {
+    const ctx = makeContext()
+    const channels: (keyof IpcInvoke)[] = ['update:get', 'update:check', 'update:download', 'update:install']
+    expect(Object.keys(updateHandlers(ctx)).sort()).toEqual([...channels].sort())
+    for (const channel of channels) expect(INVOKE_CHANNELS).toContain(channel)
+  })
+
+  it('has updates off when no updater is passed in, and uses the one passed in', async () => {
+    expect(makeContext().updater.state()).toEqual({ state: 'off', why: 'switched-off', current: '0.0.0' })
+    const idle: UpdateState = { state: 'idle', current: '0.2.0', checkedAt: null, justUpdated: false }
+    const refused: UpdateInstall = { status: 'refused', why: 'not-ready' }
+    const updater: Updater = {
+      state: () => idle,
+      check: async () => idle,
+      download: async () => idle,
+      install: () => refused
+    }
+    const ctx = makeContext(updater)
+    expect(await ctx.updater.check()).toBe(idle)
+    expect(ctx.updater.install()).toBe(refused)
+  })
+
+  it('hands a factory updater the same busy() as the context, so install refuses mid-change', async () => {
+    let seenBusy: (() => boolean) | null = null
+    const off: UpdateState = { state: 'off', why: 'switched-off', current: '0.2.0' }
+    const ctx = makeContext((seams) => {
+      seenBusy = seams.busy
+      return { state: () => off, check: async () => off, download: async () => off, install: () => ({ status: 'refused', why: 'not-ready' }) }
+    })
+    if (seenBusy === null) throw new Error('the factory was not called')
+    const busy: () => boolean = seenBusy
+    expect(busy()).toBe(false)
+    const call = ctx.safety.backupStatus('/fake/Documents/Electronic Arts/The Sims 4')
+    expect(busy()).toBe(true)
+    await call.catch(() => {})
+    expect(busy()).toBe(false)
+  })
+
+  it('keeps updates out of Documents, OneDrive and the app data folder', () => {
+    const keepOutOf = updaterKeepOutOf(['C:\\Users\\Lila\\Documents', 'C:\\Users\\Lila\\Documents', ''], {
+      dataDir: 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper',
+      oneDriveRoots: ['C:\\Users\\Lila\\OneDrive']
+    })
+    expect(keepOutOf).toEqual([
+      'C:\\Users\\Lila\\Documents',
+      'C:\\Users\\Lila\\OneDrive',
+      'C:\\Users\\Lila\\AppData\\Local\\SimsHelper'
+    ])
+  })
+
+  // Both the stub and PR 13's updater decide these before they touch electron-updater, so this holds on either.
+  // Outside Electron the real updater is also off as 'not-installed-app' once it reaches the engine, so that
+  // reason means the install folder was let through.
+  it('the updater is off for an install folder that is, holds or sits in the app data folder', async () => {
+    const dataDir = 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper'
+    const keepOutOf = updaterKeepOutOf(['C:\\Users\\Lila\\Documents'], { dataDir, oneDriveRoots: [] })
+    for (const installDir of [dataDir, 'C:\\Users\\Lila\\AppData\\Local', `${dataDir}\\app`]) {
+      const updater = createUpdater(
+        { isPackaged: true, version: '0.2.0', installDir, argv: [], env: {}, keepOutOf, platform: 'win32' },
+        { busy: () => false }
+      )
+      const state = updater.state()
+      expect(state).toMatchObject({ state: 'off', current: '0.2.0' })
+      expect(state.state === 'off' ? state.why : null).not.toBe('not-installed-app')
+      expect((await updater.check()).state).toBe('off')
+      expect(updater.install()).toEqual({ status: 'refused', why: 'not-ready' })
+    }
+  })
+
+  it('busy() is true while a safety or fixes call is in flight', async () => {
+    const ctx = makeContext()
+    expect(ctx.busy()).toBe(false)
+    const call = ctx.safety.backupStatus('/fake/Documents/Electronic Arts/The Sims 4')
+    expect(ctx.busy()).toBe(true)
+    await call.catch(() => {})
+    expect(ctx.busy()).toBe(false)
+    const fix = ctx.fixes.disabledGroups('/fake/Documents/Electronic Arts/The Sims 4')
+    expect(ctx.busy()).toBe(true)
+    await fix.catch(() => {})
+    expect(ctx.busy()).toBe(false)
+  })
+
+  it('busy() is true while a write runs through the gate, so a state or key write is never cut by a restart', async () => {
+    const ctx = makeContext()
+    const write = ctx.gate.run({ reason: 'state', folderPath: null, ops: [] })
+    expect(ctx.busy()).toBe(true)
+    await write.catch(() => {})
+    expect(ctx.busy()).toBe(false)
+  })
+
+  describe('busy() holds for a whole changing IPC call', () => {
+    type Invoke = (event: IpcMainInvokeEvent, req?: unknown) => Promise<unknown>
+    const EVENT = {} as IpcMainInvokeEvent
+
+    /** registerIpc over fake handlers: each records busy() when it starts, then waits for release(). */
+    function register(trusted = true) {
+      const ctx = makeContext()
+      const invoke = new Map<string, Invoke>()
+      const seenBusy: boolean[] = []
+      let release = (): void => {}
+      const waiting = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      const fake = async (): Promise<never> => {
+        seenBusy.push(ctx.busy())
+        await waiting
+        throw new Error('the fake handler ends by failing')
+      }
+      const handlers = Object.fromEntries(INVOKE_CHANNELS.map((c) => [c, fake])) as unknown as Handlers<keyof IpcInvoke>
+      registerIpc({ handle: (channel, fn) => void invoke.set(channel, fn as Invoke) }, ctx, () => trusted, handlers)
+      const call = (channel: keyof IpcInvoke): Promise<unknown> => {
+        const fn = invoke.get(channel)
+        if (!fn) throw new Error(`no handler registered for ${channel}`)
+        return fn(EVENT)
+      }
+      return { ctx, call, seenBusy, release }
+    }
+
+    it('names every channel, and no update channel counts as a change', () => {
+      expect(Object.keys(CHANGING_CHANNELS).sort()).toEqual([...INVOKE_CHANNELS].sort())
+      const changing = INVOKE_CHANNELS.filter((c) => CHANGING_CHANNELS[c])
+      expect(changing).toEqual([
+        'settings:update',
+        'report:build',
+        'fix:apply',
+        'journal:undo',
+        'fifty:start',
+        'fifty:begin-round',
+        'fifty:answer',
+        'fifty:stop',
+        'fifty:finish',
+        'assist:set-key',
+        'assist:clear-key',
+        'share:set-role',
+        'share:find-folder',
+        'share:check',
+        'share:settings',
+        'share:send',
+        'share:receive',
+        'share:keep',
+        'share:restore',
+        'share:stop',
+        'share:mod-link'
+      ])
+    })
+
+    it('a 50/50 step is busy from its first line to its last, between its fixes calls too, and lets go when it fails', async () => {
+      const { ctx, call, seenBusy, release } = register()
+      const first = call('fifty:begin-round')
+      const second = call('fix:apply')
+      await Promise.resolve()
+      expect(seenBusy).toEqual([true, true])
+      expect(ctx.busy()).toBe(true)
+      release()
+      await expect(first).rejects.toThrow('the fake handler ends by failing')
+      await expect(second).rejects.toThrow('the fake handler ends by failing')
+      expect(ctx.busy()).toBe(false)
+    })
+
+    it('update:install and a check-up are not counted, so install can still ask busy() itself', async () => {
+      const { ctx, call, seenBusy, release } = register()
+      const calls = [call('update:install'), call('scan:run'), call('fifty:get')]
+      await Promise.resolve()
+      expect(seenBusy).toEqual([false, false, false])
+      expect(ctx.busy()).toBe(false)
+      release()
+      await Promise.allSettled(calls)
+    })
+
+    it('a call from an untrusted sender is refused and holds nothing', async () => {
+      const { ctx, call, seenBusy } = register(false)
+      await expect(call('fifty:begin-round')).rejects.toThrow('untrusted sender')
+      expect(seenBusy).toEqual([])
+      expect(ctx.busy()).toBe(false)
+    })
+  })
+
+  it('e2e launches switch updates off unless the caller says otherwise', () => {
+    expect(launchEnv({ SIMS_HELPER_UPDATES: 'on', PATH: '/bin' }, {})).toMatchObject({ SIMS_HELPER_UPDATES: 'off', PATH: '/bin' })
+    expect(launchEnv({}, { SIMS_HELPER_UPDATES: undefined })).not.toHaveProperty('SIMS_HELPER_UPDATES')
+    expect(launchEnv({}, { SIMS_HELPER_UPDATES: 'on' })).toMatchObject({ SIMS_HELPER_UPDATES: 'on' })
+  })
+})
+
+describe('50/50 control round (PR 11)', () => {
+  it('the sample at round 1 has the round 0 control in its history and counts it in roundsAtMost', () => {
+    const state = sampleFiftyFifty()
+    expect(state.roundsAtMost).toBe(Math.ceil(Math.log2(state.groups.length)) + 1)
+    expect(state.history).toEqual([{ round: 0, parked: state.suspects, answer: 'worked' }])
+    expect(state.round).toBe(1)
+  })
+})
+
+describe('start-up recovery (PR 10)', () => {
+  function makeContext() {
+    return createContext({
+      host: makeFakeHost(),
+      paths: appPaths({ localAppData: '/fake/LocalAppData', appData: '/fake/Roaming', desktopDir: '/fake/Desktop', env: {} }),
+      safeStorage: {
+        isEncryptionAvailable: () => false,
+        encryptString: (text) => Buffer.from(text, 'utf8'),
+        decryptString: (data) => Buffer.from(data).toString('utf8')
+      },
+      emit: () => {},
+      reveal: () => {}
+    })
+  }
+
+  it('has a journal:recovery read channel beside journal:list, and neither counts as a change', () => {
+    expect(INVOKE_CHANNELS).toContain('journal:recovery')
+    expect(Object.keys(fixHandlers(makeContext()))).toContain('journal:recovery')
+    expect([CHANGING_CHANNELS['journal:list'], CHANGING_CHANNELS['journal:recovery']]).toEqual([false, false])
+    const answers: IpcInvoke['journal:recovery']['res'][] = [
+      { status: 'finished', touched: [sampleJournalEntry()] },
+      { status: 'failed' }
+    ]
+    expect(answers.map((a) => a.status)).toEqual(['finished', 'failed'])
+  })
+
+  it('runs recover once however often it is asked, and gives the same answer each time', async () => {
+    let calls = 0
+    const entry = sampleJournalEntry()
+    const once = onceRecovery(async () => {
+      calls += 1
+      return [entry]
+    })
+    expect(calls).toBe(0)
+    const first = once()
+    const second = once()
+    expect(second).toBe(first)
+    const expected: StartupRecovery = { status: 'finished', touched: [entry] }
+    expect(await first).toEqual(expected)
+    expect(await once()).toEqual(expected)
+    expect(calls).toBe(1)
+  })
+
+  it('turns a recover that throws or rejects into failed, never a rejection', async () => {
+    const throws = onceRecovery(() => {
+      throw new Error('boom')
+    })
+    const rejects = onceRecovery(async () => {
+      throw new Error('boom')
+    })
+    expect(await throws()).toEqual({ status: 'failed' })
+    expect(await rejects()).toEqual({ status: 'failed' })
+  })
+
+  it('the context does not start recovery when it is built; startupRecovery() does, once', async () => {
+    const ctx = makeContext()
+    expect(ctx.busy()).toBe(false)
+    const run = ctx.startupRecovery()
+    // Counted from its first line: built from an uncounted recover, Restart now could restart mid-put-back.
+    expect(ctx.busy()).toBe(true)
+    expect(ctx.startupRecovery()).toBe(run)
+    // 'failed' while recover is the contract's throwing stub; 'finished' once PR 9's real recover lands.
+    // That a throw becomes 'failed' is pinned by the onceRecovery test above.
+    expect(['failed', 'finished']).toContain((await run).status)
+    expect(ctx.busy()).toBe(false)
+  })
+})
+
+describe('share saves contract (PR 14)', () => {
+  function makeContext(extra: Partial<CreateContextInput> = {}) {
+    return createContext({
+      host: makeFakeHost(),
+      paths: appPaths({ localAppData: '/fake/LocalAppData', appData: '/fake/Roaming', desktopDir: '/fake/Desktop', env: {} }),
+      safeStorage: {
+        isEncryptionAvailable: () => false,
+        encryptString: (text) => Buffer.from(text, 'utf8'),
+        decryptString: (data) => Buffer.from(data).toString('utf8')
+      },
+      emit: () => {},
+      reveal: () => {},
+      ...extra
+    })
+  }
+
+  it('registers every share channel from shareHandlers', () => {
+    const channels: (keyof IpcInvoke)[] = [
+      'share:get',
+      'share:set-role',
+      'share:find-folder',
+      'share:check',
+      'share:settings',
+      'share:local-saves',
+      'share:send',
+      'share:receive',
+      'share:keep',
+      'share:old-saves',
+      'share:restore',
+      'share:stop',
+      'share:mod-link',
+      'share:open-link',
+      'share:find-preview',
+      'share:find-send'
+    ]
+    expect(Object.keys(shareHandlers(makeContext())).sort()).toEqual([...channels].sort())
+    expect(INVOKE_CHANNELS.filter((c) => c.startsWith('share:'))).toEqual(channels)
+  })
+
+  it('widens the journal for a save swap and progress for a send or a get', () => {
+    const kinds: ActionKind[] = ['disable-group', 'share-receive', 'share-restore']
+    const origins: JournalOrigin[] = [
+      { by: 'share', shareId: 's1', seq: 3 },
+      { by: 'share', shareId: 's1', seq: null }
+    ]
+    const progress: Progress[] = [
+      { task: 'share', stage: 'sending', done: 0, total: null },
+      { task: 'share', stage: 'getting', done: 1, total: 2 }
+    ]
+    expect([kinds.length, origins.length, progress.length]).toEqual([3, 2, 2])
+  })
+
+  it('types the share view, its refusals and the start view the fake answers', () => {
+    const view: ShareView = {
+      link: { state: 'no-role' },
+      settings: { role: null, folderLabel: null, keepOld: 5, keepInDrive: 3 },
+      saves: [],
+      aiFind: 'hide'
+    }
+    const refusals: ShareRefusal[] = [
+      { why: 'game-running' },
+      { why: 'not-ready', state: 'arriving' },
+      { why: 'game-older', theirs: '1.110.2', ours: '1.109.4' },
+      { why: 'out-of-date', detail: 'no-free-slot' }
+    ]
+    expect([view.link.state, refusals.length]).toEqual(['no-role', 4])
+  })
+
+  it('builds share without calling it, with no folder picked and no web page opened by default', async () => {
+    const ctx = makeContext()
+    expect(typeof ctx.share.view).toBe('function')
+    expect(await ctx.pickFolder()).toBeNull()
+    expect(await ctx.openWeb('https://www.curseforge.com/projects/1')).toBe('refused')
+  })
+
+  it('openWeb hands only the checked address to the opener, and refuses whatever the check does not pass', async () => {
+    const opened: string[] = []
+    const open = async (url: string) => {
+      opened.push(url)
+    }
+    const passes = makeOpenWeb(() => ({ url: 'https://www.curseforge.com/projects/1', host: 'www.curseforge.com' }), open)
+    expect(await passes('https://www.curseforge.com/projects/1#x')).toBe('opened')
+    expect(opened).toEqual(['https://www.curseforge.com/projects/1'])
+
+    const refusedNull = makeOpenWeb(() => null, open)
+    const refusedThrow = makeOpenWeb(() => {
+      throw new Error('boom')
+    }, open)
+    const noOpener = makeOpenWeb(() => ({ url: 'https://a.example/', host: 'a.example' }), undefined)
+    const openerFails = makeOpenWeb(
+      () => ({ url: 'https://a.example/', host: 'a.example' }),
+      async () => {
+        throw new Error('no browser')
+      }
+    )
+    for (const openWeb of [refusedNull, refusedThrow, noOpener, openerFails]) {
+      expect(await openWeb('http://192.168.0.1:8080/')).toBe('refused')
+    }
+    expect(opened).toHaveLength(1)
+  })
+
+  it('the key store find stub answers no-key, and closeUndo is a stub', async () => {
+    const ctx = makeContext()
+    expect(await ctx.keyStore.find({ model: 'm', system: 's', user: 'u', maxTokens: 10, searches: 3 })).toEqual({
+      status: 'failed',
+      why: 'no-key'
+    })
+    await expect(ctx.safety.closeUndo('entry-1')).rejects.toThrow('not implemented: closeUndo')
+  })
+
+  it('sampleShareView is a connected PC with one save ready to get, and takes overrides', () => {
+    const view = sampleShareView()
+    expect(view.link.state).toBe('connected')
+    expect(view.settings.role).toBe('lila')
+    expect(view.saves).toHaveLength(1)
+    expect(view.saves[0]?.incoming).toMatchObject({ state: 'ready', will: 'replace', from: 'tyler' })
+    expect(sampleShareView({ saves: [] }).saves).toEqual([])
+  })
+
+  it('a planned move may carry the size and hash it expects to find', () => {
+    const step: PlannedStep = { kind: 'move', from: 'a', to: 'b', expect: { bytes: 10, sha256: 'c'.repeat(64) } }
+    const bare: PlannedStep = { kind: 'move', from: 'a', to: 'b' }
+    expect([step.kind === 'move' && step.expect?.bytes, bare.kind === 'move' && bare.expect]).toEqual([10, undefined])
+  })
+
+  it('e2e launches strip any ambient SIMS_HELPER_SHARE_DIR (any letter case) unless explicitly passed', () => {
+    const cleared = launchEnv(
+      { SIMS_HELPER_SHARE_DIR: 'C:\\Host\\Sims Helper Share', sims_helper_share_dir: 'C:\\Host\\Other', PATH: '/bin' },
+      {}
+    )
+    expect(cleared).not.toHaveProperty('SIMS_HELPER_SHARE_DIR')
+    expect(cleared).not.toHaveProperty('sims_helper_share_dir')
+    expect(cleared['PATH']).toBe('/bin')
+
+    const explicit = launchEnv(
+      { sims_helper_share_dir: 'C:\\Host\\Other' },
+      { SIMS_HELPER_SHARE_DIR: 'C:\\Temp\\Sims Helper Share' }
+    )
+    expect(explicit).not.toHaveProperty('sims_helper_share_dir')
+    expect(explicit['SIMS_HELPER_SHARE_DIR']).toBe('C:\\Temp\\Sims Helper Share')
   })
 })

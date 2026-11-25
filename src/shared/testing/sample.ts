@@ -1,4 +1,4 @@
-import type { FiftyFifty, Finding, JournalEntry, ModFile, ModGroup, Scan } from '../model.ts'
+import type { FiftyFifty, Finding, JournalEntry, ModFile, ModGroup, Scan, ShareView } from '../model.ts'
 
 const SAMPLE_FOLDER_PATH = 'C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4'
 const SAMPLE_MODS_DIR = `${SAMPLE_FOLDER_PATH}\\Mods`
@@ -181,6 +181,8 @@ export function sampleJournalEntry(overrides: Partial<JournalEntry> = {}): Journ
     origin: { by: 'fix' },
     folderPath: SAMPLE_FOLDER_PATH,
     groupId: null,
+    groupLabel: null,
+    hasScript: false,
     backupId: '20261124-120400-e5f6',
     steps: [
       {
@@ -242,6 +244,7 @@ export function sampleFiftyFifty(overrides: Partial<FiftyFifty> = {}): FiftyFift
       curseForge: null
     }
   ]
+  const suspects = ['cf:901234', 'dir:buildbuy', 'dir:hair', 'file:shoes.package']
 
   return {
     id: '20261124-121000-f7a8',
@@ -249,14 +252,57 @@ export function sampleFiftyFifty(overrides: Partial<FiftyFifty> = {}): FiftyFift
     folderPath: SAMPLE_FOLDER_PATH,
     phase: 'awaiting-answer',
     round: 1,
-    roundsAtMost: 2,
+    roundsAtMost: 3, // ceil(log2(4)) + 1: the control round, then two halvings
     groups,
-    suspects: groups.map((g) => g.id),
+    suspects, // script groups first, then by label
     parked: ['cf:901234', 'dir:buildbuy'],
     inMods: ['dir:hair', 'file:shoes.package'],
     cleared: [],
     culprit: null,
-    history: [],
+    history: [{ round: 0, parked: [...suspects], answer: 'worked' }], // the control round: all aside, no crash
+    ...overrides
+  }
+}
+
+/** Lila's PC, connected, with one shared save: Tyler sent a newer copy that is ready to get and will replace hers. */
+export function sampleShareView(overrides: Partial<ShareView> = {}): ShareView {
+  return {
+    link: { state: 'connected', otherSeenAt: '2026-11-24T19:40:00.000Z', otherHeardUs: true },
+    settings: { role: 'lila', folderLabel: 'My Drive\\Sims Helper Share', keepOld: 5, keepInDrive: 3 },
+    saves: [
+      {
+        shareId: 's-4f2a9c1e',
+        name: 'Willow Creek Legacy',
+        here: { slotId: 'Slot_0000000a', savedAt: '2026-11-23T21:15:00.000Z', changed: false },
+        lastSent: { seq: 3, at: '2026-11-23T21:20:00.000Z', gotAt: '2026-11-23T21:31:00.000Z' },
+        incoming: {
+          seq: 4,
+          from: 'tyler',
+          sentAt: '2026-11-24T19:30:00.000Z',
+          state: 'ready',
+          will: 'replace',
+          needs: {
+            game: 'same',
+            theirVersion: '1.110.311.1020',
+            packs: [],
+            mods: [
+              {
+                key: 'cf:901234',
+                name: 'Wicked Wardrobe',
+                hasScript: true,
+                state: 'missing',
+                source: 'curseforge',
+                linkId: 'cf:901234'
+              }
+            ],
+            modsOff: false
+          }
+        },
+        ask: null,
+        canSend: 'get-first'
+      }
+    ],
+    aiFind: 'hide',
     ...overrides
   }
 }
