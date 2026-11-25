@@ -44,7 +44,7 @@ function gateRefusalMessage(refusal: GateRefusal): RefusalCopy {
     case 'saves-or-tray':
       return {
         title: 'Stopped to protect your saves',
-        detail: 'Your Saves and Tray folders are never touched, so nothing was changed.',
+        detail: 'Your saves and households are never touched, so nothing was changed.',
         canRetry: false,
         tone: 'destructive'
       }

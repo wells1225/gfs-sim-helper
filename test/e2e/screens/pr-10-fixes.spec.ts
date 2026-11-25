@@ -1,9 +1,12 @@
 import { expect, test } from '@playwright/test'
-import type { DisabledGroup, JournalEntry } from '../../../src/shared/model.ts'
+import type { DisabledGroup, JournalEntry, StartupRecovery } from '../../../src/shared/model.ts'
 import { SAMPLE_SHA_A, SAMPLE_SHA_B, sampleJournalEntry } from '../../../src/shared/testing/sample.ts'
 import { launchApp, shoot, stubIpc } from '../support/app.ts'
 
 const PR_SLUG = 'pr-10-fixes'
+
+// Main's recover is still PR 9's stub on this branch and answers failed; these shots show what is left, not that.
+const NOTHING_RECOVERED: StartupRecovery = { status: 'finished', touched: [] }
 
 function buildHistoryEntries(): JournalEntry[] {
   const folderPath = 'C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4'
@@ -104,6 +107,7 @@ test('branch shot: history', async () => {
   const running = await launchApp()
   try {
     await stubIpc(running.app, {
+      'journal:recovery': NOTHING_RECOVERED,
       'journal:list': buildHistoryEntries()
     })
 
@@ -131,6 +135,7 @@ test('branch shot: history-undone', async () => {
     }
 
     await stubIpc(running.app, {
+      'journal:recovery': NOTHING_RECOVERED,
       'journal:list': [target, entries[2]!],
       'journal:undo': { status: 'done', entry: undoneTarget }
     })
@@ -162,6 +167,7 @@ test('branch shot: recovery-notice', async () => {
     })
 
     await stubIpc(running.app, {
+      'journal:recovery': NOTHING_RECOVERED,
       'journal:list': [interrupted]
     })
 
@@ -194,6 +200,7 @@ test('branch shot: mods-no-check-up', async () => {
     ]
 
     await stubIpc(running.app, {
+      'journal:recovery': NOTHING_RECOVERED,
       'journal:list': [],
       'groups:disabled': disabled
     })

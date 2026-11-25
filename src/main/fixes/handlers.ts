@@ -1,10 +1,9 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Handlers } from '../../shared/ipc.ts'
-import type { DisabledGroup, FixCall, FixOutcome } from '../../shared/model.ts'
+import type { DisabledGroup, FixCall, FixOutcome, StartupRecovery } from '../../shared/model.ts'
 import type { AppContext } from '../ports.ts'
 import { disabledGroupOf } from './index.ts'
-import { startRecovery } from './recovery.ts'
 
 export type FixChannel =
   | 'backup:status'
@@ -88,9 +87,10 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
     }
   }
 
-  // Built by registerIpc in main at start, before the window opens: recovery runs here, once, on purpose.
-  // Reading the journal never starts it; the changing calls below wait for it to finish.
-  const recovery = startRecovery(ctx.safety)
+  // index.ts starts the one recovery run (ctx.startupRecovery) after registerIpc and before the window opens.
+  // It is lazy and runs once per context, so awaiting it here never starts a second run; the journal reads and
+  // the changing calls below wait for it to finish. It never rejects.
+  const recovery = (): Promise<StartupRecovery> => ctx.startupRecovery()
 
   return {
     async 'backup:status'() {
@@ -102,7 +102,7 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
     },
 
     async 'fix:apply'(call: FixCall) {
-      await recovery
+      await recovery()
       if (!isFixCall(call)) {
         return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-finding' } }
       }
@@ -150,16 +150,16 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
     },
 
     async 'journal:list'() {
-      await recovery
+      await recovery()
       return ctx.safety.listJournal()
     },
 
     async 'journal:recovery'() {
-      throw new Error('not implemented: journal:recovery')
+      return recovery()
     },
 
     async 'journal:undo'(req) {
-      await recovery
+      await recovery()
       if (await isFiftyFiftyRunning(ctx.paths.stateDir)) {
         return { status: 'refused', refusal: { why: 'fifty-fifty-running' } }
       }
@@ -170,7 +170,7 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
     },
 
     async 'groups:disabled'() {
-      await recovery
+      await recovery()
       const folderPath = ctx.session.scan?.folder.path ?? (await readSavedFolderPath(ctx.paths.stateDir))
       if (folderPath) {
         return ctx.fixes.disabledGroups(folderPath)
