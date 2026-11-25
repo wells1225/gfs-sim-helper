@@ -979,6 +979,97 @@ describe('lead decision: a set-aside that stops part way is put back at once', (
     expect(safety.undoneIds).toEqual([safety.ranPlans[0]!.entryId])
   })
 
+  it('disable-group that failed at opsDone 0 with a failed journal replace returns not-started when undo drops it as nothing-to-do', async () => {
+    const scan = sampleScan()
+    const makeNeverRanStop = (plan: ActionPlan): FixOutcome => ({
+      status: 'stopped-part-way',
+      entry: sampleJournalEntry({
+        id: plan.entryId,
+        action: plan.action,
+        summary: plan.summary,
+        origin: plan.origin,
+        folderPath: plan.folderPath,
+        groupId: plan.groupId,
+        groupLabel: plan.groupLabel,
+        hasScript: plan.hasScript,
+        status: 'needs-attention',
+        steps: plan.steps.map((s) =>
+          s.kind === 'move'
+            ? { kind: 'move', from: s.from, to: s.to, bytes: 1, sha256: SAMPLE_SHA_A, state: 'pending' }
+            : { kind: 'remove-cache', path: s.path, state: 'pending' }
+        )
+      }),
+      detail: 'This change stopped part way through. You can undo what already moved from History.'
+    })
+
+    const applySafety = makeFakeSafety({
+      async runAction(plan) {
+        applySafety.ranPlans.push(plan)
+        return makeNeverRanStop(plan)
+      },
+      async undo(entryId) {
+        applySafety.undoneIds.push(entryId)
+        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+      }
+    })
+    const fromApply = await applyFix(makeDeps(applySafety), scan, { fix: 'disable-group', groupId: 'dir:hair' })
+    expect(fromApply).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
+    expect(applySafety.undoneIds).toEqual([applySafety.ranPlans[0]!.entryId])
+
+    const setAsideFirstSafety = makeFakeSafety({
+      async runAction(plan) {
+        setAsideFirstSafety.ranPlans.push(plan)
+        return makeNeverRanStop(plan)
+      },
+      async undo(entryId) {
+        setAsideFirstSafety.undoneIds.push(entryId)
+        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+      }
+    })
+    const fromSetAsideFirst = await setAside(makeDeps(setAsideFirstSafety), folderPath, groups, { by: 'fix' })
+    expect(fromSetAsideFirst).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
+    expect(setAsideFirstSafety.undoneIds).toEqual([setAsideFirstSafety.ranPlans[0]!.entryId])
+
+    let call = 0
+    const base = makeFakeSafety()
+    const setAsideLaterSafety = makeFakeSafety({
+      async runAction(plan, onProgress) {
+        call += 1
+        setAsideLaterSafety.ranPlans.push(plan)
+        return call === 2 ? makeNeverRanStop(plan) : base.runAction(plan, onProgress)
+      },
+      async undo(entryId) {
+        setAsideLaterSafety.undoneIds.push(entryId)
+        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+      }
+    })
+    const fromSetAsideLater = await setAside(makeDeps(setAsideLaterSafety), folderPath, groups, { by: 'fix' })
+    expect(fromSetAsideLater.status).toBe('stopped-part-way')
+    if (fromSetAsideLater.status === 'stopped-part-way') {
+      expect(fromSetAsideLater.entries.map((e) => [e.groupId, e.status])).toEqual([['dir:a', 'done']])
+    }
+    expect(setAsideLaterSafety.undoneIds).toEqual([setAsideLaterSafety.ranPlans[1]!.entryId])
+
+    // Any other refusal from undo (such as not-started when dropping the entry failed) keeps stopped-part-way.
+    for (const refusal of [
+      { why: 'not-started' } as const,
+      { why: 'out-of-date', detail: 'file-changed' } as const
+    ]) {
+      const otherSafety = makeFakeSafety({
+        async runAction(plan) {
+          otherSafety.ranPlans.push(plan)
+          return makeNeverRanStop(plan)
+        },
+        async undo(entryId) {
+          otherSafety.undoneIds.push(entryId)
+          return { status: 'refused', refusal }
+        }
+      })
+      const kept = await applyFix(makeDeps(otherSafety), scan, { fix: 'disable-group', groupId: 'dir:hair' })
+      expect(kept).toMatchObject({ status: 'stopped-part-way', entry: { groupId: 'dir:hair', status: 'needs-attention' } })
+    }
+  })
+
   it('a half-moved group is in neither list: disabledGroups leaves it out and putBack does not touch it', async () => {
     const stuck = sampleJournalEntry({
       id: 'e-stuck',
