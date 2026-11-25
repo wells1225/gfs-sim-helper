@@ -1,5 +1,5 @@
 import type { IpcInvoke, SimsHelperApi } from '../../shared/ipc.ts'
-import type { Progress, UpdateState } from '../../shared/model.ts'
+import type { Progress, ShareView, StartupRecovery, UpdateState } from '../../shared/model.ts'
 
 export type FakeAnswer<K extends keyof IpcInvoke> =
   | IpcInvoke[K]['res']
@@ -21,10 +21,26 @@ export interface FakeApi extends SimsHelperApi {
 
 const UPDATES_OFF: UpdateState = { state: 'off', why: 'switched-off', current: '0.2.0' }
 
-/** Every test gets these unless it passes its own: no update banner, and the About row shows the version and a note saying why updates are off. */
+const NOTHING_RECOVERED: StartupRecovery = { status: 'finished', touched: [] }
+
+const SHARE_NOT_SET_UP: ShareView = {
+  link: { state: 'no-role' },
+  settings: { role: null, folderLabel: null, keepOld: 5, keepInDrive: 3 },
+  saves: [],
+  aiFind: 'hide'
+}
+
+/**
+ * Every test gets these unless it passes its own: no update banner, and the About row shows the version and a note
+ * saying why updates are off; a start-up recovery that touched nothing; Share saves not set up, with empty lists.
+ */
 const DEFAULT_ANSWERS: FakeApiAnswers = {
   'update:get': UPDATES_OFF,
-  'update:check': UPDATES_OFF
+  'update:check': UPDATES_OFF,
+  'journal:recovery': NOTHING_RECOVERED,
+  'share:get': SHARE_NOT_SET_UP,
+  'share:local-saves': [],
+  'share:old-saves': []
 }
 
 export function fakeApi(given: FakeApiAnswers = {}): FakeApi {

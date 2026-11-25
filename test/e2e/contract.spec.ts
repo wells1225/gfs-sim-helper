@@ -3,7 +3,8 @@ import { FIXES_READY } from '../../src/renderer/fixes/feature.ts'
 import type { SimsHelperApi } from '../../src/shared/ipc.ts'
 import { inOrder, launchApp, setColorScheme, stubIpc } from './support/app.ts'
 
-const FOOTER = 'Saves and Tray are never touched · A backup is made before any change'
+// PR 14 changes this line again when Share saves lands (briefs/pr-14.md, contract request 9).
+const FOOTER = 'Your saves and households are never touched · A backup is made before any change'
 
 test('launches a first run against the clean fixture with the shell and an empty console', async () => {
   const running = await launchApp({ fixture: 'clean' })

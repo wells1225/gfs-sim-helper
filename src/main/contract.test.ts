@@ -8,6 +8,7 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { readFile, rm } from 'node:fs/promises'
 import { INVOKE_CHANNELS, type Handlers, type IpcInvoke } from '../shared/ipc.ts'
 import type {
+  ActionKind,
   AssistAnswer,
   BackupRefusal,
   DisabledGroup,
@@ -16,11 +17,16 @@ import type {
   FixRefusal,
   GameRunState as ModelGameRunState,
   GateRefusal,
+  JournalOrigin,
   KeySetResult,
+  Progress,
+  ShareRefusal,
+  ShareView,
+  StartupRecovery,
   UpdateInstall,
   UpdateState
 } from '../shared/model.ts'
-import { sampleFiftyFifty, sampleJournalEntry } from '../shared/testing/sample.ts'
+import { sampleFiftyFifty, sampleJournalEntry, sampleShareView } from '../shared/testing/sample.ts'
 import { appPaths } from './app-paths.ts'
 import { assistHandlers } from './assist/handlers.ts'
 import { fiftyHandlers } from './fiftyfifty/handlers.ts'
@@ -31,7 +37,8 @@ import type { Host } from './locate/host.ts'
 import type { ActionPlan, AssistReply, KeyStore, PlanFixAt, PlannedStep, Updater } from './ports.ts'
 import type { GameRunState as LocateGameRunState } from './locate/process.ts'
 import { scanHandlers } from './scan/handlers.ts'
-import { createContext, updaterKeepOutOf, type CreateContextInput } from './services.ts'
+import { createContext, makeOpenWeb, onceRecovery, updaterKeepOutOf, type CreateContextInput } from './services.ts'
+import { shareHandlers } from './share/handlers.ts'
 import { updateHandlers } from './update/handlers.ts'
 import { createUpdater } from './update/updater.ts'
 import { launchEnv, shoot } from '../../test/e2e/support/app.ts'
@@ -90,7 +97,14 @@ describe('contract', () => {
       reveal: () => {}
     })
 
-    const groups = [scanHandlers(ctx), fixHandlers(ctx), fiftyHandlers(ctx), assistHandlers(ctx), updateHandlers(ctx)]
+    const groups = [
+      scanHandlers(ctx),
+      fixHandlers(ctx),
+      fiftyHandlers(ctx),
+      assistHandlers(ctx),
+      updateHandlers(ctx),
+      shareHandlers(ctx)
+    ]
     const seen = new Map<string, number>()
     for (const group of groups) {
       for (const channel of Object.keys(group)) {
@@ -229,6 +243,18 @@ describe('fix contract requests from PR 10', () => {
     const entry = sampleJournalEntry({ groupId: plan.groupId, groupLabel: plan.groupLabel, hasScript: plan.hasScript })
     expect([entry.groupLabel, entry.hasScript]).toEqual(['Wicked Wardrobe', true])
     expect([sampleJournalEntry().groupLabel, sampleJournalEntry().hasScript]).toEqual([null, false])
+  })
+
+  it('a save swap journal entry has no backup id: backupId is null, a fix keeps its string', () => {
+    // PR 14: a save swap makes no backup, so it has no honest backup id. The tsc test above fails if null is refused.
+    const swap = sampleJournalEntry({
+      action: 'share-receive',
+      origin: { by: 'share', shareId: 'share-1', seq: 1 },
+      backupId: null,
+      steps: []
+    })
+    const backupIds: (string | null)[] = [swap.backupId, sampleJournalEntry().backupId]
+    expect(backupIds).toEqual([null, '20261124-120400-e5f6'])
   })
 
   it('lets planFix take what applyFix read from the disk', () => {
@@ -459,7 +485,6 @@ describe('auto-update contract (PR 13)', () => {
         'settings:update',
         'report:build',
         'fix:apply',
-        'journal:list',
         'journal:undo',
         'fifty:start',
         'fifty:begin-round',
@@ -467,7 +492,17 @@ describe('auto-update contract (PR 13)', () => {
         'fifty:stop',
         'fifty:finish',
         'assist:set-key',
-        'assist:clear-key'
+        'assist:clear-key',
+        'share:set-role',
+        'share:find-folder',
+        'share:check',
+        'share:settings',
+        'share:send',
+        'share:receive',
+        'share:keep',
+        'share:restore',
+        'share:stop',
+        'share:mod-link'
       ])
     })
 
@@ -515,5 +550,216 @@ describe('50/50 control round (PR 11)', () => {
     expect(state.roundsAtMost).toBe(Math.ceil(Math.log2(state.groups.length)) + 1)
     expect(state.history).toEqual([{ round: 0, parked: state.suspects, answer: 'worked' }])
     expect(state.round).toBe(1)
+  })
+})
+
+describe('start-up recovery (PR 10)', () => {
+  function makeContext() {
+    return createContext({
+      host: makeFakeHost(),
+      paths: appPaths({ localAppData: '/fake/LocalAppData', appData: '/fake/Roaming', desktopDir: '/fake/Desktop', env: {} }),
+      safeStorage: {
+        isEncryptionAvailable: () => false,
+        encryptString: (text) => Buffer.from(text, 'utf8'),
+        decryptString: (data) => Buffer.from(data).toString('utf8')
+      },
+      emit: () => {},
+      reveal: () => {}
+    })
+  }
+
+  it('has a journal:recovery read channel beside journal:list, and neither counts as a change', () => {
+    expect(INVOKE_CHANNELS).toContain('journal:recovery')
+    expect(Object.keys(fixHandlers(makeContext()))).toContain('journal:recovery')
+    expect([CHANGING_CHANNELS['journal:list'], CHANGING_CHANNELS['journal:recovery']]).toEqual([false, false])
+    const answers: IpcInvoke['journal:recovery']['res'][] = [
+      { status: 'finished', touched: [sampleJournalEntry()] },
+      { status: 'failed' }
+    ]
+    expect(answers.map((a) => a.status)).toEqual(['finished', 'failed'])
+  })
+
+  it('runs recover once however often it is asked, and gives the same answer each time', async () => {
+    let calls = 0
+    const entry = sampleJournalEntry()
+    const once = onceRecovery(async () => {
+      calls += 1
+      return [entry]
+    })
+    expect(calls).toBe(0)
+    const first = once()
+    const second = once()
+    expect(second).toBe(first)
+    const expected: StartupRecovery = { status: 'finished', touched: [entry] }
+    expect(await first).toEqual(expected)
+    expect(await once()).toEqual(expected)
+    expect(calls).toBe(1)
+  })
+
+  it('turns a recover that throws or rejects into failed, never a rejection', async () => {
+    const throws = onceRecovery(() => {
+      throw new Error('boom')
+    })
+    const rejects = onceRecovery(async () => {
+      throw new Error('boom')
+    })
+    expect(await throws()).toEqual({ status: 'failed' })
+    expect(await rejects()).toEqual({ status: 'failed' })
+  })
+
+  it('the context does not start recovery when it is built; startupRecovery() does, once', async () => {
+    const ctx = makeContext()
+    expect(ctx.busy()).toBe(false)
+    const run = ctx.startupRecovery()
+    // Counted from its first line: built from an uncounted recover, Restart now could restart mid-put-back.
+    expect(ctx.busy()).toBe(true)
+    expect(ctx.startupRecovery()).toBe(run)
+    // 'failed' while recover is the contract's throwing stub; 'finished' once PR 9's real recover lands.
+    // That a throw becomes 'failed' is pinned by the onceRecovery test above.
+    expect(['failed', 'finished']).toContain((await run).status)
+    expect(ctx.busy()).toBe(false)
+  })
+})
+
+describe('share saves contract (PR 14)', () => {
+  function makeContext(extra: Partial<CreateContextInput> = {}) {
+    return createContext({
+      host: makeFakeHost(),
+      paths: appPaths({ localAppData: '/fake/LocalAppData', appData: '/fake/Roaming', desktopDir: '/fake/Desktop', env: {} }),
+      safeStorage: {
+        isEncryptionAvailable: () => false,
+        encryptString: (text) => Buffer.from(text, 'utf8'),
+        decryptString: (data) => Buffer.from(data).toString('utf8')
+      },
+      emit: () => {},
+      reveal: () => {},
+      ...extra
+    })
+  }
+
+  it('registers every share channel from shareHandlers', () => {
+    const channels: (keyof IpcInvoke)[] = [
+      'share:get',
+      'share:set-role',
+      'share:find-folder',
+      'share:check',
+      'share:settings',
+      'share:local-saves',
+      'share:send',
+      'share:receive',
+      'share:keep',
+      'share:old-saves',
+      'share:restore',
+      'share:stop',
+      'share:mod-link',
+      'share:open-link',
+      'share:find-preview',
+      'share:find-send'
+    ]
+    expect(Object.keys(shareHandlers(makeContext())).sort()).toEqual([...channels].sort())
+    expect(INVOKE_CHANNELS.filter((c) => c.startsWith('share:'))).toEqual(channels)
+  })
+
+  it('widens the journal for a save swap and progress for a send or a get', () => {
+    const kinds: ActionKind[] = ['disable-group', 'share-receive', 'share-restore']
+    const origins: JournalOrigin[] = [
+      { by: 'share', shareId: 's1', seq: 3 },
+      { by: 'share', shareId: 's1', seq: null }
+    ]
+    const progress: Progress[] = [
+      { task: 'share', stage: 'sending', done: 0, total: null },
+      { task: 'share', stage: 'getting', done: 1, total: 2 }
+    ]
+    expect([kinds.length, origins.length, progress.length]).toEqual([3, 2, 2])
+  })
+
+  it('types the share view, its refusals and the start view the fake answers', () => {
+    const view: ShareView = {
+      link: { state: 'no-role' },
+      settings: { role: null, folderLabel: null, keepOld: 5, keepInDrive: 3 },
+      saves: [],
+      aiFind: 'hide'
+    }
+    const refusals: ShareRefusal[] = [
+      { why: 'game-running' },
+      { why: 'not-ready', state: 'arriving' },
+      { why: 'game-older', theirs: '1.110.2', ours: '1.109.4' },
+      { why: 'out-of-date', detail: 'no-free-slot' }
+    ]
+    expect([view.link.state, refusals.length]).toEqual(['no-role', 4])
+  })
+
+  it('builds share without calling it, with no folder picked and no web page opened by default', async () => {
+    const ctx = makeContext()
+    expect(typeof ctx.share.view).toBe('function')
+    expect(await ctx.pickFolder()).toBeNull()
+    expect(await ctx.openWeb('https://www.curseforge.com/projects/1')).toBe('refused')
+  })
+
+  it('openWeb hands only the checked address to the opener, and refuses whatever the check does not pass', async () => {
+    const opened: string[] = []
+    const open = async (url: string) => {
+      opened.push(url)
+    }
+    const passes = makeOpenWeb(() => ({ url: 'https://www.curseforge.com/projects/1', host: 'www.curseforge.com' }), open)
+    expect(await passes('https://www.curseforge.com/projects/1#x')).toBe('opened')
+    expect(opened).toEqual(['https://www.curseforge.com/projects/1'])
+
+    const refusedNull = makeOpenWeb(() => null, open)
+    const refusedThrow = makeOpenWeb(() => {
+      throw new Error('boom')
+    }, open)
+    const noOpener = makeOpenWeb(() => ({ url: 'https://a.example/', host: 'a.example' }), undefined)
+    const openerFails = makeOpenWeb(
+      () => ({ url: 'https://a.example/', host: 'a.example' }),
+      async () => {
+        throw new Error('no browser')
+      }
+    )
+    for (const openWeb of [refusedNull, refusedThrow, noOpener, openerFails]) {
+      expect(await openWeb('http://192.168.0.1:8080/')).toBe('refused')
+    }
+    expect(opened).toHaveLength(1)
+  })
+
+  it('the key store find stub answers no-key, and closeUndo is a stub', async () => {
+    const ctx = makeContext()
+    expect(await ctx.keyStore.find({ model: 'm', system: 's', user: 'u', maxTokens: 10, searches: 3 })).toEqual({
+      status: 'failed',
+      why: 'no-key'
+    })
+    await expect(ctx.safety.closeUndo('entry-1')).rejects.toThrow('not implemented: closeUndo')
+  })
+
+  it('sampleShareView is a connected PC with one save ready to get, and takes overrides', () => {
+    const view = sampleShareView()
+    expect(view.link.state).toBe('connected')
+    expect(view.settings.role).toBe('lila')
+    expect(view.saves).toHaveLength(1)
+    expect(view.saves[0]?.incoming).toMatchObject({ state: 'ready', will: 'replace', from: 'tyler' })
+    expect(sampleShareView({ saves: [] }).saves).toEqual([])
+  })
+
+  it('a planned move may carry the size and hash it expects to find', () => {
+    const step: PlannedStep = { kind: 'move', from: 'a', to: 'b', expect: { bytes: 10, sha256: 'c'.repeat(64) } }
+    const bare: PlannedStep = { kind: 'move', from: 'a', to: 'b' }
+    expect([step.kind === 'move' && step.expect?.bytes, bare.kind === 'move' && bare.expect]).toEqual([10, undefined])
+  })
+
+  it('e2e launches strip any ambient SIMS_HELPER_SHARE_DIR (any letter case) unless explicitly passed', () => {
+    const cleared = launchEnv(
+      { SIMS_HELPER_SHARE_DIR: 'C:\\Host\\Sims Helper Share', sims_helper_share_dir: 'C:\\Host\\Other', PATH: '/bin' },
+      {}
+    )
+    expect(cleared).not.toHaveProperty('SIMS_HELPER_SHARE_DIR')
+    expect(cleared).not.toHaveProperty('sims_helper_share_dir')
+    expect(cleared['PATH']).toBe('/bin')
+
+    const explicit = launchEnv(
+      { sims_helper_share_dir: 'C:\\Host\\Other' },
+      { SIMS_HELPER_SHARE_DIR: 'C:\\Temp\\Sims Helper Share' }
+    )
+    expect(explicit).not.toHaveProperty('sims_helper_share_dir')
+    expect(explicit['SIMS_HELPER_SHARE_DIR']).toBe('C:\\Temp\\Sims Helper Share')
   })
 })

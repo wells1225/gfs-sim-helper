@@ -13,4 +13,20 @@ describe('fakeApi', () => {
     const api = fakeApi({ 'update:get': { state: 'available', current: '0.2.0', next: '0.3.0' } })
     expect(await api.invoke('update:get')).toEqual({ state: 'available', current: '0.2.0', next: '0.3.0' })
   })
+
+  it('answers the start-up recovery as finished with nothing touched', async () => {
+    expect(await fakeApi().invoke('journal:recovery')).toEqual({ status: 'finished', touched: [] })
+  })
+
+  it('answers Share saves as not set up yet, with empty lists', async () => {
+    const api = fakeApi()
+    expect(await api.invoke('share:get')).toEqual({
+      link: { state: 'no-role' },
+      settings: { role: null, folderLabel: null, keepOld: 5, keepInDrive: 3 },
+      saves: [],
+      aiFind: 'hide'
+    })
+    expect(await api.invoke('share:local-saves')).toEqual([])
+    expect(await api.invoke('share:old-saves')).toEqual([])
+  })
 })
