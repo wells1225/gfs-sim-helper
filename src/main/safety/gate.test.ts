@@ -1840,6 +1840,36 @@ describe('doing the ops', () => {
     expect((result as { detail: string }).detail).toMatch(/the file at the target was left in place/)
   })
 
+  // The same swap, and the mod has one more name elsewhere. Now the ids match and the file has two names,
+  // yet neither is the source path: taking the new name back would leave the mod only where nobody looks.
+  it('a move on one drive: when the source path now leads to the new name and the mod has another name elsewhere, the new name is kept', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    await mkdir(sub, { recursive: true })
+    const from = join(sub, 'only_copy.package')
+    await writeFile(from, 'the only copy of this mod')
+    await link(from, w.inFolder('Mods', 'another_name.package'))
+    const hash = await sha256(from)
+    const to = w.inData('holding', 'e1', 'Mods', 'only_copy.package')
+    let replaced = false
+    disk.unlinkFails = {
+      file: from,
+      hits: 0,
+      meanwhile: async () => {
+        await rm(sub, { recursive: true })
+        await linkFolder(dirname(to), sub)
+        replaced = true
+      }
+    }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
+    expect(replaced, 'the folder was really replaced').toBe(true)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await exists(to), 'the new name is still at the target').toBe(true)
+    expect(await sha256(to)).toBe(hash)
+    expect((result as { detail: string }).detail).toMatch(/the file at the target was left in place/)
+  })
+
   // With no file id there is no way to tell that both names are one file: every file answers 0, so the
   // ids match for any two. In doubt the new name stays.
   it('a move on one drive: when the source cannot be removed on a disk that gives no file ids, the new name is kept', async () => {
