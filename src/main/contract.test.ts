@@ -600,7 +600,9 @@ describe('start-up recovery (PR 10)', () => {
     expect(ctx.busy()).toBe(false)
     const run = ctx.startupRecovery()
     expect(ctx.startupRecovery()).toBe(run)
-    expect(await run).toEqual({ status: 'failed' }) // the stub recover throws
+    // 'failed' while recover is the contract's throwing stub; 'finished' once PR 9's real recover lands.
+    // That a throw becomes 'failed' is pinned by the onceRecovery test above.
+    expect(['failed', 'finished']).toContain((await run).status)
     expect(ctx.busy()).toBe(false)
   })
 })
@@ -728,5 +730,22 @@ describe('share saves contract (PR 14)', () => {
     const step: PlannedStep = { kind: 'move', from: 'a', to: 'b', expect: { bytes: 10, sha256: 'c'.repeat(64) } }
     const bare: PlannedStep = { kind: 'move', from: 'a', to: 'b' }
     expect([step.kind === 'move' && step.expect?.bytes, bare.kind === 'move' && bare.expect]).toEqual([10, undefined])
+  })
+
+  it('e2e launches strip any ambient SIMS_HELPER_SHARE_DIR (any letter case) unless explicitly passed', () => {
+    const cleared = launchEnv(
+      { SIMS_HELPER_SHARE_DIR: 'C:\\Host\\Sims Helper Share', sims_helper_share_dir: 'C:\\Host\\Other', PATH: '/bin' },
+      {}
+    )
+    expect(cleared).not.toHaveProperty('SIMS_HELPER_SHARE_DIR')
+    expect(cleared).not.toHaveProperty('sims_helper_share_dir')
+    expect(cleared['PATH']).toBe('/bin')
+
+    const explicit = launchEnv(
+      { sims_helper_share_dir: 'C:\\Host\\Other' },
+      { SIMS_HELPER_SHARE_DIR: 'C:\\Temp\\Sims Helper Share' }
+    )
+    expect(explicit).not.toHaveProperty('sims_helper_share_dir')
+    expect(explicit['SIMS_HELPER_SHARE_DIR']).toBe('C:\\Temp\\Sims Helper Share')
   })
 })
