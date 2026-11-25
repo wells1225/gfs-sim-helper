@@ -96,7 +96,25 @@ test('live: big fixture shows the first finding within twice the PR 4 baseline p
     const sectionCount = await page.locator('main section').count()
     if (sectionCount === 0) {
       const mainText = await page.locator('main').innerText().catch(() => '<unreadable>')
-      console.error(`[pr-07-live] big finished in ${elapsedMs}ms with 0 sections; consoleErrors=${JSON.stringify(running.consoleErrors)}\nmain:\n${mainText}`)
+      const diag = await running.app
+        .evaluate(async () => ({
+          pf: process.env['ProgramFiles'],
+          pf86: process.env['ProgramFiles(x86)'],
+          pfKeys: Object.keys(process.env).filter((k) => k.toLowerCase().includes('program'))
+        }))
+        .catch(() => null)
+      const located = await page
+        .evaluate(() =>
+          (
+            globalThis as unknown as {
+              simsHelper: { invoke(channel: string): Promise<unknown> }
+            }
+          ).simsHelper.invoke('locate:run')
+        )
+        .catch(() => null)
+      console.error(
+        `[pr-07-live] big finished in ${elapsedMs}ms with 0 sections; consoleErrors=${JSON.stringify(running.consoleErrors)} diag=${JSON.stringify(diag)} located=${JSON.stringify(located)} fixtureRoot=${running.fixtureRoot}\nmain:\n${mainText}`
+      )
     }
     expect(sectionCount, 'expected at least one finding section on big').toBeGreaterThan(0)
 
