@@ -1966,6 +1966,73 @@ describe('a path in app data leads only to its own name', () => {
     expect(await readdir(w.inData('holding', 'e1', 'Mods'))).toEqual(['Été'])
     expect((await readdir(upper)).sort()).toEqual(['a.json', 'b.json'])
   })
+
+  /** Makes a folder under one spelling, and says whether this disk reads the other spelling as that folder. */
+  async function madeAndReadAs(made: string, other: string): Promise<boolean> {
+    await mkdir(made, { recursive: true })
+    return await exists(other)
+  }
+
+  // The wide fold reads a fullwidth 'Ｋ' as 'K'. Windows and macOS keep the two apart: two names, two folders.
+  // So a compare by the wide fold alone would call this link its own name. The disk is asked instead.
+  it('link-escape: a folder link whose name reads the same as the folder it leads to', async (ctx) => {
+    const w = await makeWorld()
+    const plain = w.inData('holding', 'e1', 'Mods', 'Kit')
+    const wide = w.inData('holding', 'e1', 'Mods', '\uff2bit')
+    if (await madeAndReadAs(plain, wide)) {
+      ctx.skip() // this disk reads the fullwidth letter as the plain one: no second name to link from
+      return
+    }
+    await writeFile(join(plain, 'held.package'), 'a mod that entry e1 holds')
+    await linkFolder(plain, wide)
+    const target = join(wide, 'held.package')
+    for (const op of [
+      { op: 'remove', path: target },
+      { op: 'write', path: target, data: 'overwritten', mode: 'replace' },
+      { op: 'write', path: join(wide, 'note.json'), data: '{}', mode: 'create' }
+    ] satisfies WriteOp[]) {
+      await expectRefusal(w, () => w.run([op], { reason: 'undo' }), { reason: 'link-escape', path: op.path })
+    }
+    expect(await readFile(join(plain, 'held.package'), 'utf8')).toBe('a mod that entry e1 holds')
+  })
+
+  it('a letter-case difference within A to Z is the same name, and the disk is not asked for a file id', async (ctx) => {
+    const w = await makeWorld()
+    const made = w.inData('holding', 'e1', 'Mods', 'Kit')
+    const shouted = w.inData('holding', 'e1', 'Mods', 'KIT')
+    if (!(await madeAndReadAs(made, shouted))) {
+      ctx.skip() // this disk keeps 'Kit' and 'KIT' apart: two folders, and each leads to its own name
+      return
+    }
+    disk.noFileIds = { files: [made, shouted], hits: 0 }
+    expect(
+      await w.run([{ op: 'write', path: join(shouted, 'a.json'), data: '{}', mode: 'create' }], {
+        folderPath: null,
+        reason: 'state'
+      })
+    ).toEqual({ status: 'done' })
+    expect(disk.noFileIds.hits).toBe(0)
+    expect(await readdir(w.inData('holding', 'e1', 'Mods'))).toEqual(['Kit'])
+    expect(await readdir(made)).toEqual(['a.json'])
+  })
+
+  it('link-escape: a spelling that differs beyond A to Z, on a disk that gives no file id to prove it one folder', async (ctx) => {
+    const w = await makeWorld()
+    const made = w.inData('holding', 'e1', 'Mods', 'Été')
+    const other = w.inData('holding', 'e1', 'Mods', 'été')
+    if (!(await madeAndReadAs(made, other))) {
+      ctx.skip() // this disk keeps 'Été' and 'été' apart
+      return
+    }
+    disk.noFileIds = { files: [made, other], hits: 0 }
+    const path = join(other, 'b.json')
+    await expectRefusal(
+      w,
+      () => w.run([{ op: 'write', path, data: '{}', mode: 'create' }], { folderPath: null, reason: 'state' }),
+      { reason: 'link-escape', path }
+    )
+    expect(disk.noFileIds.hits, 'the disk was really asked for the ids').toBeGreaterThan(0)
+  })
 })
 
 describe('doing the ops', () => {
