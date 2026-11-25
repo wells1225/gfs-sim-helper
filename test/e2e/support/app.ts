@@ -26,6 +26,7 @@ export type StubIpcMap = {
 export interface LaunchAppOptions {
   fixture?: string
   env?: Record<string, string | undefined>
+  shareDir?: string // PR 14: a local folder that stands in for Google Drive, as SIMS_HELPER_SHARE_DIR
 }
 
 export interface LaunchedApp {
@@ -101,6 +102,10 @@ export async function launchApp(options: LaunchAppOptions = {}): Promise<Launche
       ProgramFiles: join(fixtureRoot, 'Program Files'),
       'ProgramFiles(x86)': join(fixtureRoot, 'Program Files (x86)')
     }
+  }
+
+  if (options.shareDir) {
+    envOverrides = { ...envOverrides, SIMS_HELPER_SHARE_DIR: options.shareDir }
   }
 
   if (options.env) {
