@@ -28,6 +28,7 @@ export interface UpdateEngine {
   downloadUpdate(): Promise<unknown>
   quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean): void
   on(event: 'download-progress', listener: (info: { percent: number }) => void): unknown
+  on(event: 'error', listener: (error: unknown) => void): unknown
 }
 
 export interface UpdaterSeams {
@@ -77,10 +78,24 @@ function isHigher(next: [number, number, number], current: [number, number, numb
   return false
 }
 
-/** An absolute Windows folder in one spelling, to compare by text. Null for an empty or relative path. */
+// The only two shapes a folder may have: a drive letter (C:\...) or a network share (\\server\share\...).
+const DRIVE_FOLDER = /^[a-z]:(\\|$)/
+const SHARE_FOLDER = /^\\\\[^\\?.*<>|":][^\\*<>|":]*\\[^\\*?<>|":]+(\\|$)/
+const LONG_PATH_PREFIX = '\\\\?\\'
+const LONG_SHARE_PREFIX = '\\\\?\\unc\\'
+
+/**
+ * A Windows folder in one spelling, to compare by text. Null for anything that is not plainly a folder on a drive
+ * or a share: empty, relative, no drive letter (\Users\...), a device path (\\.\...), a volume id.
+ * The long-path spelling (\\?\C:\... and \\?\UNC\server\share\...) is the same folder, so its prefix is dropped once.
+ */
 function folderKey(folder: unknown): string | null {
   if (typeof folder !== 'string' || folder.trim() === '' || !win32.isAbsolute(folder)) return null
-  return win32.normalize(folder).replace(/\\+$/, '').toLowerCase()
+  let key = win32.normalize(folder).toLowerCase()
+  if (key.startsWith(LONG_SHARE_PREFIX)) key = `\\\\${key.slice(LONG_SHARE_PREFIX.length)}`
+  else if (key.startsWith(LONG_PATH_PREFIX)) key = key.slice(LONG_PATH_PREFIX.length)
+  if (!DRIVE_FOLDER.test(key) && !SHARE_FOLDER.test(key)) return null
+  return key.replace(/\\+$/, '')
 }
 
 function isInside(folder: string, parent: string): boolean {
@@ -90,11 +105,18 @@ function isInside(folder: string, parent: string): boolean {
 /**
  * True unless the install folder is known to be clear of Documents and OneDrive. An update empties the install
  * folder, and the wizard let her choose it, so in or over her documents an update could delete her files.
+ * Every folder must be readable: one that is not (the install folder, or any folder to keep out of) means it
+ * cannot be known, and then updates stay off.
  */
-function isUnsafeInstallFolder(installDir: string, keepOutOf: readonly string[]): boolean {
+function isUnsafeInstallFolder(installDir: unknown, keepOutOf: unknown): boolean {
   const install = folderKey(installDir)
-  const keepOut = keepOutOf.map(folderKey).filter((key) => key !== null)
-  if (install === null || keepOut.length === 0) return true
+  if (install === null || !Array.isArray(keepOutOf) || keepOutOf.length === 0) return true
+  const keepOut: string[] = []
+  for (const folder of keepOutOf) {
+    const key = folderKey(folder)
+    if (key === null) return true
+    keepOut.push(key)
+  }
   if (install.split('\\').some((part) => part.startsWith('onedrive'))) return true
   return keepOut.some((folder) => isInside(install, folder) || isInside(folder, install))
 }
@@ -162,6 +184,10 @@ export function createUpdater(input: UpdaterInput, seams: UpdaterSeams = {}): Up
 
   let state = idle(null)
   let restarting = false
+  // The engine does not throw when it cannot start the installer: it tells its 'error' listeners and returns.
+  // So install() listens only for the length of its one call. The error itself is never read.
+  let startingInstall = false
+  let installFailed = false
 
   // The engine is first touched here, after every reason to stay off, and only on an installed Windows app.
   let engine: UpdateEngine
@@ -174,6 +200,9 @@ export function createUpdater(input: UpdaterInput, seams: UpdaterSeams = {}): Up
       if (state.state !== 'downloading') return
       const percent = Math.floor(Number(info?.percent))
       if (percent > state.percent) state = { ...state, percent: Math.min(percent, 100) }
+    })
+    engine.on('error', () => {
+      if (startingInstall) installFailed = true
     })
   } catch {
     return alwaysOff('not-installed-app', current) // no engine, no updates: outside Electron, or a build that lost it
@@ -267,9 +296,16 @@ export function createUpdater(input: UpdaterInput, seams: UpdaterSeams = {}): Up
     expireCheck()
     if (state.state !== 'ready') return { status: 'refused', why: 'not-ready' }
     if (isBusy()) return { status: 'refused', why: 'busy' }
+    installFailed = false
+    startingInstall = true
     try {
       engine.quitAndInstall(true, true) // silent, then open the app again
     } catch {
+      installFailed = true
+    } finally {
+      startingInstall = false
+    }
+    if (installFailed) {
       state = { state: 'failed', current, step: 'download', why: 'error' }
       return { status: 'refused', why: 'not-ready' }
     }
