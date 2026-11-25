@@ -2227,6 +2227,41 @@ describe('doing the ops', () => {
     expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
   })
 
+  // Another file with the same bytes is still another file: the original is gone, and whoever put this one
+  // there may take it away again. Only the source itself, by its file id, lets the copy go.
+  it('move across drives: when the source cannot be removed and another file with the same bytes now stands at its path, the copy is kept', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    const other = w.inFolder('Mods', 'Other')
+    await mkdir(sub, { recursive: true })
+    await mkdir(other, { recursive: true })
+    const from = join(sub, 'only_copy.package')
+    await writeFile(from, 'the only copy of this mod')
+    const hash = await sha256(from)
+    const to = w.inData('holding', 'e1', 'Mods', 'only_copy.package')
+    disk.crossDrive = { from, hits: 0 }
+    let replaced = false
+    disk.unlinkFails = {
+      file: from,
+      hits: 0,
+      meanwhile: async () => {
+        // Written before the original goes, so the two are different files with different ids.
+        await writeFile(join(other, 'only_copy.package'), 'the only copy of this mod')
+        await rm(sub, { recursive: true })
+        await linkFolder(other, sub)
+        replaced = true
+      }
+    }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
+    expect(replaced, 'the folder was really replaced').toBe(true)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await exists(to), 'the copy is still at the target').toBe(true)
+    expect(await sha256(to)).toBe(hash)
+    expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
+  })
+
   // The same file, with other bytes written into it meanwhile. The copy now holds the only copy of the old bytes.
   it('move across drives: when the source cannot be removed and was rewritten with the same size, the copy is kept', async () => {
     const w = await makeWorld()
