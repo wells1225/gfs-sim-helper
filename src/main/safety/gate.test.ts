@@ -1763,6 +1763,84 @@ describe('doing the ops', () => {
     expect(await readdir(dirname(to))).toEqual([])
   })
 
+  // After the new name is given the file has two names. If the old one cannot be removed and is then gone,
+  // the new name is the last one: removing it would lose the file. Another file at the old path changes nothing.
+  it('a move on one drive: when the source cannot be removed and another file now stands at its path, the new name is kept', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    const other = w.inFolder('Mods', 'Other')
+    await mkdir(sub, { recursive: true })
+    await mkdir(other, { recursive: true })
+    const from = join(sub, 'only_copy.package')
+    await writeFile(from, 'the only copy of this mod')
+    const hash = await sha256(from)
+    const to = w.inData('holding', 'e1', 'Mods', 'only_copy.package')
+    let replaced = false
+    disk.unlinkFails = {
+      file: from,
+      hits: 0,
+      meanwhile: async () => {
+        await writeFile(join(other, 'only_copy.package'), 'the only copy of this mod')
+        await rm(sub, { recursive: true })
+        await linkFolder(other, sub)
+        replaced = true
+      }
+    }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
+    expect(replaced, 'the folder was really replaced').toBe(true)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await exists(to), 'the last name of the mod is still at the target').toBe(true)
+    expect(await sha256(to)).toBe(hash)
+    expect((result as { detail: string }).detail).toMatch(/the file at the target was left in place/)
+  })
+
+  // Here the old path now leads to the new name itself: one name, reached by two paths. The ids match, and
+  // removing "the new name" would still remove the last one.
+  it('a move on one drive: when the source cannot be removed and its path now leads to the new name, the new name is kept', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    await mkdir(sub, { recursive: true })
+    const from = join(sub, 'only_copy.package')
+    await writeFile(from, 'the only copy of this mod')
+    const hash = await sha256(from)
+    const to = w.inData('holding', 'e1', 'Mods', 'only_copy.package')
+    let replaced = false
+    disk.unlinkFails = {
+      file: from,
+      hits: 0,
+      meanwhile: async () => {
+        await rm(sub, { recursive: true })
+        await linkFolder(dirname(to), sub)
+        replaced = true
+      }
+    }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
+    expect(replaced, 'the folder was really replaced').toBe(true)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await exists(to), 'the last name of the mod is still at the target').toBe(true)
+    expect(await sha256(to)).toBe(hash)
+    expect((result as { detail: string }).detail).toMatch(/the file at the target was left in place/)
+  })
+
+  // With no file id there is no way to tell that both names are one file. In doubt the new name stays.
+  it('a move on one drive: when the source cannot be removed on a disk that gives no file ids, the new name is kept', async () => {
+    const w = await makeWorld()
+    const from = w.inFolder(...MOD)
+    const to = w.inData('holding', 'e1', 'Mods', 'cozy_rug.package')
+    const hash = await sha256(from)
+    disk.unlinkFails = { file: from, hits: 0 }
+    disk.noFileIds = { file: from, hits: 0 }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
+    expect(disk.noFileIds.hits, 'the source was really asked for its id').toBeGreaterThan(0)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await sha256(from), 'the source is untouched').toBe(hash)
+    expect(await sha256(to), 'the new name is still at the target').toBe(hash)
+    expect((result as { detail: string }).detail).toMatch(/the file at the target was left in place/)
+  })
+
   it('on a disk with no hard links it looks first and then renames, and still never overwrites', async () => {
     for (const code of ['EPERM', 'ENOSYS', 'EISDIR']) {
       const w = await makeWorld()
