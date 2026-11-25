@@ -6,8 +6,18 @@ herself, so every screen is for a non-technical player.
 
 ## State of the repo
 
-- No code, tests or build yet. The plan lives in `docs/plan/`, and the research it rests on lives in `docs/research/`.
-- There is no full check yet. When the first code lands, this file names its test and build commands.
+- Electron + Vite (`electron-vite`) + React + TypeScript (strict) app scaffolded under `src/main/`, `src/preload/`,
+  `src/renderer/`, and `src/shared/`. The plan lives in `docs/plan/`, and the research it rests on lives in
+  `docs/research/`.
+- Worker caps live in the test configs: `vitest.config.ts` sets `maxWorkers: 2`, and `playwright.config.ts` sets
+  `workers: 1`.
+
+## Commands
+
+- Run one test file: `npx vitest run <path/to/file.test.ts>`
+- Full local check: `npm run typecheck && npm test && npm run build`
+- Build the Windows NSIS installer: `npm run dist:win` (runs `electron-vite build` then `electron-builder --win nsis --x64`)
+- Installed-app Playwright smoke test (Windows CI): `npm run test:e2e`
 
 ## Rules to follow
 

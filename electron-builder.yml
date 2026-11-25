@@ -1,0 +1,30 @@
+appId: com.tyler.sims-helper
+productName: Sims Helper
+forceCodeSigning: false
+publish: null
+
+directories:
+  buildResources: build
+  output: dist
+
+files:
+  - out/**/*
+  - package.json
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Sims Helper
+  artifactName: "Sims Helper Setup ${version}.exe"
+  include: build/installer.nsh
+  unicode: true
+  differentialPackage: false
