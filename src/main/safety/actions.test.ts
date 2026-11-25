@@ -1085,6 +1085,80 @@ describe('undo', () => {
     expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package'))).toBe(true)
   })
 
+  it('skips a file updated in Mods since, leaves it alone, and puts the rest back', async () => {
+    const ws = await backedUp()
+    const lampA = await sha256File(join(ws.mods, 'BuildBuy', 'lamp_a.package'))
+    const moved = await runAction(ws.deps, disablePlan(ws))
+    if (moved.status !== 'done') throw new Error(moved.status)
+    const newerB = join(ws.mods, 'BuildBuy', 'lamp_b.package')
+    await writeFile(newerB, 'updated by CurseForge')
+
+    for (const attempt of [1, 2]) {
+      const outcome = await undo(ws.deps, moved.entry.id)
+
+      expect(outcome, `attempt ${attempt}`).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+      if (outcome.status !== 'stopped-part-way') return
+      expect(outcome.detail).toBe('This file is not as the change left it: lamp_b.package')
+      expect(outcome.entry.steps.map((s) => s.state)).toEqual(['reverted', 'applied'])
+      expect(await sha256File(join(ws.mods, 'BuildBuy', 'lamp_a.package'))).toBe(lampA)
+      expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_a.package'))).toBe(false)
+      expect(await readFile(newerB, 'utf8')).toBe('updated by CurseForge')
+      expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package'))).toBe(true)
+      expect((await listJournal(ws.deps))[0]!.status).toBe('needs-attention')
+    }
+  })
+
+  it('names each file it skipped, and only those', async () => {
+    const ws = await backedUp()
+    const plan = disablePlan(ws)
+    const third = { kind: 'move' as const, from: join(ws.mods, 'tiny.package'), to: held(ws, 'hold-1', 'tiny.package') }
+    await writeFile(third.from, 'a tiny mod')
+    const moved = await runAction(ws.deps, { ...plan, steps: [...plan.steps, third] })
+    if (moved.status !== 'done') throw new Error(moved.status)
+    await writeFile(join(ws.mods, 'BuildBuy', 'lamp_a.package'), 'newer a')
+    await writeFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), 'newer b')
+
+    const outcome = await undo(ws.deps, moved.entry.id)
+
+    expect(outcome).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    if (outcome.status !== 'stopped-part-way') return
+    expect(outcome.detail).toBe('These files are not as the change left them: lamp_a.package, lamp_b.package')
+    expect(await readFile(third.from, 'utf8')).toBe('a tiny mod')
+    expect(outcome.entry.steps.map((s) => s.state)).toEqual(['applied', 'applied', 'reverted'])
+  })
+
+  it('skips an edit whose saved copy changed, and still puts a moved file back', async () => {
+    const ws = await backedUp()
+    const status = await backupStatus(ws.deps, ws.simsFolder)
+    if (status.state !== 'verified') throw new Error('expected a verified backup')
+    const from = join(ws.mods, 'BuildBuy', 'lamp_a.package')
+    const to = held(ws, 'mixed-1', 'BuildBuy', 'lamp_a.package')
+    const lampA = await sha256File(from)
+    const bytes = (await readFile(from)).length
+    const options = join(ws.simsFolder, 'Options.ini')
+    const savedCopy = join(ws.paths.holdingDir, 'mixed-1', 'edits', 'Options.ini')
+    const beforeSha256 = await sha256File(options)
+    await mkdir(dirname(to), { recursive: true })
+    await rename(from, to)
+    await mkdir(dirname(savedCopy), { recursive: true })
+    await writeFile(savedCopy, 'not what Options.ini said')
+    await writeFile(options, '[options]\nmodsdisabled = 0\n')
+    const afterSha256 = await sha256File(options)
+    await writeEntry(ws, 'mixed-1', status.backupId, [
+      { kind: 'move', from, to, bytes, sha256: lampA, state: 'applied' },
+      { kind: 'edit', path: options, savedCopy, beforeSha256, afterSha256, state: 'applied' }
+    ])
+
+    const outcome = await undo(ws.deps, 'mixed-1')
+
+    expect(outcome).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    if (outcome.status !== 'stopped-part-way') return
+    expect(outcome.detail).toBe('This file is not as the change left it: Options.ini')
+    expect(await sha256File(from)).toBe(lampA)
+    expect(await sha256File(options)).toBe(afterSha256)
+    expect(outcome.entry.steps.map((s) => s.state)).toEqual(['reverted', 'applied'])
+  })
+
   it('will not put an edit back when the file changed since', async () => {
     const ws = await backedUp()
     const edited = await runAction(ws.deps, await editPlan(ws, '[options]\nmodsdisabled = 0\n'))
@@ -1259,7 +1333,7 @@ describe('recover', () => {
     expect(await snapshotTree(ws.simsFolder)).toEqual(tree)
   })
 
-  it('preserves earlier moved steps as applied when recover stops on a later unclear step, so a follow-up undo restores everything', async () => {
+  it('skips a later unclear step during recovery and puts the earlier one back, so a follow-up undo restores everything', async () => {
     const ws = await backedUp()
     const before = await snapshotTree(ws.simsFolder)
     const entry = await interrupted(ws, 2)
@@ -1270,7 +1344,9 @@ describe('recover', () => {
     const touched = await recover(ws.deps)
     expect(touched.map((e) => [e.id, e.status])).toEqual([[entry.id, 'needs-attention']])
     expect(await readFile(conflict, 'utf8')).toBe('new file at lamp_b')
-    expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_a.package'))).toBe(true)
+    // The unclear step is skipped, and the rest is put back: lamp_a is home, lamp_b's old copy is kept.
+    expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_a.package'))).toBe(false)
+    expect(await snapshotTree(ws.simsFolder).then((t) => t['Mods/BuildBuy/lamp_a.package'])).toBe(before['Mods/BuildBuy/lamp_a.package'])
     expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package'))).toBe(true)
 
     // Once the conflicting file is cleared, undo must restore BOTH lamp_a and lamp_b — never silently mark undone.
