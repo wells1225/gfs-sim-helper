@@ -708,7 +708,7 @@ async function carryOut(
       return
     }
     try {
-      await nameWithoutOverwrite(op.from, op.to)
+      await nameWithoutOverwrite(op.from, op.to, targetStillHolds)
       return
     } catch (err) {
       if (errorCode(err) !== 'EXDEV') throw err
@@ -779,9 +779,14 @@ async function mustBeMissing(target: string): Promise<void> {
 /**
  * Gives a file its new name, never in place of a file that is already there. A hard link does that in one
  * step: it fails when the name is taken, and the old name is removed after. A disk with no hard links (exFAT,
- * some network drives) gets the next best thing: look, then rename at once.
+ * some network drives) gets the next best thing: look, then rename at once. `targetStillHolds` is asked only
+ * before a new name is taken back.
  */
-async function nameWithoutOverwrite(from: string, to: string): Promise<void> {
+async function nameWithoutOverwrite(
+  from: string,
+  to: string,
+  targetStillHolds: () => Promise<boolean>
+): Promise<void> {
   try {
     await link(from, to)
   } catch (err) {
@@ -796,11 +801,14 @@ async function nameWithoutOverwrite(from: string, to: string): Promise<void> {
     await unlink(from)
   } catch (err) {
     // One file with two names now. The new name is taken back only when the old one is proven to be
-    // another name of that same file. Otherwise the new name may be the last one: it stays, and the
-    // answer says so.
-    const kept = (await twoNamesOfOneFile(from, to))
-      ? await unlink(to).then(() => null, explain)
-      : 'the source is no longer surely there'
+    // another name of that same file, and only from where the gate put it. Without the proof the new name
+    // may be the last one. With a target folder that was swapped for a link, its path may reach a third
+    // name of the file, one the gate never made. Either way it stays, and the answer says so. The target
+    // is looked at last, right before the removal.
+    let kept: string | null
+    if (!(await twoNamesOfOneFile(from, to))) kept = 'the source is no longer surely there'
+    else if (!(await targetStillHolds())) kept = 'its path no longer passes its check'
+    else kept = await unlink(to).then(() => null, explain)
     if (kept === null) throw err
     throw new OpFailure(`${explain(err)}, and the file at the target was left in place: ${kept}`)
   }
@@ -828,6 +836,10 @@ async function makeParent(target: string, roots: GateRoots): Promise<void> {
   if (zone === 'mods' || zone === 'app-data') await mkdir(nativePath.dirname(target), { recursive: true })
 }
 
+// A temp file and its target are two names in one folder, and the temp name is random and the gate's own.
+// A folder swapped for a link cannot hold both as names of one file, so this take-back asks nothing more.
+const tempIsBesideTarget = async (): Promise<boolean> => true
+
 /**
  * Fills a temp file beside the target, then gives it the target's name. Only `replace` may take the name from
  * a file that is there. The temp file never outlives a failure. `fill` returns once the disk has the file, and
@@ -839,7 +851,7 @@ async function viaTemp(target: string, replace: boolean, fill: (temp: string) =>
   try {
     await fill(temp)
     if (replace) await rename(temp, target)
-    else await nameWithoutOverwrite(temp, target)
+    else await nameWithoutOverwrite(temp, target, tempIsBesideTarget)
   } catch (err) {
     await unlink(temp).catch(() => undefined)
     throw err
