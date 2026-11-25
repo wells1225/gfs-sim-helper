@@ -77,7 +77,7 @@ export function SendToTyler() {
                 Never included
               </p>
               <ul className="space-y-1 text-muted-foreground">
-                <li>Your Saves or Tray folders</li>
+                <li>Your saves or households</li>
                 <li>Passwords or sign-in tokens</li>
                 <li>Your Windows user name</li>
               </ul>

@@ -57,7 +57,7 @@ export function Welcome() {
             <div>
               <p className="font-medium text-foreground">Your saves always come first</p>
               <p className="text-sm text-muted-foreground">
-                Never writes to your Saves or Tray folders.
+                Never changes your saves or households.
               </p>
             </div>
           </div>
