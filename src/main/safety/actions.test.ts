@@ -1302,6 +1302,28 @@ describe('undo', () => {
     expect(outcome.detail).not.toContain(ws.root)
     expect(await snapshotTree(ws.simsFolder)).toEqual(before)
   })
+
+  it('says undo stopped when a move fails, even if another step already had a copy left', async () => {
+    const ws = await backedUp()
+    const moved = await runAction(ws.deps, disablePlan(ws))
+    if (moved.status !== 'done') throw new Error(moved.status)
+    // Step 1 (lamp_b) is already copy-left; step 0 (lamp_a) still needs to move back, and that move fails at opsDone 0.
+    await copyFile(held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package'), join(ws.mods, 'BuildBuy', 'lamp_b.package'))
+    ws.gate.hooks.beforeOp = (op, _i, request) =>
+      request.reason === 'undo' && op.op === 'move' ? 'file in use' : undefined
+
+    const undone = await undo(ws.deps, moved.entry.id)
+    ws.gate.hooks.beforeOp = undefined
+
+    expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    if (undone.status === 'stopped-part-way') {
+      expect(undone.detail).toBe('Some files could not be put back. You can try Undo again.')
+      expect(undone.detail).not.toContain('This file is back where it was')
+    }
+    expect(await pathExists(join(ws.mods, 'BuildBuy', 'lamp_a.package'))).toBe(false)
+    expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_a.package'))).toBe(true)
+    expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package'))).toBe(true)
+  })
 })
 
 describe('recover', () => {
