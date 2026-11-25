@@ -1,4 +1,4 @@
-import { readdir, readFile } from 'node:fs/promises'
+import { lstat, readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { JournalEntry } from '../../shared/model.ts'
 import type { GateResult, SafetyDeps, WriteOp } from '../ports.ts'
@@ -61,8 +61,11 @@ export async function removeEntry(deps: SafetyDeps, id: string): Promise<GateRes
  */
 export async function removeEntryIfSame(deps: SafetyDeps, entry: JournalEntry): Promise<void> {
   if (!isSafeId(entry.id)) return
-  const onDisk = await readFile(entryFile(deps.paths.journalDir, entry.id), 'utf8').catch(() => null)
-  if (onDisk === JSON.stringify(entry)) await removeEntry(deps, entry.id)
+  const path = entryFile(deps.paths.journalDir, entry.id)
+  const info = await lstat(path).catch(() => null)
+  if (!info?.isFile()) return
+  const onDisk = await readFile(path).catch(() => null)
+  if (onDisk && onDisk.equals(Buffer.from(JSON.stringify(entry), 'utf8'))) await removeEntry(deps, entry.id)
 }
 
 /**

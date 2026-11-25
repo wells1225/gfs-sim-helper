@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto'
-import { lstat, readFile } from 'node:fs/promises'
+import { lstat, readFile, realpath } from 'node:fs/promises'
 import { basename, dirname, extname, join } from 'node:path'
 import type { FixOutcome, FixRefusal, JournalEntry, JournalStep, Sha256 } from '../../shared/model.ts'
 import { sha256File } from '../fs-read.ts'
 import type { ActionPlan, GateResult, OnProgress, SafetyDeps, WriteOp } from '../ports.ts'
 import { backupStatus, makeBackup, tracked } from './backup.ts'
 import { readEntry, removeEntry, removeEntryIfSame, saveEntry } from './journal.ts'
-import { exists, isInside, isSafeId, missingDirs, pathKey } from './where.ts'
+import { exists, isInside, isSafeId, missingDirs, pathKey, samePath } from './where.ts'
 
 type BackupFirst = { status: 'ok'; backupId: string } | { status: 'refused'; refusal: FixRefusal }
 
@@ -32,7 +32,10 @@ async function fileHash(path: string): Promise<Sha256 | null> {
   }
 }
 
-const COPY_LEFT = 'This file is back where it was, and a copy of it is still in the holding folder: '
+const ACTION_STOPPED = 'This change stopped part way through. You can undo what already moved from History.'
+const UNDO_STOPPED = 'Some files could not be put back. You can try Undo again.'
+const ACTION_HISTORY_NOT_SAVED = 'The files changed, but the app could not save your History record.'
+const UNDO_HISTORY_NOT_SAVED = 'Could not save your History record.'
 
 const OUT_OF_DATE: FixOutcome = { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
 /** The journal entry could not be written, so no change was started. */
@@ -122,57 +125,74 @@ async function inspect(step: JournalStep): Promise<StepOnDisk> {
 }
 
 /**
- * Removes the copies that copy-left steps left in the app's holding folder, through the gate, as one app-data
- * request. Each copy is hashed again just before: only a file byte for byte the same as the one back in Mods is
- * removed, so nothing is lost, and the file in Mods is never touched. A copy anywhere else (a move inside Mods),
- * one that differs, or one whose removal is refused, fails or throws is kept. Returns the detail for the first
- * step that is not back, or null when every one is.
+ * True only when `file` is strictly inside `holdingDir` both by name and after resolving links, and does not
+ * resolve to the same real path as `step.from`. Hard links (same-drive interrupted moves) have two distinct real
+ * paths and still pass; a symlink escaping to backupsDir or back to Mods never passes.
+ */
+async function isHoldingCopy(
+  deps: SafetyDeps,
+  step: Extract<JournalStep, { kind: 'move' }>,
+  file: string
+): Promise<boolean> {
+  if (!isInside(file, deps.paths.holdingDir) || samePath(file, deps.paths.holdingDir)) return false
+  try {
+    const [realFile, realHolding, realFrom] = await Promise.all([
+      realpath(file),
+      realpath(deps.paths.holdingDir),
+      realpath(step.from)
+    ])
+    return isInside(realFile, realHolding) && !samePath(realFile, realHolding) && !samePath(realFile, realFrom)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Removes each copy that copy-left steps left in the app's holding folder, through the gate, as its own app-data
+ * request so a refusal or failure on one never blocks the others. Each copy is hashed again just before: only a
+ * file byte for byte the same as the one back in Mods is removed, so nothing is lost, and the file in Mods is
+ * never touched. A copy anywhere else (a move inside Mods), one through a link escaping holding, one that
+ * differs, or one whose removal is refused, fails or throws is kept. Returns the detail for the first step that
+ * is not back, or null when every one is.
  */
 async function removeCopiesLeft(deps: SafetyDeps, entry: JournalEntry, indexes: number[]): Promise<string | null> {
-  const ops: WriteOp[] = []
-  const tried: number[] = []
   let detail: string | null = null
   for (const index of indexes) {
     const step = entry.steps[index]!
     const now = await inspect(step)
-    if (now.where === 'not-done') step.state = 'reverted'
-    else if (step.kind === 'move' && now.where === 'copy-left' && isInside(now.file, deps.paths.holdingDir) && !samePathIn(ops, now.file)) {
-      ops.push({ op: 'remove', path: now.file })
-      tried.push(index)
-    } else detail ??= notBack(step, now)
-  }
-  if (ops.length > 0) {
+    if (now.where === 'not-done') {
+      step.state = 'reverted'
+      continue
+    }
+    if (step.kind !== 'move' || now.where !== 'copy-left' || !(await isHoldingCopy(deps, step, now.file))) {
+      detail ??= notBack(deps, step, now)
+      continue
+    }
     try {
-      await deps.gate.run({ reason: 'undo', folderPath: entry.folderPath, ops })
+      await deps.gate.run({ reason: 'undo', folderPath: entry.folderPath, ops: [{ op: 'remove', path: now.file }] })
     } catch {
       // What ran is read from the disk below.
     }
-    for (const index of tried) {
-      const step = entry.steps[index]!
-      const after = await inspect(step)
-      if (after.where === 'not-done') step.state = 'reverted'
-      else detail ??= notBack(step, after)
-    }
+    const after = await inspect(step)
+    if (after.where === 'not-done') step.state = 'reverted'
+    else detail ??= notBack(deps, step, after)
   }
   return detail
 }
 
-/** What History says about a step whose file is not back. */
-function notBack(step: JournalStep, onDisk: StepOnDisk): string {
-  if (onDisk.where === 'copy-left') return `${COPY_LEFT}${onDisk.file}`
-  if (onDisk.where === 'unclear') return `This file is not as the change left it: ${onDisk.file}`
-  return `This file did not come back as it was: ${step.kind === 'move' ? step.from : step.path}`
+function copyLeftDetail(deps: SafetyDeps, file: string): string {
+  const name = basename(file)
+  if (isInside(file, deps.paths.holdingDir) && !samePath(file, deps.paths.holdingDir)) {
+    return `This file is back where it was, and a copy of it is still in the holding folder: ${name}`
+  }
+  return `This file is back where it was, and an extra copy is still in your Mods folder (${name}). The app left it there to be safe.`
 }
 
-function samePathIn(ops: WriteOp[], path: string): boolean {
-  const key = pathKey(path)
-  return ops.some((op) => op.op === 'remove' && pathKey(op.path) === key)
-}
-
-function saveError(result: GateResult): string {
-  if (result.status === 'refused') return `Could not update the journal entry: refused (${result.refusal.reason})`
-  if (result.status === 'failed') return `Could not update the journal entry: ${result.detail}`
-  return ''
+/** What History says about a step whose file is not back. Never includes full paths or raw error text. */
+function notBack(deps: SafetyDeps, step: JournalStep, onDisk: StepOnDisk): string {
+  if (onDisk.where === 'copy-left') return copyLeftDetail(deps, onDisk.file)
+  if (onDisk.where === 'unclear') return `This file is not as the change left it: ${basename(onDisk.file)}`
+  return `This file did not come back as it was: ${basename(step.kind === 'move' ? step.from : step.path)}`
 }
 
 export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgress?: OnProgress): Promise<FixOutcome> {
@@ -252,14 +272,14 @@ export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgres
     }
     entry.status = 'needs-attention'
     await saveEntry(deps, entry, 'replace')
-    return { status: 'stopped-part-way', entry, detail: result.detail }
+    return { status: 'stopped-part-way', entry, detail: ACTION_STOPPED }
   }
   for (const step of entry.steps) step.state = 'applied'
   entry.status = 'done'
   const saved = await saveEntry(deps, entry, 'replace')
   if (saved.status !== 'done') {
     entry.status = 'needs-attention'
-    return { status: 'stopped-part-way', entry, detail: saveError(saved) }
+    return { status: 'stopped-part-way', entry, detail: ACTION_HISTORY_NOT_SAVED }
   }
   onProgress?.({ task: 'fix', stage: 'moving', done: entry.steps.length, total: entry.steps.length })
   return { status: 'done', entry }
@@ -326,12 +346,8 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
   }
 
   const statusBefore = entry.status
-  let detail: string | null = problem ? `This file is not as the change left it: ${problem}` : null
+  let detail: string | null = problem ? `This file is not as the change left it: ${basename(problem)}` : null
   let undoFailed = false
-  const copyLeftWords = (index: number): string => {
-    const step = entry.steps[index]!
-    return `${COPY_LEFT}${step.kind === 'move' ? step.to : ''}`
-  }
   if (ops.length > 0) {
     // Marked in-progress first, so a crash during the undo is finished by recover() on the next start.
     entry.status = 'in-progress'
@@ -353,22 +369,28 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
       await saveEntry(deps, entry, 'replace')
       return { status: 'refused', refusal: { why: 'gate', refusal: result.refusal } }
     }
+    const cutOffIndex =
+      result.status === 'failed' && result.opsDone >= 0
+        ? toRevert.find((r) => r.lastOp >= result.opsDone)?.index
+        : undefined
     for (const { index, lastOp } of toRevert) {
       const step = entry.steps[index]!
-      const ran = result.status === 'done' || (result.opsDone >= 0 ? lastOp < result.opsDone : (await inspect(step)).where === 'not-done')
-      if (!ran) continue
-      // Undo checks what it put back.
+      const completed = result.status === 'done' || (result.opsDone >= 0 && lastOp < result.opsDone)
+      const uncertain = result.status === 'failed' && (result.opsDone < 0 || index === cutOffIndex)
+      if (!completed && !uncertain) continue
+      // Undo checks what it put back, including the step at opsDone which may have finished or left a copy.
       const after = await inspect(step)
       if (after.where === 'not-done') step.state = 'reverted'
       else if (after.where === 'copy-left' && result.status === 'done') copiesLeft.push(index)
-      else if (after.where === 'copy-left') detail ??= `${COPY_LEFT}${after.file}`
-      else detail ??= `This file did not come back as it was: ${step.kind === 'move' ? step.from : step.kind === 'edit' ? step.path : ''}`
+      else if (after.where === 'copy-left') detail ??= copyLeftDetail(deps, after.file)
+      else if (completed || after.where === 'unclear') detail ??= notBack(deps, step, after)
     }
     if (result.status === 'failed') {
       // After an undo request that failed, the copies are left for the next undo, which looks at the disk afresh.
       undoFailed = true
-      if (copiesLeft.length > 0) detail ??= copyLeftWords(copiesLeft[0]!)
-      detail ??= result.detail
+      const firstCopy = copiesLeft.length > 0 ? entry.steps[copiesLeft[0]!] : undefined
+      if (firstCopy?.kind === 'move') detail ??= copyLeftDetail(deps, firstCopy.to)
+      detail ??= UNDO_STOPPED
     }
   }
 
@@ -383,12 +405,12 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
     entry.undoneAt = deps.clock.now().toISOString()
   } else {
     entry.status = 'needs-attention'
-    detail ??= 'Some files could not be put back.'
+    detail ??= UNDO_STOPPED
   }
   const saved = await saveEntry(deps, entry, 'replace')
   if (saved.status !== 'done') {
     entry.status = 'needs-attention'
-    return { status: 'stopped-part-way', entry, detail: detail ?? saveError(saved) }
+    return { status: 'stopped-part-way', entry, detail: detail ?? UNDO_HISTORY_NOT_SAVED }
   }
   onProgress?.({ task: 'fix', stage: 'moving', done: toRevert.length, total: toRevert.length })
   return detail === null ? { status: 'done', entry } : { status: 'stopped-part-way', entry, detail }
