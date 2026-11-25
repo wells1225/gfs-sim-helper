@@ -68,7 +68,7 @@ export interface IpcInvoke {
   'update:download': { req: void; res: UpdateState } // only from 'available'
   'update:install': { req: void; res: UpdateInstall } // only from 'ready'; 'busy' while a change runs
   // PR 14 owns this block
-  'share:get': { req: void; res: ShareView } // reads the folder again
+  'share:get': { req: void; res: ShareView } // reads the folder again; may put back a link after an undone Get and close a played slot's Undo
   'share:set-role': { req: { role: PcRole }; res: ShareView }
   'share:find-folder': { req: { by: 'look' | 'pick' | 'make' }; res: ShareView } // pick: main's own dialog; make: create it in My Drive
   'share:check': { req: void; res: ShareView } // writes our hello file, reads the other PC's

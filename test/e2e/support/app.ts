@@ -40,25 +40,33 @@ export interface LaunchedApp {
   close(): Promise<void>
 }
 
+function deleteCaseInsensitive(map: Record<string, string>, key: string): void {
+  const lower = key.toLowerCase()
+  for (const existing of Object.keys(map)) {
+    if (existing.toLowerCase() === lower) {
+      delete map[existing]
+    }
+  }
+}
+
 function cleanEnv(base: NodeJS.ProcessEnv, overrides: Record<string, string | undefined>): Record<string, string> {
   const result: Record<string, string> = {}
   for (const [k, v] of Object.entries(base)) {
     if (typeof v === 'string') result[k] = v
   }
-  delete result['ELECTRON_RUN_AS_NODE']
+  deleteCaseInsensitive(result, 'ELECTRON_RUN_AS_NODE')
   for (const [k, v] of Object.entries(overrides)) {
-    if (v === undefined) {
-      delete result[k]
-    } else {
+    deleteCaseInsensitive(result, k)
+    if (v !== undefined) {
       result[k] = v
     }
   }
   return result
 }
 
-/** The environment for a launched app: updates are off unless the caller's env says otherwise. */
+/** The environment for a launched app: updates are off and no host share dir leaks unless the caller says otherwise. */
 export function launchEnv(base: NodeJS.ProcessEnv, overrides: Record<string, string | undefined>): Record<string, string> {
-  return cleanEnv(base, { SIMS_HELPER_UPDATES: 'off', ...overrides })
+  return cleanEnv(base, { SIMS_HELPER_UPDATES: 'off', SIMS_HELPER_SHARE_DIR: undefined, ...overrides })
 }
 
 export async function launchApp(options: LaunchAppOptions = {}): Promise<LaunchedApp> {
@@ -104,8 +112,9 @@ export async function launchApp(options: LaunchAppOptions = {}): Promise<Launche
     }
   }
 
-  if (options.shareDir) {
-    envOverrides = { ...envOverrides, SIMS_HELPER_SHARE_DIR: options.shareDir }
+  const shareDir = options.shareDir?.trim()
+  if (shareDir) {
+    envOverrides = { ...envOverrides, SIMS_HELPER_SHARE_DIR: shareDir }
   }
 
   if (options.env) {
