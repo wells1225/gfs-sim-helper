@@ -207,6 +207,7 @@ async function isHoldingCopy(
  */
 async function removeCopiesLeft(deps: SafetyDeps, entry: JournalEntry, indexes: number[]): Promise<string | null> {
   let detail: string | null = null
+  let copyDetail: string | null = null
   for (const index of indexes) {
     const step = entry.steps[index]!
     const now = await inspect(step)
@@ -220,9 +221,8 @@ async function removeCopiesLeft(deps: SafetyDeps, entry: JournalEntry, indexes: 
     }
     if (!(await isHoldingCopy(deps, entry, step, now.file))) {
       // A file in Mods reached through a link is not back as it was, whatever its bytes: say so, not "back".
-      detail ??= (await fromLeadsToItsOwnName(entry.folderPath, step.from))
-        ? notBack(deps, entry, step, now)
-        : notBack(deps, entry, step, { where: 'done' })
+      if (await fromLeadsToItsOwnName(entry.folderPath, step.from)) copyDetail ??= notBack(deps, entry, step, now)
+      else detail ??= notBack(deps, entry, step, { where: 'done' })
       continue
     }
     try {
@@ -232,9 +232,13 @@ async function removeCopiesLeft(deps: SafetyDeps, entry: JournalEntry, indexes: 
     }
     const after = await inspect(step)
     if (after.where === 'not-done') step.state = 'reverted'
-    else detail ??= notBack(deps, entry, step, after)
+    else if (after.where === 'copy-left' && (await fromLeadsToItsOwnName(entry.folderPath, step.from))) {
+      copyDetail ??= notBack(deps, entry, step, after)
+    } else {
+      detail ??= notBack(deps, entry, step, after.where === 'copy-left' ? { where: 'done' } : after)
+    }
   }
-  return detail
+  return detail ?? copyDetail
 }
 
 /** Says where the copy is only when the path proves it: kept by the app, or in her Mods folder. Never a path. */
@@ -455,14 +459,12 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
       const after = await inspect(step)
       if (after.where === 'not-done') step.state = 'reverted'
       else if (after.where === 'copy-left' && result.status === 'done') copiesLeft.push(index)
-      else if (after.where === 'copy-left') detail ??= copyLeftDetail(deps, entry, after.file)
+      else if (after.where === 'copy-left') continue
       else if (completed || after.where === 'unclear') detail ??= notBack(deps, entry, step, after)
     }
     if (result.status === 'failed') {
       // After an undo request that failed, the copies are left for the next undo, which looks at the disk afresh.
       undoFailed = true
-      const firstCopy = copiesLeft.length > 0 ? entry.steps[copiesLeft[0]!] : undefined
-      if (firstCopy?.kind === 'move') detail ??= copyLeftDetail(deps, entry, firstCopy.to)
       detail ??= UNDO_STOPPED
     }
   }
