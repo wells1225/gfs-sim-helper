@@ -1317,10 +1317,43 @@ describe('undo', () => {
 
     expect(outcome).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
     if (outcome.status !== 'stopped-part-way') return
-    expect(outcome.detail).toBe('This file is not as the change left it: Options.ini')
+    expect(outcome.detail).toBe("The app's copy of this file was missing or changed, so it was left as it is: Options.ini")
     expect(await sha256File(from)).toBe(lampA)
     expect(await sha256File(options)).toBe(afterSha256)
     expect(outcome.entry.steps.map((s) => s.state)).toEqual(['reverted', 'applied'])
+  })
+
+  it('names a changed file of hers and a missing saved copy each with its own sentence', async () => {
+    const ws = await backedUp()
+    const status = await backupStatus(ws.deps, ws.simsFolder)
+    if (status.state !== 'verified') throw new Error('expected a verified backup')
+    const from = join(ws.mods, 'BuildBuy', 'lamp_a.package')
+    const to = held(ws, 'mixed-2', 'BuildBuy', 'lamp_a.package')
+    const lampA = await sha256File(from)
+    const bytes = (await readFile(from)).length
+    const options = join(ws.simsFolder, 'Options.ini')
+    const savedCopy = join(ws.paths.holdingDir, 'mixed-2', 'edits', 'Options.ini')
+    const beforeSha256 = await sha256File(options)
+    await mkdir(dirname(to), { recursive: true })
+    await rename(from, to)
+    await writeFile(from, 'a new download')
+    await writeFile(options, '[options]\nmodsdisabled = 0\n')
+    const afterSha256 = await sha256File(options)
+    await writeEntry(ws, 'mixed-2', status.backupId, [
+      { kind: 'move', from, to, bytes, sha256: lampA, state: 'applied' },
+      { kind: 'edit', path: options, savedCopy, beforeSha256, afterSha256, state: 'applied' }
+    ])
+
+    const outcome = await undo(ws.deps, 'mixed-2')
+
+    expect(outcome).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    if (outcome.status !== 'stopped-part-way') return
+    expect(outcome.detail).toBe(
+      "This file is not as the change left it: lamp_a.package The app's copy of this file was missing or changed, so it was left as it is: Options.ini"
+    )
+    expect(await readFile(from, 'utf8')).toBe('a new download')
+    expect(await sha256File(options)).toBe(afterSha256)
+    expect(outcome.entry.steps.map((s) => s.state)).toEqual(['applied', 'applied'])
   })
 
   it('will not put an edit back when the file changed since', async () => {
