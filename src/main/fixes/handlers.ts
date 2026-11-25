@@ -6,7 +6,13 @@ import type { AppContext } from '../ports.ts'
 import { disabledGroupOf } from './index.ts'
 import { startRecovery } from './recovery.ts'
 
-export type FixChannel = 'backup:status' | 'fix:apply' | 'journal:list' | 'journal:undo' | 'groups:disabled'
+export type FixChannel =
+  | 'backup:status'
+  | 'fix:apply'
+  | 'journal:list'
+  | 'journal:recovery'
+  | 'journal:undo'
+  | 'groups:disabled'
 
 /**
  * Fails closed: only a missing file, or a file that plainly says the test is over, lets a fix through.
@@ -146,6 +152,10 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
     async 'journal:list'() {
       await recovery
       return ctx.safety.listJournal()
+    },
+
+    async 'journal:recovery'() {
+      throw new Error('not implemented: journal:recovery')
     },
 
     async 'journal:undo'(req) {

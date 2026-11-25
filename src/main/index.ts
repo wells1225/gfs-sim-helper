@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeTheme, safeStorage, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, safeStorage, screen, shell } from 'electron'
 import type { IpcMainInvokeEvent } from 'electron'
 import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -6,7 +6,7 @@ import { APP_TITLE } from '../shared/app.ts'
 import { createAppHost, desktopDir } from './app-host.ts'
 import { appPaths } from './app-paths.ts'
 import { registerIpc } from './ipc.ts'
-import { createContext } from './services.ts'
+import { createContext, updaterKeepOutOf } from './services.ts'
 import { createUpdater } from './update/updater.ts'
 
 const LIGHT_BG = '#FAF9F6'
@@ -129,8 +129,8 @@ if (!gotSingleInstanceLock) {
 
     const host = createAppHost()
     // Real Documents always, plus the test override when one is set: an environment variable can only add a folder.
-    const keepOutOf = [...new Set([app.getPath('documents'), host.documentsDir, ...paths.oneDriveRoots])]
-    const updater = createUpdater({
+    const keepOutOf = updaterKeepOutOf([app.getPath('documents'), host.documentsDir], paths)
+    const updaterInput = {
       isPackaged: app.isPackaged,
       version: app.getVersion(),
       installDir: dirname(process.execPath),
@@ -138,12 +138,13 @@ if (!gotSingleInstanceLock) {
       env: process.env,
       keepOutOf,
       platform: process.platform
-    })
+    }
 
     const ctx = createContext({
       host,
       paths,
-      updater,
+      // createContext calls this once with its own busy(), so install refuses while a fix, backup or 50/50 step runs.
+      updater: (seams) => createUpdater(updaterInput, seams),
       safeStorage: {
         isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
         encryptString: (text) => safeStorage.encryptString(text),
@@ -156,10 +157,21 @@ if (!gotSingleInstanceLock) {
       },
       reveal: (file) => {
         shell.showItemInFolder(file)
-      }
+      },
+      pickFolder: async () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return null
+        const picked = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] })
+        return picked.canceled ? null : (picked.filePaths[0] ?? null)
+      },
+      // services.ts hands this only the url safeWebLink gave back.
+      openExternal: (url) => shell.openExternal(url)
     })
 
     registerIpc(ipcMain, ctx, isAppWindowEvent)
+
+    // A change a crash cut off is put back before the window opens (AGENTS.md: the one thing done without a click).
+    // This is the only start; it runs once, never rejects, and journal:recovery tells her what it did.
+    void ctx.startupRecovery()
 
     nativeTheme.on('updated', () => {
       if (mainWindow && !mainWindow.isDestroyed()) {
