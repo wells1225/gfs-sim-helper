@@ -46,19 +46,77 @@ function stripTrailingSlash(name: string): string {
   return name.endsWith('/') ? name.slice(0, -1) : name
 }
 
-function describeRefusalDetail(refusal: FixRefusal): string {
+/**
+ * Why a later group was refused, in the player's words. The words follow the titles and advice in
+ * renderer/fixes/words.ts, but never say "nothing was changed": the groups before it did change.
+ */
+function refusalReasonWords(refusal: FixRefusal): string {
   switch (refusal.why) {
     case 'gate':
-      return `Stopped by safety gate (${refusal.refusal.reason})`
+      switch (refusal.refusal.reason) {
+        case 'game-running':
+          return 'The Sims 4 is still open. Save and close the game, then try again.'
+        case 'game-state-unknown':
+          return 'We could not tell whether The Sims 4 is open. Make sure the game is closed, then try again.'
+        case 'saves-or-tray':
+          return 'Stopped to protect your saves. Your saves and households are never touched.'
+        case 'outside-allowed-area':
+          return 'Stopped because a file is outside your Mods folder. Fixes only touch your Mods folder, temporary caches, and game settings.'
+        case 'link-escape':
+          return 'Skipped a linked folder that points outside your Sims 4 folder.'
+        case 'not-a-sims-folder':
+          return 'That folder no longer looks like a Sims 4 folder.'
+        case 'check-failed':
+          return 'A safety check did not finish. Try again in a moment.'
+        case 'no-verified-backup':
+          return 'A safety copy is needed first. Please try again.'
+      }
     case 'backup':
-      return `Stopped before backup (${refusal.reason})`
+      switch (refusal.reason) {
+        case 'game-running':
+          return 'The Sims 4 is still open. Save and close the game, then try again.'
+        case 'game-state-unknown':
+          return 'We could not tell whether The Sims 4 is open. Make sure the game is closed, then try again.'
+        case 'backup-folder-in-onedrive':
+          return 'Your safety copy folder is synced by OneDrive, which can interrupt backups.'
+        case 'backup-folder-in-sims-folder':
+          return 'The safety copy cannot be kept inside your Sims 4 folder. Tell Tyler so he can fix the setup.'
+        case 'not-enough-space':
+          return 'There is not enough free disk space to make a safety copy first. Free up a little space, then try again.'
+        case 'sims-folder-missing':
+          return 'Your Sims 4 folder could not be found right now.'
+        case 'backup-already-running':
+          return 'A safety copy is already running. Wait a moment for it to finish, then try again.'
+        case 'backup-failed':
+          return 'The safety copy did not finish cleanly. Please try again.'
+      }
     case 'out-of-date':
-      return `Stopped because files changed (${refusal.detail})`
+      switch (refusal.detail) {
+        case 'no-scan':
+          return 'Run a check-up first, then try again.'
+        case 'unknown-finding':
+          return 'This check-up is out of date. Run a fresh check-up to see what still needs fixing.'
+        case 'unknown-group':
+          return 'That mod is no longer in the list. Run a fresh check-up to refresh your mods list.'
+        case 'file-changed':
+          return 'Your files changed since the last check-up. Run a fresh check-up first.'
+        case 'nothing-to-do':
+          return 'The next one was already taken care of.'
+      }
     case 'fifty-fifty-running':
-      return 'Stopped because a 50/50 test is in progress'
+      return 'A 50/50 test is in progress. Finish or stop it before making other changes to your mods.'
     case 'not-started':
-      return 'Stopped before anything changed'
+      return "The next one didn't go through. Try again in a moment."
   }
+}
+
+/** The groups before the refused one stay as they now are, so say which way they went. */
+function refusalDetail(refusal: FixRefusal, direction: 'set-aside' | 'put-back'): string {
+  const done =
+    direction === 'set-aside'
+      ? 'The mods set aside before it stopped stay set aside, and you can put them back from History.'
+      : 'The mods put back before it stopped are back in Mods. The rest are still set aside.'
+  return `${refusalReasonWords(refusal)} ${done}`
 }
 
 /** Set aside one group: the plan for it, with its label and script flag for History and "Your mods". */
@@ -489,7 +547,7 @@ export async function setAside(
       return {
         status: 'stopped-part-way',
         entries,
-        detail: describeRefusalDetail(outcome.refusal)
+        detail: refusalDetail(outcome.refusal, 'set-aside')
       }
     }
 
@@ -553,7 +611,7 @@ export async function putBack(
         return {
           status: 'stopped-part-way',
           entries: undoneEntries,
-          detail: describeRefusalDetail(outcome.refusal)
+          detail: refusalDetail(outcome.refusal, 'put-back')
         }
       }
 
