@@ -1666,6 +1666,280 @@ describe('links', () => {
   })
 })
 
+// The gate makes every folder and file in app data, and never a link. A link there was made by something else,
+// and a path through it names one thing and reaches another: a copy in holding that is really a file in a backup.
+describe('a path in app data leads only to its own name', () => {
+  const BACKUP_BYTES = 'her only way back'
+
+  /** A verified backup of one mod, and a holding folder that is really a link into that backup. */
+  async function holdingLinkedIntoBackup(w: World): Promise<{ kept: string; through: string }> {
+    const kept = w.inData('backups', 'b1', 'files', 'Mods')
+    await mkdir(kept, { recursive: true })
+    await writeFile(join(kept, 'cozy_rug.package'), BACKUP_BYTES)
+    await mkdir(w.inData('holding', 'e1'), { recursive: true })
+    const through = w.inData('holding', 'e1', 'Mods')
+    await linkFolder(kept, through)
+    return { kept, through }
+  }
+
+  type ThroughLink = (w: World, through: string) => { op: WriteOp; refused: string }
+  const writes: [string, ThroughLink][] = [
+    [
+      'remove of a copy in holding',
+      (_w, through) => {
+        const path = join(through, 'cozy_rug.package')
+        return { op: { op: 'remove', path }, refused: path }
+      }
+    ],
+    [
+      'write (replace) over a copy in holding',
+      (_w, through) => {
+        const path = join(through, 'cozy_rug.package')
+        return { op: { op: 'write', path, data: 'overwritten', mode: 'replace' }, refused: path }
+      }
+    ],
+    [
+      'write (create) beside it',
+      (_w, through) => {
+        const path = join(through, 'note.json')
+        return { op: { op: 'write', path, data: '{}', mode: 'create' }, refused: path }
+      }
+    ],
+    [
+      'move of the copy back into Mods',
+      (w, through) => {
+        const from = join(through, 'cozy_rug.package')
+        return { op: { op: 'move', from, to: w.inFolder('Mods', 'back.package') }, refused: from }
+      }
+    ],
+    [
+      'move of the copy inside app data',
+      (w, through) => {
+        const from = join(through, 'cozy_rug.package')
+        return { op: { op: 'move', from, to: w.inData('holding', 'e1', 'aside.package') }, refused: from }
+      }
+    ],
+    [
+      'move of a mod into holding',
+      (w, through) => {
+        const to = join(through, 'second.package')
+        return { op: { op: 'move', from: w.inFolder(...MOD), to }, refused: to }
+      }
+    ],
+    [
+      'copy of a mod into holding',
+      (w, through) => {
+        const to = join(through, 'second.package')
+        return { op: { op: 'copy', from: w.inFolder(...MOD), to }, refused: to }
+      }
+    ],
+    [
+      'mkdir in holding',
+      (_w, through) => {
+        const path = join(through, 'New')
+        return { op: { op: 'mkdir', path }, refused: path }
+      }
+    ]
+  ]
+
+  it.each(writes)('link-escape: %s, through a folder link from holding into a backup', async (_name, build) => {
+    const w = await makeWorld()
+    const { kept, through } = await holdingLinkedIntoBackup(w)
+    const { op, refused } = build(w, through)
+    // As PR 9's undo sends it: the Sims folder named, the game closed, the backup verified.
+    await expectRefusal(w, () => w.run([op], { reason: 'undo' }), { reason: 'link-escape', path: refused })
+    expect(await readdir(kept)).toEqual(['cozy_rug.package'])
+    expect(await readFile(join(kept, 'cozy_rug.package'), 'utf8')).toBe(BACKUP_BYTES)
+  })
+
+  it('link-escape: a folder link from one holding entry into another', async () => {
+    const w = await makeWorld()
+    const held = w.inData('holding', 'e2', 'Mods', 'held.package')
+    await mkdir(dirname(held), { recursive: true })
+    await writeFile(held, 'a mod that entry e2 holds')
+    await linkFolder(w.inData('holding', 'e2'), w.inData('holding', 'e1'))
+    const target = w.inData('holding', 'e1', 'Mods', 'held.package')
+    await expectRefusal(w, () => w.run([{ op: 'remove', path: target }], { reason: 'undo' }), {
+      reason: 'link-escape',
+      path: target
+    })
+    expect(await readFile(held, 'utf8')).toBe('a mod that entry e2 holds')
+  })
+
+  it('link-escape: a folder link from holding into the journal, and from the state folder to the key', async () => {
+    const w = await makeWorld()
+    await mkdir(w.inData('journal'), { recursive: true })
+    await writeFile(w.inData('journal', 'e0.json'), '{"id":"e0"}')
+    await mkdir(w.inData('assist'), { recursive: true })
+    await writeFile(w.inData('assist', 'key.bin'), 'sealed key')
+    await mkdir(w.inData('holding'), { recursive: true })
+    await linkFolder(w.inData('journal'), w.inData('holding', 'e1'))
+    await linkFolder(w.inData('assist'), w.inData('state'))
+    for (const target of [w.inData('holding', 'e1', 'e0.json'), w.inData('state', 'key.bin')]) {
+      for (const op of [
+        { op: 'remove', path: target },
+        { op: 'write', path: target, data: '{}', mode: 'replace' }
+      ] satisfies WriteOp[]) {
+        await expectRefusal(w, () => w.run([op], { folderPath: null, reason: 'state' }), {
+          reason: 'link-escape',
+          path: target
+        })
+      }
+    }
+  })
+
+  it('link-escape: a file link in holding that points at a file in a backup', async (ctx) => {
+    const w = await makeWorld()
+    const kept = w.inData('backups', 'b1', 'files', 'Mods', 'cozy_rug.package')
+    await mkdir(dirname(kept), { recursive: true })
+    await writeFile(kept, BACKUP_BYTES)
+    const link = w.inData('holding', 'e1', 'Mods', 'cozy_rug.package')
+    await mkdir(dirname(link), { recursive: true })
+    try {
+      await symlink(kept, link, 'file')
+    } catch {
+      ctx.skip() // Windows without the right to make file links
+      return
+    }
+    for (const op of [
+      { op: 'remove', path: link },
+      { op: 'write', path: link, data: 'overwritten', mode: 'replace' },
+      { op: 'move', from: link, to: w.inFolder('Mods', 'back.package') }
+    ] satisfies WriteOp[]) {
+      await expectRefusal(w, () => w.run([op], { reason: 'undo' }), { reason: 'link-escape', path: link })
+    }
+  })
+
+  it('a link is never removed by its own path, and goes with the folder it sits in, which is not followed', async () => {
+    const w = await makeWorld()
+    const { kept, through } = await holdingLinkedIntoBackup(w)
+    await expectRefusal(w, () => w.run([{ op: 'remove', path: through }], { reason: 'undo' }), {
+      reason: 'link-escape',
+      path: through
+    })
+    expect(await w.run([{ op: 'remove', path: w.inData('holding', 'e1') }], { reason: 'undo' })).toEqual({
+      status: 'done'
+    })
+    expect(await exists(w.inData('holding', 'e1'))).toBe(false)
+    expect(await readFile(join(kept, 'cozy_rug.package'), 'utf8')).toBe(BACKUP_BYTES)
+  })
+
+  it('TOCTOU: a holding folder swapped for a link into a backup while the game is asked removes nothing', async () => {
+    const w = await makeWorld()
+    const kept = w.inData('backups', 'b1', 'files', 'Mods')
+    await mkdir(kept, { recursive: true })
+    await writeFile(join(kept, 'cozy_rug.package'), BACKUP_BYTES)
+    const sub = w.inData('holding', 'e1', 'Mods')
+    await mkdir(sub, { recursive: true })
+    const target = join(sub, 'cozy_rug.package')
+    await writeFile(target, 'the copy in holding')
+    const realGame = w.deps.gameState
+    w.deps.gameState = async () => {
+      await rm(sub, { recursive: true })
+      await linkFolder(kept, sub)
+      return await realGame()
+    }
+    const result = await w.run([{ op: 'mkdir', path: w.inFolder('Mods', 'TriggerGuard') }, { op: 'remove', path: target }])
+    expect(result).toEqual(refusedWith({ reason: 'link-escape', path: target }))
+    expect(await readFile(join(kept, 'cozy_rug.package'), 'utf8')).toBe(BACKUP_BYTES)
+    expect(await exists(w.inFolder('Mods', 'TriggerGuard'))).toBe(false)
+  })
+
+  it('an app data folder that is itself reached through a link takes every write PR 9 sends', async () => {
+    const w = await makeWorld()
+    const player = join(w.root, 'pc', 'Users', 'Player')
+    await mkdir(join(player, 'BigDisk', 'Local'), { recursive: true })
+    await linkFolder(join(player, 'BigDisk', 'Local'), join(player, 'LocalLink'))
+    w.paths = appPaths({ localAppData: join(player, 'LocalLink'), desktopDir: w.desktopDir })
+    w.deps.paths = w.paths
+    w.dataDir = w.paths.dataDir
+    const realData = join(player, 'BigDisk', 'Local', 'SimsHelper')
+    const manifest = w.inData('backups', 'b2', 'manifest.json')
+    const stored = w.inData('backups', 'b2', 'files', 'Mods', 'cozy_rug.package')
+    const held = w.inData('holding', 'e1', 'Mods', 'cozy_rug.package')
+    const entry = w.inData('journal', 'e1.json')
+    const modBytes = await sha256(w.inFolder(...MOD))
+
+    // A backup: its folders and its list, the copies, then the list again.
+    expect(
+      await w.run(
+        [
+          { op: 'mkdir', path: w.inData('backups') },
+          { op: 'mkdir', path: w.inData('backups', 'b2') },
+          { op: 'mkdir', path: w.inData('backups', 'b2', 'files') },
+          { op: 'write', path: manifest, data: '{"state":"copying"}', mode: 'create' }
+        ],
+        { folderPath: null, reason: 'backup' }
+      )
+    ).toEqual({ status: 'done' })
+    expect(
+      await w.run(
+        [
+          { op: 'mkdir', path: dirname(stored) },
+          { op: 'copy', from: w.inFolder(...MOD), to: stored }
+        ],
+        { reason: 'backup' }
+      )
+    ).toEqual({ status: 'done' })
+    expect(
+      await w.run([{ op: 'write', path: manifest, data: '{"state":"verified"}', mode: 'replace' }], {
+        folderPath: null,
+        reason: 'backup'
+      })
+    ).toEqual({ status: 'done' })
+    // A journal entry, a fix that moves a mod into holding, its undo, the cleanup of holding, and a state file.
+    expect(
+      await w.run(
+        [
+          { op: 'mkdir', path: w.inData('journal') },
+          { op: 'write', path: entry, data: '{"id":"e1"}', mode: 'create' }
+        ],
+        { folderPath: null, reason: 'journal' }
+      )
+    ).toEqual({ status: 'done' })
+    expect(
+      await w.run([
+        { op: 'mkdir', path: dirname(held) },
+        { op: 'move', from: w.inFolder(...MOD), to: held }
+      ])
+    ).toEqual({ status: 'done' })
+    expect(await w.run([{ op: 'move', from: held, to: w.inFolder(...MOD) }], { reason: 'undo' })).toEqual({
+      status: 'done'
+    })
+    await writeFile(held, 'a copy left in holding')
+    expect(await w.run([{ op: 'remove', path: held }], { reason: 'undo' })).toEqual({ status: 'done' })
+    expect(
+      await w.run([{ op: 'write', path: entry, data: '{"id":"e1","state":"undone"}', mode: 'replace' }], {
+        folderPath: null,
+        reason: 'journal'
+      })
+    ).toEqual({ status: 'done' })
+    expect(
+      await w.run(
+        [
+          { op: 'mkdir', path: w.inData('state') },
+          { op: 'write', path: w.inData('state', 'update.json'), data: '{}', mode: 'replace' }
+        ],
+        { folderPath: null, reason: 'state' }
+      )
+    ).toEqual({ status: 'done' })
+    expect(
+      await w.run([{ op: 'write', path: w.inData('assist', 'key.bin'), data: new Uint8Array([1, 2, 3]), mode: 'replace' }], {
+        folderPath: null,
+        reason: 'key'
+      })
+    ).toEqual({ status: 'done' })
+
+    expect(await sha256(join(realData, 'backups', 'b2', 'files', 'Mods', 'cozy_rug.package'))).toBe(modBytes)
+    expect(await sha256(w.inFolder(...MOD))).toBe(modBytes)
+    expect(await readFile(join(realData, 'backups', 'b2', 'manifest.json'), 'utf8')).toBe('{"state":"verified"}')
+    expect(await readFile(join(realData, 'journal', 'e1.json'), 'utf8')).toBe('{"id":"e1","state":"undone"}')
+    expect(await readdir(join(realData, 'holding', 'e1', 'Mods'))).toEqual([])
+    expect((await readdir(join(realData, 'state'))).sort()).toEqual(['update.json'])
+    expect(await exists(join(realData, 'assist', 'key.bin'))).toBe(true)
+  })
+})
+
 describe('doing the ops', () => {
   it('a refused request changes nothing, even when its first ops were fine', async () => {
     const w = await makeWorld()
@@ -2742,6 +3016,16 @@ describe('Windows on a real disk', () => {
     expect(await short.run([{ op: 'remove', path: save }])).toEqual(refusedWith({ reason: 'saves-or-tray', path: save }))
     expect(await short.run([{ op: 'mkdir', path: short.inFolder('Mods', 'New') }])).toEqual({ status: 'done' })
     expect((await stat(long.inFolder('Mods', 'New'))).isDirectory()).toBe(true)
+    // App data named through the short name still leads to its own name below the real app data folder.
+    const state = short.inData('state', 'update.json')
+    expect(
+      await short.run([{ op: 'write', path: state, data: '{}', mode: 'replace' }], { folderPath: null, reason: 'state' })
+    ).toEqual({ status: 'done' })
+    expect(await readFile(long.inData('state', 'update.json'), 'utf8')).toBe('{}')
+    expect(await short.run([{ op: 'remove', path: state }], { folderPath: null, reason: 'state' })).toEqual({
+      status: 'done'
+    })
+    expect(await exists(long.inData('state', 'update.json'))).toBe(false)
   })
 
   it.runIf(ON_WINDOWS)('letter case on a real disk: MODS is Mods and SAVES is saves', async () => {
