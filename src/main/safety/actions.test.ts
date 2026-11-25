@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { generateFixture, loadSpec } from '../../../scripts/fixtures/make-fixture.ts'
@@ -351,7 +351,7 @@ describe('runAction', () => {
 
       expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
       if (undone.status === 'stopped-part-way') {
-        expect(undone.detail).toBe('This file is back where it was, and the app kept a spare copy of it to be safe: lamp_b.package')
+        expect(undone.detail).toBe('This file is back where it was, and the app kept a spare copy of it to be safe: lamp_b.package.')
         expect(undone.detail).not.toContain('holding')
         expect(undone.detail).toContain('lamp_b.package')
         expect(undone.detail).not.toContain(ws.root)
@@ -391,7 +391,7 @@ describe('runAction', () => {
 
       expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
       if (undone.status === 'stopped-part-way') {
-        expect(undone.detail).toBe('This file is back where it was, and the app kept a spare copy of it to be safe: lamp_b.package')
+        expect(undone.detail).toBe('This file is back where it was, and the app kept a spare copy of it to be safe: lamp_b.package.')
         expect(undone.detail).not.toContain('holding')
         expect(undone.detail).toContain('lamp_b.package')
         expect(undone.detail).not.toContain('EPERM')
@@ -515,7 +515,7 @@ describe('runAction', () => {
 
         expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
         if (undone.status !== 'stopped-part-way') return
-        expect(undone.detail).toBe('This file is back where it was, and the app kept a spare copy of it to be safe: lamp_b.package')
+        expect(undone.detail).toBe('This file is back where it was, and the app kept a spare copy of it to be safe: lamp_b.package.')
         expect(await pathExists(hold2LampB)).toBe(true)
         expect(await sha256File(hold2LampB)).toBe(sha)
         expect(ws.gate.requests.some((r) => r.ops.some((op) => op.op === 'remove'))).toBe(false)
@@ -541,6 +541,9 @@ describe('runAction', () => {
 
       expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
       if (undone.status === 'stopped-part-way') {
+        expect(undone.detail).toBe(
+          'This file is back where it was, and an extra copy is still in your Mods folder (lamp_b.package). The app left it there to be safe. You can delete the extra copy.'
+        )
         expect(undone.detail).not.toContain('holding folder')
         expect(undone.detail).toContain('Mods folder')
         expect(undone.detail).toContain('lamp_b.package')
@@ -1600,7 +1603,7 @@ describe('undo', () => {
     expect(undone.status).not.toBe('refused') // it reached the clean-up
     expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
     if (undone.status === 'stopped-part-way') {
-      expect(undone.detail).toMatch(/^This file did not come back as it was: lamp_[ab]\.package$/)
+      expect(undone.detail).toMatch(/^This file did not come back as it was: lamp_[ab]\.package\.$/)
       expect(undone.detail).not.toContain('back where it was')
       expect(undone.detail).not.toContain(ws.root)
       expect(undone.detail).not.toContain('holding')
@@ -1609,6 +1612,27 @@ describe('undo', () => {
     expect(await sha256File(heldB)).toBe(hashB)
     expect(ws.gate.requests.some((r) => r.ops.some((op) => op.op === 'remove'))).toBe(false)
     expect((await listJournal(ws.deps))[0]!.status).toBe('needs-attention')
+  })
+
+  it('an undo whose file came back changed says it is not as the change left it, ending with a full stop', async () => {
+    const ws = await backedUp()
+    const moved = await runAction(ws.deps, disablePlan(ws))
+    if (moved.status !== 'done') throw new Error(moved.status)
+    // The move back runs, then something else rewrites the file before undo checks it.
+    ws.gate.hooks.afterOp = async (op, _i, request) => {
+      if (request.reason === 'undo' && op.op === 'move' && basename(op.to) === 'lamp_b.package') {
+        await writeFile(op.to, 'a newer download')
+      }
+    }
+
+    const undone = await undo(ws.deps, moved.entry.id)
+    ws.gate.hooks.afterOp = undefined
+
+    expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    if (undone.status === 'stopped-part-way') {
+      expect(undone.detail).toBe('This file is not as the change left it: lamp_b.package.')
+      expect(undone.detail).not.toContain(ws.root)
+    }
   })
 
   it('an undo that put every file back but could not save History says the files are back, with no raw error or path', async () => {
