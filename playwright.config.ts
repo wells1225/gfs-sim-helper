@@ -6,5 +6,19 @@ export default defineConfig({
   fullyParallel: false,
   retries: 0,
   timeout: 30_000,
-  reporter: 'list'
+  reporter: 'list',
+  projects: [
+    {
+      name: 'smoke',
+      testMatch: ['app.spec.ts', 'contract.spec.ts']
+    },
+    {
+      name: 'screens',
+      testMatch: ['screens/*.spec.ts']
+    },
+    {
+      name: 'live',
+      testMatch: ['live/*.spec.ts']
+    }
+  ]
 })

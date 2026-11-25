@@ -17,10 +17,15 @@ herself, so every screen is for a non-technical player.
 - Run one test file: `npx vitest run <path/to/file.test.ts>`
 - Build the fake Sims 4 folders: `npm run fixtures` (plain `node` runs the `.ts` file, so Node 22.18 or newer)
 - Full local check: `npm run typecheck && npm test && npm run build`
-- Build the Windows NSIS installer: `npm run dist:win` (runs `electron-vite build` then `electron-builder --win nsis --x64`)
+- Build the Windows NSIS installer: `npm run dist:win` (runs `electron-vite build` then `electron-builder --win nsis --x64 --publish never`)
 - Installed-app Playwright smoke test (Windows CI): `npm run test:e2e`
+- Stubbed screen screenshots (Playwright): `npm run test:screens`
+- Live fixture end-to-end tests (Windows CI): `npm run test:live`
+- Debug CLIs (plain `node`): `npm run locate -- <fixture>`, `npm run inventory -- <fixture> [--time]`, `npm run logs -- <fixture>`, `npm run findings -- <fixture>`
 
 ## Rules to follow
+
+- Shared files are frozen after the contract commit; edit only your PR's owned paths in `docs/plan/ownership.md`.
 
 - Her saves come first. Never write to `Saves/` or `Tray/`. Any change to `Mods/` or game settings makes a backup
   first and can be undone from the app.

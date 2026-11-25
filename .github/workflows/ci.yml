@@ -31,6 +31,10 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      # The app ships on Electron's Node, not Node 22. Fails if a worker ran on plain Node.
+      - name: Safety tests on Electron's own Node (gate and backup)
+        run: npm run test:electron-node
+
       - name: Verify locate on real Windows (PE version, registry, running game)
         shell: pwsh
         run: |
@@ -145,8 +149,37 @@ jobs:
           Write-Host "Installed executable: $installedExe"
           "SIMS_HELPER_EXE=$installedExe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Verify installed app with Playwright
-        run: npm run test:e2e
+      - name: Verify update files (latest.yml and the installed app-update.yml)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $latest = Join-Path (Resolve-Path dist) 'latest.yml'
+          if (-not (Test-Path $latest)) { Get-ChildItem dist; throw "dist/latest.yml was not written" }
+          $latestText = Get-Content $latest -Raw
+          if ($latestText -notmatch "(?m)^version: $([regex]::Escape($env:APP_VERSION))\s*$") { throw "latest.yml does not name version $env:APP_VERSION" }
+          if ($latestText -notmatch '(?m)^\s*sha512: \S+') { throw "latest.yml has no sha512" }
+          $appUpdate = Join-Path $env:LOCALAPPDATA 'Programs\Sims Helper\resources\app-update.yml'
+          if (-not (Test-Path $appUpdate)) { throw "Installed app has no resources\app-update.yml" }
+          $feed = Get-Content $appUpdate -Raw
+          foreach ($line in @('provider: github', 'owner: wells1225', 'repo: gfs-sim-helper')) {
+            if ($feed -notmatch "(?m)^$([regex]::Escape($line))\s*$") { throw "app-update.yml lacks '$line'" }
+          }
+          Write-Host "latest.yml:"; Write-Host $latestText
+          Write-Host "app-update.yml:"; Write-Host $feed
+
+      - name: Verify installed app with Playwright (smoke and screens)
+        run: npx playwright test --project=smoke --project=screens
+
+      - name: Upload screen screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: screens
+          path: test-results/screens/
+          if-no-files-found: ignore
+
+      - name: Run live Playwright tests
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'pull_request' && github.base_ref == 'main')
+        run: npx playwright test --project=live --pass-with-no-tests
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
