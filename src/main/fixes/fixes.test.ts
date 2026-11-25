@@ -1072,7 +1072,7 @@ describe('lead decision: a set-aside that stops part way is put back at once', (
 
   it('a set-aside that moved a file keeps stopped-part-way when undo answers nothing-to-do (its entry could not be read)', async () => {
     const scan = sampleScan()
-    // undo answers nothing-to-do for an entry it cannot read, too: a moved file must never be called not-started.
+    // A guard: undo answers nothing-to-do only for a missing entry, but a moved file must never be called not-started.
     const makeMovedOneStop = (plan: ActionPlan): FixOutcome => ({
       status: 'stopped-part-way',
       entry: sampleJournalEntry({
