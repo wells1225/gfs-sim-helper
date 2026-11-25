@@ -25,7 +25,7 @@ export function About() {
 
           <div className="inline-flex items-center justify-center gap-2 rounded-lg bg-muted/60 px-4 py-2.5 text-sm text-muted-foreground">
             <ShieldCheck className="size-4 shrink-0 text-primary" strokeWidth={1.75} />
-            <span>Your Saves and Tray folders are never touched.</span>
+            <span>Your saves and households are never touched.</span>
           </div>
         </CardContent>
 
