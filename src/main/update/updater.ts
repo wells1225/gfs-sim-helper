@@ -83,19 +83,32 @@ const DRIVE_FOLDER = /^[a-z]:(\\|$)/
 const SHARE_FOLDER = /^\\\\[^\\?.*<>|":][^\\*<>|":]*\\[^\\*?<>|":]+(\\|$)/
 const LONG_PATH_PREFIX = '\\\\?\\'
 const LONG_SHARE_PREFIX = '\\\\?\\unc\\'
+// A folder name Windows reads as some other name, so the text does not say which folder it is: one ending in a dot
+// or a space (Windows drops them), or a short name (DOCUME~1).
+const OTHER_NAME = /[. ]$|~\d/
+
+interface FolderKey {
+  key: string // lower case, backslashes, no long-path prefix, no backslash at the end
+  onShare: boolean
+}
 
 /**
- * A Windows folder in one spelling, to compare by text. Null for anything that is not plainly a folder on a drive
- * or a share: empty, relative, no drive letter (\Users\...), a device path (\\.\...), a volume id.
+ * A Windows folder in one spelling, to compare by text. Null for anything that is not plainly one folder on a drive
+ * or a share: empty, relative, no drive letter (\Users\...), a device path (\\.\...), a volume id, a name Windows
+ * reads as another name (OTHER_NAME), or a colon anywhere but after the drive letter (a file stream).
  * The long-path spelling (\\?\C:\... and \\?\UNC\server\share\...) is the same folder, so its prefix is dropped once.
  */
-function folderKey(folder: unknown): string | null {
+function folderKey(folder: unknown): FolderKey | null {
   if (typeof folder !== 'string' || folder.trim() === '' || !win32.isAbsolute(folder)) return null
   let key = win32.normalize(folder).toLowerCase()
   if (key.startsWith(LONG_SHARE_PREFIX)) key = `\\\\${key.slice(LONG_SHARE_PREFIX.length)}`
   else if (key.startsWith(LONG_PATH_PREFIX)) key = key.slice(LONG_PATH_PREFIX.length)
-  if (!DRIVE_FOLDER.test(key) && !SHARE_FOLDER.test(key)) return null
-  return key.replace(/\\+$/, '')
+  const onShare = SHARE_FOLDER.test(key)
+  if (!onShare && !DRIVE_FOLDER.test(key)) return null
+  key = key.replace(/\\+$/, '')
+  if (key.slice(onShare ? 0 : 2).includes(':')) return null
+  if (key.split('\\').some((part) => OTHER_NAME.test(part))) return null
+  return { key, onShare }
 }
 
 function isInside(folder: string, parent: string): boolean {
@@ -107,18 +120,20 @@ function isInside(folder: string, parent: string): boolean {
  * folder, and the wizard let her choose it, so in or over her documents an update could delete her files.
  * Every folder must be readable: one that is not (the install folder, or any folder to keep out of) means it
  * cannot be known, and then updates stay off.
+ * An install folder on a share is never known to be clear: \\localhost\c$\Users\... is her own drive by another
+ * name, and no text tells which shares are. A folder to keep out of may be on a share (Documents moved to a NAS).
  */
 function isUnsafeInstallFolder(installDir: unknown, keepOutOf: unknown): boolean {
   const install = folderKey(installDir)
-  if (install === null || !Array.isArray(keepOutOf) || keepOutOf.length === 0) return true
+  if (install === null || install.onShare || !Array.isArray(keepOutOf) || keepOutOf.length === 0) return true
   const keepOut: string[] = []
   for (const folder of keepOutOf) {
-    const key = folderKey(folder)
-    if (key === null) return true
-    keepOut.push(key)
+    const kept = folderKey(folder)
+    if (kept === null) return true
+    keepOut.push(kept.key)
   }
-  if (install.split('\\').some((part) => part.startsWith('onedrive'))) return true
-  return keepOut.some((folder) => isInside(install, folder) || isInside(folder, install))
+  if (install.key.split('\\').some((part) => part.startsWith('onedrive'))) return true
+  return keepOut.some((folder) => isInside(install.key, folder) || isInside(folder, install.key))
 }
 
 function isSwitchedOff(env: UpdaterInput['env']): boolean {
