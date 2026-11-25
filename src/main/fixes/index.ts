@@ -142,7 +142,9 @@ function groupPlan(
 /**
  * A set-aside that stopped part way is undone at once, so no group is left half moved. When the undo works the
  * group is fully back: 'rolled-back'. So is a nothing-to-do answer, but only when no step of the stopped entry ran:
- * a guard: a moved file must never be called not-started (undo answers nothing-to-do only for a missing entry).
+ * a guard: a moved file must never be called not-started. Undo answers nothing-to-do for a missing entry, for a
+ * never-ran entry it just dropped, or for a cache clear (which no PR 10 screen can reach); an unreadable entry
+ * answers not-started.
  * When it does not work (any other refusal, stopped, or threw), the entry stays needs-attention: the original
  * outcome stands, with the undo's entry and, when it has one, the undo's sentence.
  */
