@@ -1132,7 +1132,8 @@ describe('undo of an entry that never ran (nothing-to-do)', () => {
       groupId: 'dir:hair',
       groupLabel: 'Hair',
       status: 'in-progress',
-      undo: 'can-undo'
+      undo: 'can-undo',
+      steps: sampleJournalEntry().steps.map((s) => ({ ...s, state: 'pending' as const }))
     })
     const kept = sampleJournalEntry({
       id: 'e-kept',
@@ -1280,5 +1281,67 @@ describe('FindingActions resets quietly on nothing-to-do only for a stopped fix 
 
     expect(await screen.findByText('Already taken care of')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Turn mods back on' })).not.toBeInTheDocument()
+  })
+})
+
+describe('History drops a row quietly on nothing-to-do only for an in-progress entry that never ran', () => {
+  const nothingToDo: FixOutcome = { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+
+  it.each([
+    [
+      'done entry',
+      sampleJournalEntry({
+        id: 'e-done',
+        summary: 'Set aside Hair',
+        status: 'done',
+        undo: 'can-undo'
+      })
+    ],
+    [
+      'needs-attention entry with an applied step',
+      sampleJournalEntry({
+        id: 'e-needs-applied',
+        summary: 'Set aside Hair',
+        status: 'needs-attention',
+        undo: 'can-undo'
+      })
+    ],
+    [
+      'needs-attention entry with pending steps',
+      sampleJournalEntry({
+        id: 'e-needs-pending',
+        summary: 'Set aside Hair',
+        status: 'needs-attention',
+        undo: 'can-undo',
+        steps: sampleJournalEntry().steps.map((s) => ({ ...s, state: 'pending' as const }))
+      })
+    ],
+    [
+      'in-progress entry where a step already ran',
+      sampleJournalEntry({
+        id: 'e-in-progress-applied',
+        summary: 'Set aside Hair',
+        status: 'in-progress',
+        undo: 'can-undo'
+      })
+    ]
+  ])('for a %s, keeps the row and says it was already taken care of', async (_label, entry) => {
+    const user = userEvent.setup()
+    const api = fakeApi({
+      'journal:list': [entry],
+      'journal:undo': () => nothingToDo
+    })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'history' }}>
+        <HistoryScreen />
+      </Harness>
+    )
+
+    expect(await screen.findByText('Set aside Hair')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Undo' }))
+
+    expect(await screen.findByText('Already taken care of')).toBeInTheDocument()
+    expect(screen.getByText('Set aside Hair')).toBeInTheDocument()
   })
 })
