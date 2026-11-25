@@ -13,7 +13,9 @@ herself, so every screen is for a non-technical player.
 
 - Her saves come first. Never write to `Saves/` or `Tray/`. Any change to `Mods/` or game settings makes a backup
   first and can be undone from the app.
-- The app only acts when she clicks. Scanning reads files and changes nothing.
+- The app only acts when she clicks. Scanning reads files and changes nothing. One exception (Tyler, 2026-11-24):
+  when a change was cut off by a crash, the app puts things back as they were when it next opens, after checking
+  the backup, and then tells her.
 - Tests run against fixture folders checked into the repo, never against a real game folder.
 
 ## Checks (this Mac runs out of memory)

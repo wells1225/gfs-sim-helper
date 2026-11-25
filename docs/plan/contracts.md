@@ -342,7 +342,7 @@ export interface UpdaterInput { // PR 13: createUpdater(input, seams?) in src/ma
   installDir: string // the folder of the running .exe
   argv: readonly string[] // '--updated': the installer just restarted the app after an update
   env: Readonly<Record<string, string | undefined>> // SIMS_HELPER_UPDATES=off switches updates off; nothing can point the feed elsewhere
-  keepOutOf: readonly string[] // updaterKeepOutOf(): Documents, the OneDrive roots and paths.dataDir; off when installDir is inside or contains one
+  keepOutOf: readonly string[] // updaterKeepOutOf(): Documents, the OneDrive roots and paths.dataDir; off when installDir is inside or contains one, when any entry cannot be read, and when installDir is on a share or has an odd part (trailing dot or space, ~digit, a colon after the drive)
   platform: NodeJS.Platform // off except on 'win32'
 }
 export interface Updater { // PR 13. The feed is only the installed app's app-update.yml
