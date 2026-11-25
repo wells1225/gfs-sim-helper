@@ -175,6 +175,37 @@ describe('UpdateBanner', () => {
     expect(screen.queryByText("The update didn't download. Nothing changed.")).toBeNull()
   })
 
+  it.each([
+    ['fails', () => FAILED_CHECK],
+    ['is rejected', reject]
+  ])('Try again keeps the failed download on screen when its check %s, so she can try once more', async (_name, check) => {
+    const user = userEvent.setup()
+    const { api } = show({ 'update:check': ({ by }) => (by === 'start' ? FAILED_DOWNLOAD : check()) })
+    await user.click(await screen.findByRole('button', { name: 'Try again' }))
+    await settle()
+    expect(screen.getByText("The update didn't download. Nothing changed.")).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeEnabled()
+    expect(callsTo(api, 'update:check')).toHaveLength(2)
+    expect(callsTo(api, 'update:download')).toHaveLength(0)
+    expect(document.body.textContent).not.toContain('ERR_')
+  })
+
+  it('a failed hourly check does not take the failed download off the screen', async () => {
+    vi.useFakeTimers()
+    let checks = 0
+    show({
+      'update:check': () => {
+        checks += 1
+        return checks === 1 ? FAILED_DOWNLOAD : FAILED_CHECK
+      }
+    })
+    await settle()
+    expect(screen.getByText("The update didn't download. Nothing changed.")).toBeInTheDocument()
+    await act(() => vi.advanceTimersByTimeAsync(60 * 60 * 1000))
+    expect(checks).toBe(2)
+    expect(screen.getByText("The update didn't download. Nothing changed.")).toBeInTheDocument()
+  })
+
   it('a transient update:get failure during a download keeps the progress banner and keeps polling', async () => {
     vi.useFakeTimers()
     const download = deferred<UpdateState>()
@@ -315,7 +346,7 @@ describe('UpdateRow', () => {
     ['switched-off', 'Updates are switched off on this PC.'],
     [
       'unsafe-install-folder',
-      'Updates are off because Sims Helper is installed in your Documents or OneDrive folder. Reinstall it in the folder Setup suggests to get updates.'
+      'Updates are off because Sims Helper is installed in a folder that isn’t safe to update, like Documents or OneDrive. Reinstall it in the folder Setup suggests to get updates.'
     ]
   ] as const)('with updates off (%s), shows the version, says why and offers no check', async (why, note) => {
     show({ 'update:get': { state: 'off', why, current: '0.2.0' } }, 'row')
@@ -344,6 +375,14 @@ describe('UpdateRow', () => {
     await clicking
     expect(await screen.findByText('You have the newest version.')).toBeInTheDocument()
     expect(screen.queryByText("Couldn't check right now. Try again later.")).toBeNull()
+  })
+
+  it('a check from About that fails says so, and leaves a failed download in the banner', async () => {
+    const user = userEvent.setup()
+    show({ 'update:check': ({ by }) => (by === 'start' ? FAILED_DOWNLOAD : FAILED_CHECK) }, 'both')
+    await user.click(await screen.findByRole('button', { name: 'Check for updates' }))
+    expect(await screen.findByText("Couldn't check right now. Try again later.")).toBeInTheDocument()
+    expect(screen.getByText("The update didn't download. Nothing changed.")).toBeInTheDocument()
   })
 
   it('a check from About that finds a version shows the banner, even after Later', async () => {
