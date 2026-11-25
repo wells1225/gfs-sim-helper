@@ -383,6 +383,80 @@ describe('RecoveryNotice', () => {
     expect(screen.getByTestId('probe')).toHaveTextContent('route=history')
   })
 
+  it('shows the recovery failure notice when journal:recovery rejects, never silent all-good, with no error text', async () => {
+    const api = fakeApi({
+      'journal:recovery': () => Promise.reject(new Error('C:\\Users\\Lila\\AppData\\journal locked')),
+      'journal:list': []
+    })
+
+    const { container } = render(
+      <Harness api={api} initialRoute={{ screen: 'about' }}>
+        <RecoveryNotice />
+      </Harness>
+    )
+
+    expect(await screen.findByText('We could not check for a cut-off change')).toBeInTheDocument()
+    expect(screen.getByText(/Your saves and households were never touched/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open History' })).toBeNull()
+    expect(container.textContent).not.toMatch(/Lila|[A-Z]:\\|error|Tray/i)
+  })
+
+  it('keeps needs-attention entries from recovery.touched when journal:list fails, never showing an all-good put-back notice', async () => {
+    const putBack = sampleJournalEntry({
+      id: 'e-put-back',
+      status: 'undone',
+      undo: 'can-undo',
+      undoneAt: '2026-11-24T12:20:00.000Z'
+    })
+    const stuck = sampleJournalEntry({
+      id: 'e-stuck',
+      status: 'needs-attention',
+      undo: 'can-undo'
+    })
+    const api = fakeApi({
+      'journal:recovery': { status: 'finished', touched: [putBack, stuck] },
+      'journal:list': () => Promise.reject(new Error('journal unreadable'))
+    })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'about' }}>
+        <RecoveryNotice />
+      </Harness>
+    )
+
+    expect(await screen.findByText('A change was cut off before it finished')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open History' })).toBeInTheDocument()
+    expect(screen.queryByText(/we put things back as they were/i)).toBeNull()
+    expect(screen.queryByText(/nothing more to do/i)).toBeNull()
+  })
+
+  it('does not call a non-cache cannot-undo entry a temporary cache clear, and still offers no Undo', async () => {
+    const api = fakeApi({
+      'journal:list': [
+        sampleJournalEntry({
+          id: 'e-non-cache',
+          action: 'share-receive',
+          summary: 'Got shared save',
+          status: 'needs-attention',
+          undo: 'cannot-undo'
+        })
+      ]
+    })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'about' }}>
+        <RecoveryNotice />
+      </Harness>
+    )
+
+    expect(await screen.findByText('A change was cut off before it finished')).toBeInTheDocument()
+    expect(screen.getByText(/We could not put everything back on our own/)).toBeInTheDocument()
+    expect(screen.queryByText(/temporary cache/i)).toBeNull()
+    expect(screen.queryByText(/nothing more to do/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Open History' })).toBeNull()
+    expect(screen.queryByText(/undo/i)).toBeNull()
+  })
+
   it('renders nothing when mounted without ApiProvider', () => {
     const { container } = render(
       <NavProvider initial={{ screen: 'about' }}>
