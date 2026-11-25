@@ -111,12 +111,13 @@ export function HistoryScreen() {
 
   const rows = useMemo<HistoryRow[]>(() => groupHistoryEntries(entries), [entries])
 
-  // The Undo button turns into a label, so keep keyboard focus on its row.
+  // The Undo button turns into a label or its row is dropped, so keep keyboard focus on the page.
   useEffect(() => {
     if (!focusEntryId) return
     const active = document.activeElement
     if (!active || active === document.body) {
-      document.getElementById(`history-entry-${focusEntryId}`)?.focus()
+      const row = document.getElementById(`history-entry-${focusEntryId}`)
+      ;(row ?? headingRef.current)?.focus()
     }
     setFocusEntryId(null)
   }, [focusEntryId, entries])
@@ -149,6 +150,12 @@ export function HistoryScreen() {
         }
 
         if (outcome.status === 'refused') {
+          // An in-progress entry that never ran is dropped from the journal on undo: nothing changed, so nothing to say.
+          if (outcome.refusal.why === 'out-of-date' && outcome.refusal.detail === 'nothing-to-do') {
+            setEntries((prev) => prev.filter((e) => e.id !== entry.id))
+            setFocusEntryId(entry.id)
+            return
+          }
           setErrorState({ entryId: entry.id, summary: entry.summary, refusal: outcome.refusal })
           return
         }

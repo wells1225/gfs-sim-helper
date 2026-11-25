@@ -45,6 +45,7 @@ export function FindingActions({ finding }: { finding: Finding }) {
   const [undoBusy, setUndoBusy] = useState(false)
   const mountedRef = useRef(true)
   const cardRef = useRef<HTMLDivElement>(null)
+  const focusCardOnIdleRef = useRef(false)
 
   useEffect(() => {
     mountedRef.current = true
@@ -57,7 +58,10 @@ export function FindingActions({ finding }: { finding: Finding }) {
 
   // The clicked button goes away when the card changes, so keep keyboard focus on the card.
   useEffect(() => {
-    if (state.phase === 'idle') return
+    if (state.phase === 'idle') {
+      if (!focusCardOnIdleRef.current) return
+      focusCardOnIdleRef.current = false
+    }
     const active = document.activeElement
     if (!active || active === document.body) {
       cardRef.current?.focus()
@@ -111,6 +115,14 @@ export function FindingActions({ finding }: { finding: Finding }) {
         return
       }
       if (outcome.status === 'refused') {
+        // A stopped fix that never changed anything is dropped on undo: return to idle with no error and no toast.
+        if (outcome.refusal.why === 'out-of-date' && outcome.refusal.detail === 'nothing-to-do') {
+          if (mountedRef.current) {
+            focusCardOnIdleRef.current = true
+            setState({ phase: 'idle' })
+          }
+          return
+        }
         if (mountedRef.current) {
           setState({ phase: 'refused', retry, refusal: outcome.refusal })
         } else {
