@@ -274,7 +274,9 @@ export interface AppContext {
   pickFolder(): Promise<string | null> // Electron's folder dialog on the app window; null when she cancels
   openWeb(url: string): Promise<'opened' | 'refused'> // only what safeWebLink passes reaches the browser, as its url
   // The start-up recovery: index.ts calls it once before the window opens. Lazy, run once, never rejects; every later
-  // call gives the same promise. The journal channels and every changing fix call wait for it.
+  // call gives the same promise. The journal channels, every changing fix call, and every share:* handler except
+  // share:open-link and the two share:find-* wait for it. A 'failed' recovery does not stop a share call: the checks
+  // in receive.ts and the gate still decide.
   startupRecovery(): Promise<StartupRecovery>
   busy(): boolean // true while a gate write, a safety or fixes call, or a changing IPC call runs; update:install refuses 'busy' then
   holdBusy?(): () => void // keeps busy() true until the returned function is called; registerIpc holds it for each CHANGING_CHANNELS call
