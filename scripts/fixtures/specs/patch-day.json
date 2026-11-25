@@ -1,0 +1,52 @@
+{
+  "name": "patch-day",
+  "description": "Post-update state where the game disabled mods and script mods while mods are still installed.",
+  "seed": 2002,
+  "baseTime": "2026-11-20T18:00:00.000Z",
+  "gameInstall": {
+    "relPath": "Program Files/EA Games/The Sims 4",
+    "version": "1.129.39.1030",
+    "packs": ["EP01", "EP02", "GP02", "SP18"]
+  },
+  "userFolders": [
+    {
+      "relPath": "Users/Player/Documents/Electronic Arts/The Sims 4",
+      "gameVersion": "1.129.39.1030",
+      "gameVersionMtime": "2026-11-20T18:00:00.000Z",
+      "options": {
+        "modsdisabled": 1,
+        "scriptmodsenabled": 0,
+        "showmodliststartup": 1
+      },
+      "optionsMtime": "2026-11-20T18:05:00.000Z",
+      "resourceCfgDepth": 5,
+      "thumbCacheMtime": "2026-10-20T10:00:00.000Z",
+      "packages": [
+        {
+          "relPath": "CAS/sample_sweater.package",
+          "mtime": "2026-10-25T10:00:00.000Z",
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0002000000000001" }
+          ]
+        },
+        {
+          "relPath": "Gameplay/more_columns.package",
+          "mtime": "2026-10-25T10:05:00.000Z",
+          "keys": [
+            { "type": "0x03B33DDF", "group": "0x00000000", "instance": "0x0002000000000002" }
+          ]
+        }
+      ],
+      "scripts": [
+        {
+          "relPath": "UI_Cheats/ui_cheats_extension.ts4script",
+          "mtime": "2026-10-25T10:10:00.000Z",
+          "entries": [
+            "ui_cheats/__init__.pyc",
+            "ui_cheats/cheats.pyc"
+          ]
+        }
+      ]
+    }
+  ]
+}

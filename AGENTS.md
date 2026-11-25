@@ -15,6 +15,7 @@ herself, so every screen is for a non-technical player.
 ## Commands
 
 - Run one test file: `npx vitest run <path/to/file.test.ts>`
+- Build the fake Sims 4 folders: `npm run fixtures` (plain `node` runs the `.ts` file, so Node 22.18 or newer)
 - Full local check: `npm run typecheck && npm test && npm run build`
 - Build the Windows NSIS installer: `npm run dist:win` (runs `electron-vite build` then `electron-builder --win nsis --x64`)
 - Installed-app Playwright smoke test (Windows CI): `npm run test:e2e`
@@ -26,7 +27,8 @@ herself, so every screen is for a non-technical player.
 - The app only acts when she clicks. Scanning reads files and changes nothing. One exception (Tyler, 2026-11-24):
   when a change was cut off by a crash, the app puts things back as they were when it next opens, after checking
   the backup, and then tells her.
-- Tests run against fixture folders checked into the repo, never against a real game folder.
+- Tests run against fake game folders, never against a real one. The specs in `scripts/fixtures/specs/` are committed;
+  `npm run fixtures` builds them into `test/fixtures/<spec>/` (git-ignored). Change a spec, not the output.
 
 ## Checks (this Mac runs out of memory)
 

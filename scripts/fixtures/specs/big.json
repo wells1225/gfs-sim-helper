@@ -1,0 +1,32 @@
+{
+  "name": "big",
+  "description": "Large performance fixture with 5,000 DBPF 2.1 packages and 300 .ts4script mods nested to realistic depths.",
+  "seed": 8008,
+  "baseTime": "2026-11-20T18:00:00.000Z",
+  "gameInstall": {
+    "relPath": "Program Files/EA Games/The Sims 4",
+    "version": "1.129.39.1030",
+    "packs": ["EP01", "EP02", "EP03", "EP05", "EP08", "EP11", "GP02", "GP07", "SP18", "SP31", "FP01"],
+    "deltaOnlyPacks": ["EP15", "GP12"]
+  },
+  "userFolders": [
+    {
+      "relPath": "Users/Player/Documents/Electronic Arts/The Sims 4",
+      "gameVersion": "1.129.39.1030",
+      "gameVersionMtime": "2026-11-10T18:00:00.000Z",
+      "options": {
+        "modsdisabled": 0,
+        "scriptmodsenabled": 1,
+        "showmodliststartup": 1
+      },
+      "resourceCfgDepth": 5,
+      "thumbCacheMtime": "2026-11-20T18:00:00.000Z",
+      "bulkMods": {
+        "packageCount": 5000,
+        "scriptCount": 300,
+        "maxPackageDepth": 5,
+        "maxScriptDepth": 1
+      }
+    }
+  ]
+}

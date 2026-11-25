@@ -1,0 +1,225 @@
+{
+  "name": "exceptions",
+  "description": "Game-only lastException, mod-attributable lastException matching a fixture .ts4script .pyc, cut-off lastException, lastUIException, lastCrash, BE-ExceptionReport.html, MCCC log, and inferred CurseForge AddonGameInstance.json.",
+  "seed": 7007,
+  "baseTime": "2026-11-20T20:00:00.000Z",
+  "gameInstall": {
+    "relPath": "Program Files/EA Games/The Sims 4",
+    "version": "1.129.39.1030",
+    "packs": ["EP01", "EP02", "GP02", "SP18", "FP01"]
+  },
+  "userFolders": [
+    {
+      "relPath": "Users/Player/Documents/Electronic Arts/The Sims 4",
+      "gameVersion": "1.129.39.1030",
+      "gameVersionMtime": "2026-11-10T18:00:00.000Z",
+      "options": {
+        "modsdisabled": 0,
+        "scriptmodsenabled": 1,
+        "showmodliststartup": 1
+      },
+      "resourceCfgDepth": 5,
+      "thumbCacheMtime": "2026-11-20T20:00:00.000Z",
+      "packages": [
+        {
+          "relPath": "sample_cozy_sofa.package",
+          "mtime": "2026-11-15T12:00:00.000Z",
+          "keys": [
+            { "type": "0x319E4F1D", "group": "0x00000000", "instance": "0x0007000000000001" }
+          ]
+        },
+        {
+          "relPath": "custom_interaction_override.package",
+          "mtime": "2026-11-15T12:05:00.000Z",
+          "keys": [
+            { "type": "0xE882D22F", "group": "0x00000000", "instance": "0x0000000000021615" }
+          ]
+        }
+      ],
+      "scripts": [
+        {
+          "relPath": "WickedWardrobe/wicked_wardrobe.ts4script",
+          "mtime": "2026-11-15T12:10:00.000Z",
+          "entries": [
+            "wicked_wardrobe/__init__.pyc",
+            "wicked_wardrobe/outfit_picker.pyc"
+          ]
+        },
+        {
+          "relPath": "MCCC/mc_cmd_center.ts4script",
+          "mtime": "2026-11-15T12:15:00.000Z",
+          "entries": [
+            "mc_cmd_center/__init__.pyc",
+            "mc_cmd_center/mc_injections.pyc"
+          ]
+        }
+      ],
+      "logs": {
+        "lastExceptions": [
+          {
+            "fileName": "lastException_63887256771.txt",
+            "mtime": "2026-11-20T19:42:07.000Z",
+            "reports": [
+              {
+                "sessionId": "0a1b2c3d4e5f60718293a4b5",
+                "createTime": "2026-11-20 19:42:07",
+                "buildSignature": "Local.Unknown.Unknown.1.129.39.1030-1.200.000.999.Release",
+                "categoryId": "tunable.py:2138",
+                "message": "[maxisdev] Caught exception loading reference. RefName: 136725 Manager: InstanceManager_interaction. TunableReference is set to a value that is not allowed by its class restriction. (ValueError: TunableReference is set to a value that is not allowed by its class restriction.)",
+                "tracebackLines": [
+                  "  File \"T:\\InGame\\Gameplay\\Scripts\\Core\\sims4\\tuning\\instance_manager.py\", line 433, in load_data_into_class_instances",
+                  "  File \"T:\\InGame\\Gameplay\\Scripts\\Core\\sims4\\tuning\\tunable.py\", line 2138, in load_etree_node",
+                  "ValueError: TunableReference is set to a value that is not allowed by its class restriction."
+                ]
+              },
+              {
+                "sessionId": "0a1b2c3d4e5f60718293a4b5",
+                "createTime": "2026-11-20 19:42:08",
+                "buildSignature": "Local.Unknown.Unknown.1.129.39.1030-1.200.000.999.Release",
+                "categoryId": "tunable.py:2138",
+                "message": "[maxisdev] Caught exception loading reference. RefName: 136725 Manager: InstanceManager_interaction. (ValueError: duplicate report in same category)",
+                "tracebackLines": [
+                  "  File \"T:\\InGame\\Gameplay\\Scripts\\Core\\sims4\\tuning\\instance_manager.py\", line 433, in load_data_into_class_instances",
+                  "  File \"T:\\InGame\\Gameplay\\Scripts\\Core\\sims4\\tuning\\tunable.py\", line 2138, in load_etree_node",
+                  "ValueError: TunableReference is set to a value that is not allowed by its class restriction."
+                ]
+              }
+            ]
+          },
+          {
+            "fileName": "lastException_63887259912.txt",
+            "mtime": "2026-11-20T19:51:12.000Z",
+            "reports": [
+              {
+                "sessionId": "1b2c3d4e5f60718293a4b5c6",
+                "createTime": "2026-11-20 19:51:12",
+                "buildSignature": "Local.Unknown.Unknown.1.129.39.1030-1.200.000.999.Release",
+                "categoryId": "outfit_picker.py:142",
+                "message": "Exception in Sim Timeline: Exception running Element (AttributeError: 'SimInfo' object has no attribute 'get_current_outfit_tag')",
+                "tracebackLines": [
+                  "  File \"T:\\InGame\\Gameplay\\Scripts\\Server\\scheduling.py\", line 219, in simulate",
+                  "  File \"T:\\InGame\\Gameplay\\Scripts\\Server\\elements.py\", line 376, in _run",
+                  "  File \"C:\\Users\\ModAuthor\\Projects\\wicked_wardrobe\\outfit_picker.py\", line 142, in apply_outfit",
+                  "AttributeError: 'SimInfo' object has no attribute 'get_current_outfit_tag'"
+                ]
+              }
+            ]
+          },
+          {
+            "fileName": "lastException_63887260105.txt",
+            "mtime": "2026-11-20T19:55:00.000Z",
+            "truncated": true,
+            "reports": [
+              {
+                "sessionId": "2c3d4e5f60718293a4b5c6d7",
+                "createTime": "2026-11-20 19:55:00",
+                "buildSignature": "Local.Unknown.Unknown.1.129.39.1030-1.200.000.999.Release",
+                "categoryId": "zone.py:890",
+                "message": "Exception during zone spin up before hard exit (RuntimeError: truncated log fixture)",
+                "tracebackLines": [
+                  "  File \"T:\\InGame\\Gameplay\\Scripts\\Server\\zone.py\", line 890, in on_loading_screen_animation_finished",
+                  "  File \"C:\\Users\\ModAuthor\\Projects\\wicked_wardrobe\\outfit_picker.py\", line 88, in on_zone_load",
+                  "RuntimeError: truncated log fixture"
+                ]
+              }
+            ]
+          }
+        ],
+        "lastUiExceptions": [
+          {
+            "fileName": "lastUIException.txt",
+            "mtime": "2026-11-20T19:48:30.000Z",
+            "sessionId": "3d4e5f60718293a4b5c6d7e8",
+            "createTime": "2026-11-20 19:48:30",
+            "buildSignature": "Local.Unknown.Unknown.1.129.39.1030-1.200.000.999.Release",
+            "categoryId": "(AS)widgets.Example::ExampleWidget/onUpdate",
+            "errorText": "TypeError: Error #1009: Cannot access a property or method of a null object reference.\n\tat widgets.Example::ExampleWidget/onUpdate()\n\tat olympus.controls::GUIComponent/validateNow()"
+          }
+        ],
+        "lastCrashes": [
+          {
+            "fileName": "lastCrash.txt",
+            "mtime": "2026-11-20T19:58:51.000Z",
+            "sessionId": "0a1b2c3d4e5f60718293a4b",
+            "createTime": "2026-11-20 19:58:51",
+            "buildSignature": "Local.Unknown.Unknown.1.129.39.1030-1.200.000.999.Release",
+            "categoryId": "0xce2052",
+            "stack": "0xce2052"
+          }
+        ],
+        "betterExceptions": [
+          {
+            "fileName": "BE-ExceptionReport.html",
+            "mtime": "2026-11-20T19:51:15.000Z",
+            "createTime": "2026-11-20 19:51:12",
+            "buildSignature": "1.129.39.1030-1.200.000.999.Release",
+            "categoryId": "outfit_picker.py:142",
+            "possibleCause": "wicked_wardrobe.ts4script",
+            "confidence": 90,
+            "recommendedAction": "Update or remove wicked_wardrobe.ts4script.",
+            "rawReport": {
+              "sessionId": "1b2c3d4e5f60718293a4b5c6",
+              "createTime": "2026-11-20 19:51:12",
+              "buildSignature": "Local.Unknown.Unknown.1.129.39.1030-1.200.000.999.Release",
+              "categoryId": "outfit_picker.py:142",
+              "message": "Exception in Sim Timeline: Exception running Element (AttributeError: 'SimInfo' object has no attribute 'get_current_outfit_tag')",
+              "tracebackLines": [
+                "  File \"T:\\InGame\\Gameplay\\Scripts\\Server\\scheduling.py\", line 219, in simulate",
+                "  File \"C:\\Users\\ModAuthor\\Projects\\wicked_wardrobe\\outfit_picker.py\", line 142, in apply_outfit",
+                "AttributeError: 'SimInfo' object has no attribute 'get_current_outfit_tag'"
+              ]
+            },
+            "modList": [
+              "sample_cozy_sofa.package*11/15/2026",
+              "WickedWardrobe\\wicked_wardrobe.ts4script*11/15/2026"
+            ]
+          }
+        ],
+        "mcccExceptions": [
+          {
+            "relPath": "MCCC/mc_lastexception.html",
+            "mtime": "2026-11-20T19:51:18.000Z",
+            "createTime": "2026-11-20 19:51:12",
+            "gameVersion": "1.129.39.1030",
+            "tracebackLines": [
+              "  File \"T:\\InGame\\Gameplay\\Scripts\\Server\\scheduling.py\", line 219, in simulate",
+              "  File \"C:\\Users\\ModAuthor\\Projects\\wicked_wardrobe\\outfit_picker.py\", line 142, in apply_outfit",
+              "AttributeError: 'SimInfo' object has no attribute 'get_current_outfit_tag'"
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "curseForge": {
+    "relPath": "Users/Player/AppData/Roaming/CurseForge/agent/GameInstances/AddonGameInstance.json",
+    "gameInstanceGuid": "b1c2d3e4-f5a6-47b8-9c0d-1e2f3a4b5c6d",
+    "installPath": "C:\\Users\\Player\\Documents\\Electronic Arts\\The Sims 4",
+    "installedAddons": [
+      {
+        "addonID": 900101,
+        "fileId": 5500101,
+        "displayName": "Sample Cozy Sofa CC",
+        "fileNameOnDisk": "sample_cozy_sofa.package",
+        "fileDate": "2026-11-15T12:00:00Z",
+        "releaseType": 1,
+        "downloadUrl": "https://edge.forgecdn.net/files/5500/101/sample_cozy_sofa.package",
+        "modules": [
+          { "name": "sample_cozy_sofa.package", "fingerprint": 2841923411 }
+        ]
+      },
+      {
+        "addonID": 900202,
+        "fileId": 5500202,
+        "displayName": "Wicked Wardrobe Script Mod",
+        "fileNameOnDisk": "WickedWardrobe\\wicked_wardrobe.ts4script",
+        "fileDate": "2026-11-15T12:10:00Z",
+        "releaseType": 1,
+        "downloadUrl": "https://edge.forgecdn.net/files/5500/202/wicked_wardrobe.zip",
+        "modules": [
+          { "name": "wicked_wardrobe.ts4script", "fingerprint": 3198471209 }
+        ]
+      }
+    ]
+  }
+}

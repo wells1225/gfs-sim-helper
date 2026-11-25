@@ -1,0 +1,81 @@
+{
+  "name": "duplicates",
+  "description": "Byte-identical package and script mod copies in two places, Steam install path, and a stale thumbnail cache.",
+  "seed": 4004,
+  "baseTime": "2026-11-20T18:00:00.000Z",
+  "gameInstall": {
+    "relPath": "Program Files (x86)/Steam/steamapps/common/The Sims 4",
+    "version": "1.129.39.1030",
+    "packs": ["EP01", "EP02", "GP02", "SP18"]
+  },
+  "userFolders": [
+    {
+      "relPath": "Users/Player/Documents/Electronic Arts/The Sims 4",
+      "gameVersion": "1.129.39.1030",
+      "gameVersionMtime": "2026-11-10T18:00:00.000Z",
+      "options": {
+        "modsdisabled": 0,
+        "scriptmodsenabled": 1,
+        "showmodliststartup": 1
+      },
+      "resourceCfgDepth": 5,
+      "thumbCacheMtime": "2026-11-01T10:00:00.000Z",
+      "packages": [
+        {
+          "relPath": "CAS/Hair/sample_hair_01.package",
+          "mtime": "2026-11-18T14:00:00.000Z",
+          "payloadSeed": 7701,
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0004000000000001" },
+            { "type": "0x220557DA", "group": "0x00000000", "instance": "0x0004000000000002" }
+          ]
+        },
+        {
+          "relPath": "CurseForge/sample_hair_01.package",
+          "mtime": "2026-11-18T14:05:00.000Z",
+          "payloadSeed": 7701,
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0004000000000001" },
+            { "type": "0x220557DA", "group": "0x00000000", "instance": "0x0004000000000002" }
+          ]
+        },
+        {
+          "relPath": "BuildBuy/lamp_a.package",
+          "mtime": "2026-11-18T14:10:00.000Z",
+          "payloadSeed": 7702,
+          "keys": [
+            { "type": "0x319E4F1D", "group": "0x00000000", "instance": "0x0004000000000099" }
+          ]
+        },
+        {
+          "relPath": "BuildBuy/lamp_b.package",
+          "mtime": "2026-11-18T14:15:00.000Z",
+          "payloadSeed": 7703,
+          "keys": [
+            { "type": "0x319E4F1D", "group": "0x00000000", "instance": "0x0004000000000099" }
+          ]
+        }
+      ],
+      "scripts": [
+        {
+          "relPath": "HelperMod/helper_mod.ts4script",
+          "mtime": "2026-11-18T14:20:00.000Z",
+          "payloadSeed": 7801,
+          "entries": [
+            "helper_mod/__init__.pyc",
+            "helper_mod/actions.pyc"
+          ]
+        },
+        {
+          "relPath": "BackupCopy/helper_mod.ts4script",
+          "mtime": "2026-11-18T14:25:00.000Z",
+          "payloadSeed": 7801,
+          "entries": [
+            "helper_mod/__init__.pyc",
+            "helper_mod/actions.pyc"
+          ]
+        }
+      ]
+    }
+  ]
+}
