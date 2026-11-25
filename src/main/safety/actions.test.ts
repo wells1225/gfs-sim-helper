@@ -1272,7 +1272,8 @@ describe('undo', () => {
     expect(undone.status).not.toBe('refused') // it reached the clean-up
     expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
     if (undone.status === 'stopped-part-way') {
-      expect(undone.detail).toMatch(/lamp_[ab]\.package/)
+      expect(undone.detail).toMatch(/^This file did not come back as it was: lamp_[ab]\.package$/)
+      expect(undone.detail).not.toContain('back where it was')
       expect(undone.detail).not.toContain(ws.root)
       expect(undone.detail).not.toContain('holding')
     }
