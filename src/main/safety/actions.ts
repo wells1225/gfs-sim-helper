@@ -368,18 +368,18 @@ export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgres
 /**
  * What History says about the steps undo skipped: each file by its name alone, and nothing else. A file of hers that
  * changed and an edit whose saved copy in holding was missing or changed (her file is as the change left it) each
- * get their own sentence.
+ * get their own sentence, and each sentence ends with a full stop so two never run together after a file name.
  */
 function skippedDetail(changed: string[], copyGone: string[]): string | null {
   const sentences: string[] = []
-  if (changed.length === 1) sentences.push(`This file is not as the change left it: ${changed[0]}`)
-  if (changed.length > 1) sentences.push(`These files are not as the change left them: ${changed.join(', ')}`)
+  if (changed.length === 1) sentences.push(`This file is not as the change left it: ${changed[0]}.`)
+  if (changed.length > 1) sentences.push(`These files are not as the change left them: ${changed.join(', ')}.`)
   if (copyGone.length === 1) {
-    sentences.push(`The app's copy of this file was missing or changed, so it was left as it is: ${copyGone[0]}`)
+    sentences.push(`The app's copy of this file was missing or changed, so it was left as it is: ${copyGone[0]}.`)
   }
   if (copyGone.length > 1) {
     sentences.push(
-      `The app's copies of these files were missing or changed, so they were left as they are: ${copyGone.join(', ')}`
+      `The app's copies of these files were missing or changed, so they were left as they are: ${copyGone.join(', ')}.`
     )
   }
   return sentences.length === 0 ? null : sentences.join(' ')
