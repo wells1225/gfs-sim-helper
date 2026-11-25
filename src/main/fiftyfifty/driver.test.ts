@@ -964,8 +964,44 @@ describe('a damaged progress file', () => {
       status: 'stopped-part-way',
       state: null,
       notBack: ['dir:g0', 'dir:g1'],
-      detail: 'undo blew up'
+      detail: 'Some mods did not finish moving. Try again in a moment.'
     })
     expect(await stateFileExists()).toBe(true)
+  })
+})
+
+describe('a part-way detail is plain words, never a raw error or a path', () => {
+  const RAW = `EPERM: operation not permitted, rename '${join('C:', 'Users', 'her', 'Mods', 'a.package')}'`
+
+  function expectPlain(detail: string): void {
+    expect(detail).not.toContain('EPERM')
+    expect(detail).not.toContain('a.package')
+    expect(detail).not.toContain(tmp)
+    expect(detail).not.toMatch(/[\\:]/)
+    expect(detail.replaceAll('50/50', '')).not.toContain('/')
+    expect(detail).toMatch(/^[A-Z].*\.$/)
+  }
+
+  it('a setAside that throws with a raw error says only that some mods did not finish moving', async () => {
+    const deps = makeDeps()
+    await start(deps, scanWith(makeGroups(8)))
+    fixes.setAside = async () => {
+      throw new Error(RAW)
+    }
+    const result = await beginRound(deps)
+    expect(result.status).toBe('stopped-part-way')
+    if (result.status !== 'stopped-part-way') return
+    expectPlain(result.detail)
+    expect(result.detail).toBe('Some mods did not finish moving. Try again in a moment.')
+  })
+
+  it('a progress save the gate fails part way says only that the progress was not saved', async () => {
+    const deps = makeDeps()
+    gate.next = { status: 'failed', opsDone: 1, detail: `write ${join(paths.stateDir, 'fiftyfifty.json')}: ${RAW}` }
+    const result = await start(deps, scanWith(makeGroups(8)))
+    expect(result.status).toBe('stopped-part-way')
+    if (result.status !== 'stopped-part-way') return
+    expectPlain(result.detail)
+    expect(result.detail).toBe('The 50/50 test could not save its progress. Try again in a moment.')
   })
 })
