@@ -226,11 +226,11 @@ async function removeCopiesLeft(deps: SafetyDeps, entry: JournalEntry, indexes: 
   return detail
 }
 
-/** Says where the copy is only when the path proves it: the holding folder, or her Mods folder. */
+/** Says where the copy is only when the path proves it: kept by the app, or in her Mods folder. Never a path. */
 function copyLeftDetail(deps: SafetyDeps, entry: JournalEntry, file: string): string {
   const name = basename(file)
   if (isInside(file, deps.paths.holdingDir) && !samePath(file, deps.paths.holdingDir)) {
-    return `This file is back where it was, and a copy of it is still in the holding folder: ${name}`
+    return `This file is back where it was, and the app kept a spare copy of it to be safe: ${name}`
   }
   const mods = join(entry.folderPath, 'Mods')
   if (isInside(file, mods) && !samePath(file, mods)) {
