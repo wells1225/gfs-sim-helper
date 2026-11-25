@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, utimes, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -303,6 +303,8 @@ describe('runAction', () => {
       if (undone.status === 'stopped-part-way') {
         expect(undone.detail).toContain('still in the holding folder')
         expect(undone.detail).toContain('lamp_b.package')
+        expect(undone.detail).not.toContain(ws.root)
+        expect(undone.detail).not.toContain(ws.paths.holdingDir)
       }
       // lamp_a still comes back: a refused clean-up does not stop the rest of the undo.
       expect(await pathExists(join(ws.mods, 'BuildBuy', 'lamp_a.package'))).toBe(true)
@@ -325,7 +327,118 @@ describe('runAction', () => {
       expect(ws.gate.requests.filter((r) => r.ops.some((op) => op.op === 'remove'))).toHaveLength(1) // it was tried, and failed
     })
 
-    it('a copy left by a move inside Mods is never removed: the entry needs attention', async () => {
+    it('both places, removal throws: both are kept, lamp_a still comes back, and the entry needs attention', async () => {
+      const ws = await backedUp()
+      const lampB = await sha256File(join(ws.mods, 'BuildBuy', 'lamp_b.package'))
+      const entry = await stoppedAtLampB(ws, 'both')
+      ws.gate.hooks.beforeRequest = (request) => {
+        if (request.ops.some((op) => op.op === 'remove')) throw new Error(`EPERM on ${ws.paths.holdingDir}`)
+        return undefined
+      }
+
+      const undone = await undo(ws.deps, entry.id)
+
+      expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+      if (undone.status === 'stopped-part-way') {
+        expect(undone.detail).toContain('still in the holding folder')
+        expect(undone.detail).toContain('lamp_b.package')
+        expect(undone.detail).not.toContain('EPERM')
+        expect(undone.detail).not.toContain(ws.root)
+      }
+      expect(await pathExists(join(ws.mods, 'BuildBuy', 'lamp_a.package'))).toBe(true)
+      expect(await sha256File(join(ws.mods, 'BuildBuy', 'lamp_b.package'))).toBe(lampB)
+      expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package'))).toBe(true)
+    })
+
+    it('both places, holding copy changes during undo before cleanup: re-hash keeps both files and sends no remove', async () => {
+      const ws = await backedUp()
+      const lampB = await sha256File(join(ws.mods, 'BuildBuy', 'lamp_b.package'))
+      const entry = await stoppedAtLampB(ws, 'both')
+      const copy = held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package')
+      ws.gate.hooks.afterOp = async (op, _i, request) => {
+        if (request.reason === 'undo' && op.op === 'move') await writeFile(copy, 'changed mid-undo')
+      }
+
+      const undone = await undo(ws.deps, entry.id)
+
+      expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+      if (undone.status === 'stopped-part-way') {
+        expect(undone.detail).toContain('lamp_b.package')
+        expect(undone.detail).not.toContain(ws.root)
+      }
+      expect(await pathExists(join(ws.mods, 'BuildBuy', 'lamp_a.package'))).toBe(true)
+      expect(await sha256File(join(ws.mods, 'BuildBuy', 'lamp_b.package'))).toBe(lampB)
+      expect(await readFile(copy, 'utf8')).toBe('changed mid-undo')
+      expect(ws.gate.requests.some((r) => r.ops.some((op) => op.op === 'remove'))).toBe(false)
+    })
+
+    it('two copies left in holding: a refused removal on one does not block removing the other', async () => {
+      const ws = await backedUp()
+      const moved = await runAction(ws.deps, disablePlan(ws))
+      if (moved.status !== 'done') throw new Error(moved.status)
+      const heldA = held(ws, 'hold-1', 'BuildBuy', 'lamp_a.package')
+      const heldB = held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package')
+      await copyFile(heldA, join(ws.mods, 'BuildBuy', 'lamp_a.package'))
+      await copyFile(heldB, join(ws.mods, 'BuildBuy', 'lamp_b.package'))
+      ws.gate.hooks.beforeRequest = (request) =>
+        request.ops.some((op) => op.op === 'remove' && op.path === heldB)
+          ? { status: 'refused', refusal: { reason: 'saves-or-tray', path: heldB } }
+          : undefined
+
+      const undone = await undo(ws.deps, moved.entry.id)
+
+      expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+      if (undone.status === 'stopped-part-way') {
+        expect(undone.entry.steps.map((s) => s.state)).toEqual(['reverted', 'applied'])
+      }
+      expect(await pathExists(heldA)).toBe(false)
+      expect(await pathExists(heldB)).toBe(true)
+      expect(await pathExists(join(ws.mods, 'BuildBuy', 'lamp_a.package'))).toBe(true)
+      expect(await pathExists(join(ws.mods, 'BuildBuy', 'lamp_b.package'))).toBe(true)
+    })
+
+    it('a symlink inside holding pointing to backupsDir is never removed', async () => {
+      const ws = await backedUp()
+      const status = await backupStatus(ws.deps, ws.simsFolder)
+      if (status.state !== 'verified') throw new Error('expected verified backup')
+      const lampB = join(ws.mods, 'BuildBuy', 'lamp_b.package')
+      const backupMods = join(ws.paths.backupsDir, status.backupId, 'files', 'Mods')
+      const backupLampB = join(backupMods, 'BuildBuy', 'lamp_b.package')
+      const heldMods = join(ws.paths.holdingDir, 'hold-sym', 'Mods')
+      const heldLampB = join(heldMods, 'BuildBuy', 'lamp_b.package')
+      await mkdir(join(ws.paths.holdingDir, 'hold-sym'), { recursive: true })
+      await symlink(backupMods, heldMods)
+      await mkdir(ws.paths.journalDir, { recursive: true })
+      const sha = await sha256File(lampB)
+      const bytes = (await readFile(lampB)).length
+      await writeFile(
+        join(ws.paths.journalDir, 'hold-sym.json'),
+        JSON.stringify({
+          id: 'hold-sym',
+          at: '2026-11-24T12:00:00.000Z',
+          action: 'disable-group',
+          summary: 'Set aside BuildBuy',
+          origin: { by: 'fix' },
+          folderPath: ws.simsFolder,
+          groupId: 'dir:buildbuy',
+          groupLabel: 'BuildBuy',
+          hasScript: false,
+          backupId: status.backupId,
+          steps: [{ kind: 'move', from: lampB, to: heldLampB, bytes, sha256: sha, state: 'applied' }],
+          status: 'needs-attention',
+          undo: 'can-undo',
+          undoneAt: null
+        })
+      )
+
+      const undone = await undo(ws.deps, 'hold-sym')
+
+      expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+      expect(await pathExists(backupLampB)).toBe(true)
+      expect(ws.gate.requests.some((r) => r.ops.some((op) => op.op === 'remove'))).toBe(false)
+    })
+
+    it('a copy left by a move inside Mods is never removed: the entry needs attention with plain Mods wording', async () => {
       const ws = await backedUp()
       const from = join(ws.mods, 'BuildBuy', 'lamp_b.package')
       const to = join(ws.mods, 'lamp_b.package')
@@ -342,6 +455,13 @@ describe('runAction', () => {
       const undone = await undo(ws.deps, stopped.entry.id)
 
       expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+      if (undone.status === 'stopped-part-way') {
+        expect(undone.detail).not.toContain('holding folder')
+        expect(undone.detail).toContain('Mods folder')
+        expect(undone.detail).toContain('lamp_b.package')
+        expect(undone.detail).not.toContain(ws.root)
+        expect(undone.detail).not.toContain(ws.mods)
+      }
       expect(await pathExists(from)).toBe(true)
       expect(await pathExists(to)).toBe(true)
       expect(ws.gate.requests.some((r) => r.ops.some((op) => op.op === 'remove'))).toBe(false)
@@ -453,17 +573,51 @@ describe('runAction', () => {
     expect(await snapshotTree(ws.simsFolder)).toEqual(before)
   })
 
-  it('does not falsely return done if updating the journal after the fix fails', async () => {
+  it('does not falsely return done if updating the journal after the fix fails, and leaks no raw error or path', async () => {
     const ws = await backedUp()
     ws.gate.hooks.beforeRequest = (request) =>
       request.reason === 'journal' && request.ops.some((op) => op.op === 'write' && op.mode === 'replace')
-        ? { status: 'failed', opsDone: 0, detail: 'disk full' }
+        ? { status: 'failed', opsDone: 0, detail: `write ${join(ws.paths.journalDir, 'hold-1.json')}: the disk said ENOSPC` }
         : undefined
 
     const outcome = await runAction(ws.deps, disablePlan(ws))
 
     expect(outcome.status).toBe('stopped-part-way')
-    if (outcome.status === 'stopped-part-way') expect(outcome.detail).toContain('disk full')
+    if (outcome.status === 'stopped-part-way') {
+      expect(outcome.detail).toContain('History')
+      expect(outcome.detail).not.toContain('ENOSPC')
+      expect(outcome.detail).not.toContain(ws.root)
+    }
+  })
+
+  it('never leaks full file paths or raw disk error text in stopped-part-way details', async () => {
+    const ws = await backedUp()
+    ws.gate.hooks.beforeOp = (op, _i, request) =>
+      request.reason === 'fix' && op.op === 'move' && op.from.endsWith('lamp_b.package')
+        ? `move ${op.from} -> ${op.to}: the disk said EBUSY`
+        : undefined
+    const failedFix = await runAction(ws.deps, disablePlan(ws))
+    ws.gate.hooks.beforeOp = undefined
+    expect(failedFix.status).toBe('stopped-part-way')
+    if (failedFix.status === 'stopped-part-way') {
+      expect(failedFix.detail).not.toContain('EBUSY')
+      expect(failedFix.detail).not.toContain(ws.root)
+    }
+
+    const ws2 = await backedUp()
+    const moved = await runAction(ws2.deps, disablePlan(ws2))
+    if (moved.status !== 'done') throw new Error(moved.status)
+    ws2.gate.hooks.beforeOp = (op, _i, request) =>
+      request.reason === 'undo' && op.op === 'move'
+        ? `move ${op.from} -> ${op.to}: the disk said EACCES`
+        : undefined
+    const failedUndo = await undo(ws2.deps, moved.entry.id)
+    ws2.gate.hooks.beforeOp = undefined
+    expect(failedUndo.status).toBe('stopped-part-way')
+    if (failedUndo.status === 'stopped-part-way') {
+      expect(failedUndo.detail).not.toContain('EACCES')
+      expect(failedUndo.detail).not.toContain(ws2.root)
+    }
   })
 
   it('refuses an edit when the file changed since the planner read it, with nothing changed', async () => {
@@ -538,6 +692,29 @@ describe('runAction', () => {
 
     expect(second).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
     expect(await listJournal(ws.deps)).toEqual([first.entry])
+  })
+
+  it('compares exact bytes when taking back a failed journal create, not lossy UTF-8 text', async () => {
+    const ws = await backedUp()
+    const plan: ActionPlan = { ...disablePlan(ws, 'raw-bytes-1'), summary: 'Set aside \uFFFD' }
+    let rawWritten: Buffer | null = null
+    ws.gate.hooks.beforeRequest = async (request) => {
+      const write = request.ops.find((op) => op.op === 'write' && op.mode === 'create')
+      if (request.reason !== 'journal' || !write || write.op !== 'write' || typeof write.data !== 'string') return undefined
+      await mkdir(dirname(write.path), { recursive: true })
+      const utf8 = Buffer.from(write.data, 'utf8')
+      const fffd = Buffer.from('\uFFFD', 'utf8')
+      const idx = utf8.indexOf(fffd)
+      rawWritten = Buffer.concat([utf8.subarray(0, idx), Buffer.from([0xff]), utf8.subarray(idx + fffd.length)])
+      await writeFile(write.path, rawWritten)
+      return { status: 'failed', opsDone: request.ops.length - 1, detail: 'target already exists' }
+    }
+
+    const outcome = await runAction(ws.deps, plan)
+
+    expect(outcome).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
+    expect(rawWritten).not.toBeNull()
+    expect(await readFile(join(ws.paths.journalDir, 'raw-bytes-1.json'))).toEqual(rawWritten)
   })
 
   it('never throws once files have moved: a journal save that throws afterwards is a part-way stop that undo can finish', async () => {
@@ -666,6 +843,7 @@ describe('undo', () => {
     expect(outcome.status).toBe('stopped-part-way')
     if (outcome.status !== 'stopped-part-way') return
     expect(outcome.detail).toContain('lamp_b.package')
+    expect(outcome.detail).not.toContain(ws.root)
     expect(outcome.entry.status).toBe('needs-attention')
     expect(await readFile(changed, 'utf8')).toBe('edited while set aside')
     expect(await pathExists(join(ws.mods, 'BuildBuy', 'lamp_b.package'))).toBe(false)
@@ -683,6 +861,7 @@ describe('undo', () => {
     expect(outcome.status).toBe('stopped-part-way')
     if (outcome.status !== 'stopped-part-way') return
     expect(outcome.detail).toContain('lamp_b.package')
+    expect(outcome.detail).not.toContain(ws.root)
     expect(outcome.entry.status).toBe('needs-attention')
     expect(await readFile(from, 'utf8')).toBe('a new download')
     expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package'))).toBe(true)
@@ -917,6 +1096,35 @@ describe('recover', () => {
     expect(touched.map((e) => e.status)).toEqual(['undone'])
     expect(await snapshotTree(ws.simsFolder)).toEqual(before)
     expect(await pathExists(lastStep.to)).toBe(false)
+  })
+
+  it('an undo whose move back finished on disk before failing at opsDone marks that step reverted so a later update does not trap the entry', async () => {
+    const ws = await backedUp()
+    const lampA = await sha256File(join(ws.mods, 'BuildBuy', 'lamp_a.package'))
+    const moved = await runAction(ws.deps, disablePlan(ws))
+    if (moved.status !== 'done') throw new Error(moved.status)
+    ws.gate.hooks.beforeOp = async (op, _i, request) => {
+      if (request.reason !== 'undo' || op.op !== 'move' || !op.to.endsWith('lamp_b.package')) return undefined
+      await rename(op.from, op.to)
+      return `move ${op.from} -> ${op.to}: flush failed`
+    }
+
+    const first = await undo(ws.deps, moved.entry.id)
+    ws.gate.hooks.beforeOp = undefined
+
+    expect(first).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    if (first.status !== 'stopped-part-way') return
+    expect(first.entry.steps.map((s) => s.state)).toEqual(['applied', 'reverted'])
+    expect(first.detail).not.toContain(ws.root)
+
+    // CurseForge updates the already-restored lamp_b before she clicks Undo again.
+    await writeFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), 'updated by CurseForge')
+
+    const second = await undo(ws.deps, moved.entry.id)
+
+    expect(second).toMatchObject({ status: 'done', entry: { status: 'undone' } })
+    expect(await sha256File(join(ws.mods, 'BuildBuy', 'lamp_a.package'))).toBe(lampA)
+    expect(await readFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), 'utf8')).toBe('updated by CurseForge')
   })
 
   it('an undo whose move back stopped with the file at both places settles on the next undo', async () => {
