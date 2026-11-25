@@ -34,6 +34,8 @@ async function fileHash(path: string): Promise<Sha256 | null> {
 
 const ACTION_STOPPED = 'This change stopped part way through. You can undo what already moved from History.'
 const UNDO_STOPPED = 'Some files could not be put back. You can try Undo again.'
+// Caches are safe to lose: the game makes them again. So a cache clear that stops part way is settled, not undone.
+const CACHE_STOPPED = 'Some temporary cache files were cleared before it stopped. That is safe: the game makes them again.'
 const ACTION_HISTORY_NOT_SAVED = 'The files changed, but the app could not save your History record.'
 // Only used when every file is back (any file not back sets its own detail first), so it says so.
 const UNDO_HISTORY_NOT_SAVED = 'Your files are back as they were, but the app could not save this to History.'
@@ -123,6 +125,13 @@ async function inspect(step: JournalStep): Promise<StepOnDisk> {
     return { where: 'unclear', file: step.path }
   }
   return (await exists(step.path)) ? { where: 'not-done' } : { where: 'done' }
+}
+
+/** Every step still pending, and the disk shows none of them ran: a change that never started. Reads only. */
+async function neverRan(entry: JournalEntry): Promise<boolean> {
+  if (!entry.steps.every((s) => s.state === 'pending')) return false
+  for (const step of entry.steps) if ((await inspect(step)).where !== 'not-done') return false
+  return true
 }
 
 // Letter case as the gate may ignore it: A to Z and nothing else.
@@ -303,6 +312,7 @@ export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgres
     await removeEntry(deps, entry.id)
     return { status: 'refused', refusal: { why: 'gate', refusal: result.refusal } }
   }
+  if (result.status === 'failed' && entry.undo === 'cannot-undo') return await stoppedCacheClear(deps, entry)
   if (result.status === 'failed') {
     if (result.opsDone >= 0) {
       for (const [i, step] of entry.steps.entries()) if (lastOp[i]! < result.opsDone) step.state = 'applied'
@@ -468,12 +478,28 @@ export async function undoNow(deps: SafetyDeps, entryId: string, onProgress?: On
   return await revert(deps, entry, onProgress)
 }
 
-/** A cache clear cannot be undone: the next start only records how far it got. */
+/**
+ * A cache clear cannot be undone, and there is nothing to put back: the game makes its caches again. So one that
+ * stopped or was cut off is settled as done, with each step marked by what the disk shows, and never left needing
+ * attention. Returns the entry, or null when it could not be saved (it stays in progress for the next start).
+ */
 async function settleCacheClear(deps: SafetyDeps, entry: JournalEntry): Promise<JournalEntry | null> {
   for (const step of entry.steps) if ((await inspect(step)).where === 'done') step.state = 'applied'
-  entry.status = entry.steps.every((s) => s.state === 'applied') ? 'done' : 'needs-attention'
+  entry.status = 'done'
   const saved = await saveEntry(deps, entry, 'replace')
   return saved.status === 'done' ? entry : null
+}
+
+/** A cache clear whose gate request failed. One that cleared nothing never ran: its entry is taken back. */
+async function stoppedCacheClear(deps: SafetyDeps, entry: JournalEntry): Promise<FixOutcome> {
+  if (await neverRan(entry)) {
+    // If this removal fails, the entry stays in progress with every step pending, and the next start sees the same.
+    await removeEntry(deps, entry.id)
+    return NOT_STARTED
+  }
+  const settled = await settleCacheClear(deps, entry)
+  // Not saved: the entry on disk is still in progress, and the next start settles it the same way.
+  return { status: 'stopped-part-way', entry: settled ?? entry, detail: CACHE_STOPPED }
 }
 
 export async function recoverNow(deps: SafetyDeps, entries: JournalEntry[]): Promise<JournalEntry[]> {
