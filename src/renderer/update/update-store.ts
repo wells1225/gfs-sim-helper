@@ -70,6 +70,16 @@ function createUpdateStore(api: SimsHelperApi): UpdateStore {
     }, POLL_EVERY_MS)
   }
 
+  /**
+   * What the screen shows after a check. A check that failed or was rejected never takes a failed download off the
+   * screen: she clicked Try again with no connection, and the notice must still be there to try once more.
+   */
+  function afterCheck(next: UpdateState | null): UpdateState | null {
+    const shown = view.state
+    const checkFailed = next === null || (next.state === 'failed' && next.step === 'check')
+    return checkFailed && shown?.state === 'failed' && shown.step === 'download' ? shown : next
+  }
+
   async function checkByClick(): Promise<UpdateState | null> {
     actionSeq += 1
     const inFlightStart = pendingStartCheck
@@ -77,8 +87,8 @@ function createUpdateStore(api: SimsHelperApi): UpdateStore {
     if (state?.state === 'checking' && inFlightStart !== null) {
       state = await inFlightStart
     }
-    set({ state, hidden: false, busy: false })
-    return state
+    set({ state: afterCheck(state), hidden: false, busy: false })
+    return state // the real answer, so About can say the check failed
   }
 
   async function download(): Promise<void> {
@@ -109,7 +119,7 @@ function createUpdateStore(api: SimsHelperApi): UpdateStore {
       try {
         const state = await call
         if (seq !== actionSeq || view.restarting) return
-        set({ state })
+        set({ state: afterCheck(state) })
       } finally {
         if (pendingStartCheck === call) pendingStartCheck = null
       }

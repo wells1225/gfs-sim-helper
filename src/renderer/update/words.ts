@@ -25,5 +25,5 @@ export const OFF_NOTE: Record<Extract<UpdateState, { state: 'off' }>['why'], str
   'not-installed-app': 'Updates work only in the installed Sims Helper.',
   'switched-off': 'Updates are switched off on this PC.',
   'unsafe-install-folder':
-    'Updates are off because Sims Helper is installed in your Documents or OneDrive folder. Reinstall it in the folder Setup suggests to get updates.'
+    'Updates are off because Sims Helper is installed in a folder that isn’t safe to update, like Documents or OneDrive. Reinstall it in the folder Setup suggests to get updates.'
 }
