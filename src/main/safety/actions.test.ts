@@ -859,7 +859,6 @@ describe('runAction', () => {
 
   it('undo of a gate-refused fix whose take-back failed drops the entry like the next start would, and puts nothing back', async () => {
     const ws = await backedUp()
-    const before = await snapshotTree(ws.simsFolder)
     ws.gate.hooks.beforeRequest = (request) => {
       if (request.reason === 'fix') return { status: 'refused', refusal: { reason: 'game-running' } }
       if (request.reason === 'journal' && request.ops.some((op) => op.op === 'remove')) {
@@ -870,6 +869,10 @@ describe('runAction', () => {
     await runAction(ws.deps, disablePlan(ws))
     expect((await listJournal(ws.deps)).map((e) => e.status)).toEqual(['in-progress'])
     ws.gate.hooks.beforeRequest = undefined
+    // Make the backup stale so a backupFirst call before the never-ran drop would send a backup request.
+    await writeFile(join(ws.mods, 'new_hair.package'), 'new since the backup')
+    expect((await backupStatus(ws.deps, ws.simsFolder)).state).toBe('stale')
+    const before = await snapshotTree(ws.simsFolder)
     const requestsBefore = ws.gate.requests.length
 
     const outcome = await undo(ws.deps, 'hold-1')
@@ -878,6 +881,7 @@ describe('runAction', () => {
     expect(await listJournal(ws.deps)).toEqual([])
     expect(await journalFiles(ws)).toEqual([])
     expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+    expect((await backupStatus(ws.deps, ws.simsFolder)).state).toBe('stale')
     // The only request is the journal remove: no backup and no undo request.
     const made = ws.gate.requests.slice(requestsBefore)
     expect(made.map((r) => r.reason)).toEqual(['journal'])
@@ -888,7 +892,6 @@ describe('runAction', () => {
     'undo of an entry that never ran whose drop is %s stops there: nothing put back, no backup, still in progress',
     async (answer) => {
       const ws = await backedUp()
-      const before = await snapshotTree(ws.simsFolder)
       ws.gate.hooks.beforeRequest = (request) => {
         if (request.reason === 'fix') return { status: 'refused', refusal: { reason: 'game-running' } }
         if (request.reason === 'journal' && request.ops.some((op) => op.op === 'remove')) {
@@ -898,6 +901,10 @@ describe('runAction', () => {
         return undefined
       }
       await runAction(ws.deps, disablePlan(ws))
+      // Make the backup stale so a backupFirst call before the never-ran drop would send a backup request.
+      await writeFile(join(ws.mods, 'new_hair.package'), 'new since the backup')
+      expect((await backupStatus(ws.deps, ws.simsFolder)).state).toBe('stale')
+      const before = await snapshotTree(ws.simsFolder)
       const requestsBefore = ws.gate.requests.length
 
       const outcome = await undo(ws.deps, 'hold-1')
@@ -908,6 +915,7 @@ describe('runAction', () => {
           : { status: 'refused', refusal: { why: 'not-started' } }
       )
       expect((await listJournal(ws.deps)).map((e) => e.status)).toEqual(['in-progress'])
+      expect((await backupStatus(ws.deps, ws.simsFolder)).state).toBe('stale')
       expect(ws.gate.requests.slice(requestsBefore).map((r) => r.reason)).toEqual(['journal'])
       expect(await snapshotTree(ws.simsFolder)).toEqual(before)
     }
@@ -1411,6 +1419,42 @@ describe('undo', () => {
     )
     expect(await readFile(from, 'utf8')).toBe('a new download')
     expect(await sha256File(options)).toBe(afterSha256)
+    expect(outcome.entry.steps.map((s) => s.state)).toEqual(['applied', 'applied'])
+  })
+
+  it('names multiple edits whose saved copies were missing or changed with the plural sentence', async () => {
+    const ws = await backedUp()
+    const status = await backupStatus(ws.deps, ws.simsFolder)
+    if (status.state !== 'verified') throw new Error('expected a verified backup')
+    const options = join(ws.simsFolder, 'Options.ini')
+    const userSetting = join(ws.simsFolder, 'UserSetting.ini')
+    await writeFile(userSetting, '[user]\nflag = 1\n')
+    const beforeOptions = await sha256File(options)
+    const beforeUser = await sha256File(userSetting)
+    const savedOptions = join(ws.paths.holdingDir, 'two-edits-1', 'edits', 'Options.ini')
+    const savedUser = join(ws.paths.holdingDir, 'two-edits-1', 'edits', 'UserSetting.ini')
+    await mkdir(dirname(savedOptions), { recursive: true })
+    await writeFile(savedOptions, 'not what Options.ini said')
+    // savedUser is missing altogether; savedOptions has the wrong bytes.
+    await writeFile(options, '[options]\nmodsdisabled = 0\n')
+    await writeFile(userSetting, '[user]\nflag = 0\n')
+    const afterOptions = await sha256File(options)
+    const afterUser = await sha256File(userSetting)
+    await writeEntry(ws, 'two-edits-1', status.backupId, [
+      { kind: 'edit', path: options, savedCopy: savedOptions, beforeSha256: beforeOptions, afterSha256: afterOptions, state: 'applied' },
+      { kind: 'edit', path: userSetting, savedCopy: savedUser, beforeSha256: beforeUser, afterSha256: afterUser, state: 'applied' }
+    ])
+
+    const outcome = await undo(ws.deps, 'two-edits-1')
+
+    expect(outcome).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    if (outcome.status !== 'stopped-part-way') return
+    expect(outcome.detail).toBe(
+      "The app's copies of these files were missing or changed, so they were left as they are: Options.ini, UserSetting.ini"
+    )
+    expect(outcome.detail).not.toContain(ws.root)
+    expect(await sha256File(options)).toBe(afterOptions)
+    expect(await sha256File(userSetting)).toBe(afterUser)
     expect(outcome.entry.steps.map((s) => s.state)).toEqual(['applied', 'applied'])
   })
 
