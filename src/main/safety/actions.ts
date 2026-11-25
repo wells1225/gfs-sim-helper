@@ -339,9 +339,17 @@ export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgres
   return { status: 'done', entry }
 }
 
+/** What History says about the steps undo skipped: each file by its name alone, and nothing else. */
+function skippedDetail(names: string[]): string | null {
+  if (names.length === 0) return null
+  if (names.length === 1) return `This file is not as the change left it: ${names[0]}`
+  return `These files are not as the change left them: ${names.join(', ')}`
+}
+
 /**
- * Puts an entry's changes back, last step first, after asking the disk what each step did. Stops at the first file
- * that is neither where the action put it nor back where it was, and never overwrites anything.
+ * Puts an entry's changes back, last step first, after asking the disk what each step did. A file that is neither
+ * where the action put it nor back where it was (a newer download in Mods, say) is skipped and left alone, and the
+ * rest is put back. Never overwrites anything. The entry then needs attention, and names only the skipped files.
  */
 export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?: OnProgress): Promise<FixOutcome> {
   const backup = await backupFirst(deps, entry.folderPath, onProgress)
@@ -367,7 +375,7 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
   const ops: WriteOp[] = []
   const toRevert: { index: number; lastOp: number }[] = []
   const planned = new Set<string>()
-  let problem: string | null = null
+  const skipped: { index: number; name: string }[] = []
   const copiesLeft: number[] = []
   for (let i = entry.steps.length - 1; i >= 0; i -= 1) {
     const step = entry.steps[i]!
@@ -382,8 +390,8 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
       continue
     }
     if (onDisk.where === 'unclear') {
-      problem = onDisk.file
-      break
+      skipped.push({ index: i, name: basename(onDisk.file) }) // left alone: the rest of the undo goes on
+      continue
     }
     if (step.kind === 'move') {
       for (const dir of await missingDirs(dirname(step.from), planned)) ops.push({ op: 'mkdir', path: dir })
@@ -391,8 +399,8 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
     } else {
       const saved = await readFile(step.savedCopy).catch(() => null)
       if (!saved || sha256Of(saved) !== step.beforeSha256) {
-        problem = step.savedCopy
-        break
+        skipped.push({ index: i, name: basename(step.path) })
+        continue
       }
       ops.push({ op: 'write', path: step.path, data: new Uint8Array(saved), mode: 'replace' })
     }
@@ -400,7 +408,7 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
   }
 
   const statusBefore = entry.status
-  let detail: string | null = problem ? `This file is not as the change left it: ${basename(problem)}` : null
+  let detail = skippedDetail(skipped.sort((a, b) => a.index - b.index).map((s) => s.name))
   let undoFailed = false
   if (ops.length > 0) {
     // Marked in-progress first, so a crash during the undo is finished by recover() on the next start.
