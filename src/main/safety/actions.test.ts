@@ -77,6 +77,28 @@ async function journalFiles(ws: Workspace): Promise<string[]> {
   return (await pathExists(ws.paths.journalDir)) ? await readdir(ws.paths.journalDir) : []
 }
 
+/** Writes a journal entry by hand, as a crash or an odd disk could have left it. */
+async function writeEntry(ws: Workspace, id: string, backupId: string, steps: JournalEntry['steps']): Promise<void> {
+  await mkdir(ws.paths.journalDir, { recursive: true })
+  const entry: JournalEntry = {
+    id,
+    at: '2026-11-24T12:00:00.000Z',
+    action: 'disable-group',
+    summary: 'Set aside BuildBuy',
+    origin: { by: 'fix' },
+    folderPath: ws.simsFolder,
+    groupId: 'dir:buildbuy',
+    groupLabel: 'BuildBuy',
+    hasScript: false,
+    backupId,
+    steps,
+    status: 'needs-attention',
+    undo: 'can-undo',
+    undoneAt: null
+  }
+  await writeFile(join(ws.paths.journalDir, `${id}.json`), JSON.stringify(entry))
+}
+
 describe('runAction', () => {
   it('writes the journal entry before the first op, then marks every step applied', async () => {
     const ws = await backedUp()
@@ -397,7 +419,7 @@ describe('runAction', () => {
       expect(await pathExists(join(ws.mods, 'BuildBuy', 'lamp_b.package'))).toBe(true)
     })
 
-    it('a symlink inside holding pointing to backupsDir is never removed', async () => {
+    it.each(['dir', 'junction'] as const)('a %s link inside holding pointing to backupsDir is never removed', async (type) => {
       const ws = await backedUp()
       const status = await backupStatus(ws.deps, ws.simsFolder)
       if (status.state !== 'verified') throw new Error('expected verified backup')
@@ -407,7 +429,7 @@ describe('runAction', () => {
       const heldMods = join(ws.paths.holdingDir, 'hold-sym', 'Mods')
       const heldLampB = join(heldMods, 'BuildBuy', 'lamp_b.package')
       await mkdir(join(ws.paths.holdingDir, 'hold-sym'), { recursive: true })
-      await symlink(backupMods, heldMods)
+      await symlink(backupMods, heldMods, type)
       await mkdir(ws.paths.journalDir, { recursive: true })
       const sha = await sha256File(lampB)
       const bytes = (await readFile(lampB)).length
@@ -461,6 +483,56 @@ describe('runAction', () => {
         expect(undone.detail).toContain('lamp_b.package')
         expect(undone.detail).not.toContain(ws.root)
         expect(undone.detail).not.toContain(ws.mods)
+      }
+      expect(await pathExists(from)).toBe(true)
+      expect(await pathExists(to)).toBe(true)
+      expect(ws.gate.requests.some((r) => r.ops.some((op) => op.op === 'remove'))).toBe(false)
+    })
+
+    it('a copy whose path inside holding leads back to the file itself is never removed', async () => {
+      const ws = await backedUp()
+      const status = await backupStatus(ws.deps, ws.simsFolder)
+      if (status.state !== 'verified') throw new Error('expected verified backup')
+      const realDir = join(ws.paths.holdingDir, 'real')
+      const from = join(realDir, 'lamp_b.package')
+      const alias = join(ws.paths.holdingDir, 'hold-same', 'alias')
+      const to = join(alias, 'lamp_b.package')
+      await mkdir(realDir, { recursive: true })
+      await mkdir(dirname(alias), { recursive: true })
+      await copyFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), from)
+      await symlink(realDir, alias, 'junction')
+      const sha = await sha256File(from)
+      await writeEntry(ws, 'hold-same', status.backupId, [
+        { kind: 'move', from, to, bytes: (await readFile(from)).length, sha256: sha, state: 'applied' }
+      ])
+
+      const undone = await undo(ws.deps, 'hold-same')
+
+      expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+      expect(await sha256File(from)).toBe(sha)
+      expect(ws.gate.requests.some((r) => r.ops.some((op) => op.op === 'remove'))).toBe(false)
+    })
+
+    it('a copy left outside both Mods and holding is kept, and the words claim neither folder', async () => {
+      const ws = await backedUp()
+      const status = await backupStatus(ws.deps, ws.simsFolder)
+      if (status.state !== 'verified') throw new Error('expected verified backup')
+      const from = join(ws.mods, 'BuildBuy', 'lamp_b.package')
+      const to = join(ws.paths.dataDir, 'elsewhere', 'lamp_b.package')
+      await mkdir(dirname(to), { recursive: true })
+      await copyFile(from, to)
+      await writeEntry(ws, 'hold-out', status.backupId, [
+        { kind: 'move', from, to, bytes: (await readFile(from)).length, sha256: await sha256File(from), state: 'applied' }
+      ])
+
+      const undone = await undo(ws.deps, 'hold-out')
+
+      expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+      if (undone.status === 'stopped-part-way') {
+        expect(undone.detail).toContain('lamp_b.package')
+        expect(undone.detail).not.toContain('Mods folder')
+        expect(undone.detail).not.toContain('holding folder')
+        expect(undone.detail).not.toContain(ws.root)
       }
       expect(await pathExists(from)).toBe(true)
       expect(await pathExists(to)).toBe(true)
@@ -588,6 +660,22 @@ describe('runAction', () => {
       expect(outcome.detail).not.toContain('ENOSPC')
       expect(outcome.detail).not.toContain(ws.root)
     }
+  })
+
+  it('an undo the gate calls done but that moved nothing names only the file, never its full path', async () => {
+    const ws = await backedUp()
+    const moved = await runAction(ws.deps, disablePlan(ws))
+    if (moved.status !== 'done') throw new Error(moved.status)
+    ws.gate.hooks.beforeRequest = (request) => (request.reason === 'undo' ? { status: 'done' } : undefined)
+
+    const undone = await undo(ws.deps, moved.entry.id)
+
+    expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    if (undone.status === 'stopped-part-way') {
+      expect(undone.detail).toContain('lamp_b.package')
+      expect(undone.detail).not.toContain(ws.root)
+    }
+    expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package'))).toBe(true)
   })
 
   it('never leaks full file paths or raw disk error text in stopped-part-way details', async () => {
