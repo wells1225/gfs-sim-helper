@@ -91,6 +91,7 @@ function fakeEngine() {
   const atCheck: Settings[] = []
   const atDownload: Settings[] = []
   const progress: ((info: { percent: number }) => void)[] = []
+  const errorListeners: ((error: unknown) => void)[] = []
   const logged: unknown[] = []
   const loud = { info: (m?: unknown) => logged.push(m), warn: (m?: unknown) => logged.push(m), error: (m?: unknown) => logged.push(m) }
 
@@ -111,8 +112,9 @@ function fakeEngine() {
     checkForUpdates: vi.fn(async (): Promise<CheckResult> => nothingNew()),
     downloadUpdate: vi.fn(async (): Promise<unknown> => ['C:\\cache\\Sims-Helper-Setup-0.3.0.exe']),
     quitAndInstall: vi.fn((_isSilent?: boolean, _isForceRunAfter?: boolean): void => {}),
-    on(_event: 'download-progress', listener: (info: { percent: number }) => void) {
-      progress.push(listener)
+    on(event: 'download-progress' | 'error', listener: ((info: { percent: number }) => void) | ((error: unknown) => void)) {
+      if (event === 'error') errorListeners.push(listener as (error: unknown) => void)
+      else progress.push(listener as (info: { percent: number }) => void)
       return raw
     }
   }
@@ -158,7 +160,9 @@ function fakeEngine() {
     atDownload,
     logged,
     settings,
-    emitProgress: (percent: number) => progress.forEach((listener) => listener({ percent }))
+    emitProgress: (percent: number) => progress.forEach((listener) => listener({ percent })),
+    /** What the real engine does with an error it does not throw: it tells its 'error' listeners. */
+    emitError: (error: unknown) => errorListeners.forEach((listener) => listener(error))
   }
 }
 
@@ -269,6 +273,45 @@ describe('when updates are off', () => {
     await expectOff({ installDir: 'Programs\\Sims Helper' }, 'unsafe-install-folder')
     await expectOff({ keepOutOf: [] }, 'unsafe-install-folder')
     await expectOff({ keepOutOf: ['', 'Documents'] }, 'unsafe-install-folder')
+  })
+
+  it('reads a long-path spelling (\\\\?\\C:\\...) as the same folder, on either side', async () => {
+    await expectOff({ installDir: `\\\\?\\${DOCUMENTS}\\Sims Helper` }, 'unsafe-install-folder')
+    await expectOff({ installDir: `\\\\?\\${DOCUMENTS}` }, 'unsafe-install-folder')
+    await expectOff({ installDir: '//?/C:/Users/Lila/Documents/Sims Helper' }, 'unsafe-install-folder')
+    await expectOff({ installDir: '\\\\?\\C:\\Users\\Lila' }, 'unsafe-install-folder')
+    await expectOff(
+      { installDir: `${DOCUMENTS}\\Sims Helper`, keepOutOf: [`\\\\?\\${DOCUMENTS}`] },
+      'unsafe-install-folder'
+    )
+    await expectOff(
+      { installDir: '\\\\?\\UNC\\nas\\home\\Documents\\Sims Helper', keepOutOf: ['\\\\nas\\home\\Documents'] },
+      'unsafe-install-folder'
+    )
+  })
+
+  it('is off for an install folder with no drive letter, or one it cannot read as a plain folder', async () => {
+    const unreadable = [
+      '\\',
+      '\\Users\\Lila\\Documents\\Sims Helper',
+      '/Users/Lila/Documents/Sims Helper',
+      'C:Users\\Lila\\Sims Helper',
+      '\\\\.\\C:\\Users\\Lila\\Documents\\Sims Helper',
+      '\\\\?\\Volume{b75e2c83-0000-0000-0000-602f00000000}\\Users\\Lila\\Documents\\Sims Helper',
+      '\\??\\C:\\Users\\Lila\\Documents\\Sims Helper',
+      '\\\\?\\\\?\\C:\\Users\\Lila\\Documents\\Sims Helper'
+    ]
+    for (const installDir of unreadable) await expectOff({ installDir }, 'unsafe-install-folder')
+  })
+
+  it('is off when any folder to keep out of cannot be read, even beside one that can', async () => {
+    const dataDir = 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper'
+    const install = { installDir: `${DOCUMENTS}\\Sims Helper` }
+    await expectOff({ ...install, keepOutOf: ['Documents', dataDir] }, 'unsafe-install-folder')
+    await expectOff({ keepOutOf: ['Documents', dataDir] }, 'unsafe-install-folder')
+    await expectOff({ keepOutOf: [DOCUMENTS, '\\Users\\Lila\\OneDrive'] }, 'unsafe-install-folder')
+    await expectOff({ keepOutOf: [DOCUMENTS, ''] }, 'unsafe-install-folder')
+    await expectOff({ keepOutOf: [DOCUMENTS, 7 as unknown as string] }, 'unsafe-install-folder')
   })
 
   it('is off, and does not throw, when the engine cannot start', async () => {
@@ -730,6 +773,31 @@ describe('install', () => {
     })
     expect(updater.install()).toEqual({ status: 'refused', why: 'not-ready' })
     expect(updater.state()).toEqual({ state: 'failed', current: '0.2.0', step: 'download', why: 'error' })
+  })
+})
+
+describe('install, when the engine reports a failure without throwing', () => {
+  // electron-updater 6.8.11: quitAndInstall() catches what goes wrong, tells its 'error' listeners and returns.
+  it('does not say it is restarting: the download counts as failed, and the error text is kept nowhere', async () => {
+    const { updater, fake } = await ready()
+    fake.raw.quitAndInstall.mockImplementation(() => {
+      fake.emitError(new Error("No update filepath provided, can't quit and install C:\\Users\\Lila\\secret"))
+    })
+    expect(updater.install()).toEqual({ status: 'refused', why: 'not-ready' })
+    expect(updater.state()).toEqual({ state: 'failed', current: '0.2.0', step: 'download', why: 'error' })
+    expect(JSON.stringify(updater.state())).not.toContain('Lila')
+    expect(updater.install()).toEqual({ status: 'refused', why: 'not-ready' })
+    expect(fake.raw.quitAndInstall).toHaveBeenCalledTimes(1)
+  })
+
+  it('an engine error at any other time changes nothing', async () => {
+    const { updater, fake } = await ready()
+    fake.emitError(new Error('net::ERR_FAILED'))
+    expect(updater.state()).toEqual(READY)
+    expect(updater.install()).toEqual({ status: 'restarting' })
+    fake.emitError(new Error('spawn EACCES'))
+    expect(updater.install()).toEqual({ status: 'restarting' })
+    expect(fake.raw.quitAndInstall).toHaveBeenCalledTimes(1)
   })
 })
 
