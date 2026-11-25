@@ -1179,7 +1179,8 @@ describe('undo of an entry that never ran (nothing-to-do)', () => {
       action: 'turn-mods-on',
       summary: 'Turned mods and script mods back on',
       status: 'needs-attention',
-      undo: 'can-undo'
+      undo: 'can-undo',
+      steps: sampleJournalEntry().steps.map((s) => ({ ...s, state: 'pending' as const }))
     })
     const api = fakeApi({
       'fix:apply': () => ({
@@ -1209,5 +1210,75 @@ describe('undo of an entry that never ran (nothing-to-do)', () => {
     expect(screen.queryByText('Already taken care of')).not.toBeInTheDocument()
     expect(document.querySelector('[data-sonner-toast]')).toBeNull()
     expect(document.activeElement).not.toBe(document.body)
+  })
+})
+
+describe('FindingActions resets quietly on nothing-to-do only for a stopped fix that never ran', () => {
+  const nothingToDo: FixOutcome = { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+  const doneEntry = sampleJournalEntry({
+    id: 'e-done',
+    action: 'turn-mods-on',
+    summary: 'Turned mods and script mods back on',
+    status: 'done',
+    undo: 'can-undo'
+  })
+
+  it('from a done card, says it was already taken care of instead of offering the fix again', async () => {
+    const user = userEvent.setup()
+    const api = fakeApi({ 'fix:apply': { status: 'done', entry: doneEntry }, 'journal:undo': () => nothingToDo })
+
+    render(
+      <Harness api={api}>
+        <FindingActions finding={sampleFinding()} />
+      </Harness>
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Turn mods back on' }))
+    await user.click((await screen.findAllByRole('button', { name: 'Undo' }))[0]!)
+
+    expect(await screen.findByText('Already taken care of')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Turn mods back on' })).not.toBeInTheDocument()
+  })
+
+  it('from the toast after she left the screen, says it was already taken care of in a toast', async () => {
+    const user = userEvent.setup()
+    const api = fakeApi({ 'fix:apply': { status: 'done', entry: doneEntry }, 'journal:undo': () => nothingToDo })
+
+    const { rerender } = render(
+      <Harness api={api}>
+        <FindingActions finding={sampleFinding()} />
+      </Harness>
+    )
+    await user.click(screen.getByRole('button', { name: 'Turn mods back on' }))
+    await screen.findByRole('button', { name: 'Check again' })
+    rerender(<Harness api={api}>{null}</Harness>)
+
+    await user.click(await screen.findByRole('button', { name: 'Undo' }))
+
+    expect(await screen.findByText('Already taken care of')).toBeInTheDocument()
+  })
+
+  it('from a stopped card where a step already ran, says it was already taken care of', async () => {
+    const user = userEvent.setup()
+    const api = fakeApi({
+      'fix:apply': () => ({
+        status: 'stopped-part-way',
+        entry: { ...doneEntry, status: 'needs-attention' },
+        detail: 'This change stopped part way through. You can undo what already moved from History.'
+      }),
+      'journal:undo': () => nothingToDo
+    })
+
+    render(
+      <Harness api={api}>
+        <FindingActions finding={sampleFinding()} />
+      </Harness>
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Turn mods back on' }))
+    await user.click(await screen.findByRole('button', { name: 'Undo' }))
+
+    expect(await screen.findByText('Already taken care of')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Turn mods back on' })).not.toBeInTheDocument()
   })
 })
