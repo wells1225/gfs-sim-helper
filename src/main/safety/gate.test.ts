@@ -1870,6 +1870,41 @@ describe('doing the ops', () => {
     expect((result as { detail: string }).detail).toMatch(/the file at the target was left in place/)
   })
 
+  // Follow-up to the last check, 2026-11-24 (Opus). The new name is taken back only from where the gate put
+  // it. Here the mod has one more name in Mods, and the target folder now leads to the folder that holds it:
+  // the path of the new name reaches that other name. Same file, two real names, so the proof of the source
+  // passes, and only a look at the target path keeps a name in Mods from being removed.
+  it('a move on one drive: when the source cannot be removed and the target folder was swapped, no other name of the mod is removed through it', async () => {
+    const w = await makeWorld()
+    const from = w.inFolder(...MOD)
+    const elsewhere = w.inFolder('Mods', 'Elsewhere')
+    const bystander = join(elsewhere, 'cozy_rug.package')
+    await mkdir(elsewhere, { recursive: true })
+    await link(from, bystander)
+    const hash = await sha256(from)
+    const to = w.inData('holding', 'e1', 'Mods', 'cozy_rug.package')
+    const aside = w.inData('holding', 'aside')
+    const before = await snapshotTree(w.folder)
+    let swapped = false
+    disk.unlinkFails = {
+      file: from,
+      hits: 0,
+      meanwhile: async () => {
+        await rename(dirname(to), aside)
+        await linkFolder(elsewhere, dirname(to))
+        swapped = true
+      }
+    }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
+    expect(swapped, 'the target folder was really swapped').toBe(true)
+    expect(await exists(bystander), 'the other name in Mods is still there').toBe(true)
+    expect(await snapshotTree(w.folder), 'nothing in the Sims folder changed').toEqual(before)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect((result as { detail: string }).detail).toMatch(/the file at the target was left in place/)
+    expect(await sha256(join(aside, 'cozy_rug.package')), 'the new name is where the gate put it').toBe(hash)
+  })
+
   // With no file id there is no way to tell that both names are one file: every file answers 0, so the
   // ids match for any two. In doubt the new name stays.
   it('a move on one drive: when the source cannot be removed on a disk that gives no file ids, the new name is kept', async () => {
