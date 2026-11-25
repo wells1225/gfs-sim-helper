@@ -2151,6 +2151,71 @@ describe('doing the ops', () => {
     expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
   })
 
+  // Last check, 2026-11-24 (Opus). When the re-check after the copy fails, the copy is taken back on the word
+  // "the source stays", which nothing checks. Here the source's folder was replaced during the copy and the
+  // original is gone, so the copy is the only one left. It must stay, and the answer must say so.
+  it.fails('move across drives: when the source folder is replaced during the copy and the original is gone, the copy is kept', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    const other = w.inFolder('Mods', 'Other')
+    await mkdir(sub, { recursive: true })
+    await mkdir(other, { recursive: true })
+    const from = join(sub, 'only_copy.package')
+    await writeFile(from, 'the only copy of this mod')
+    const hash = await sha256(from)
+    const to = w.inData('holding', 'e1', 'Mods', 'only_copy.package')
+    disk.crossDrive = { from, hits: 0 }
+    let replaced = false
+    disk.atTheLastMoment = async () => {
+      await rm(sub, { recursive: true })
+      await linkFolder(other, sub)
+      replaced = true
+    }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
+    expect(replaced, 'the folder was really replaced during the copy').toBe(true)
+    expect(await exists(join(other, 'only_copy.package')), 'the original is gone').toBe(false)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await exists(to), 'the only copy of the mod is still at the target').toBe(true)
+    expect(await sha256(to)).toBe(hash)
+    expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
+  })
+
+  // Last check, 2026-11-24 (Opus). When the source cannot be removed, "the source is surely still there" is
+  // judged by its path and size alone. Here its folder now leads to another folder that holds a different file
+  // of the same name and size, and the original is gone. The copy is the only one left. It must stay.
+  it.fails('move across drives: when the source cannot be removed and a same-size file now stands at its path, the copy is kept', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    const other = w.inFolder('Mods', 'Other')
+    await mkdir(sub, { recursive: true })
+    await mkdir(other, { recursive: true })
+    const from = join(sub, 'only_copy.package')
+    await writeFile(from, 'the only copy of this mod')
+    const hash = await sha256(from)
+    const to = w.inData('holding', 'e1', 'Mods', 'only_copy.package')
+    disk.crossDrive = { from, hits: 0 }
+    let replaced = false
+    disk.unlinkFails = {
+      file: from,
+      hits: 0,
+      meanwhile: async () => {
+        await rm(sub, { recursive: true })
+        await writeFile(join(other, 'only_copy.package'), 'a different mod, same len')
+        await linkFolder(other, sub)
+        replaced = true
+      }
+    }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
+    expect(replaced, 'the folder was really replaced').toBe(true)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await exists(to), 'the only copy of the mod is still at the target').toBe(true)
+    expect(await sha256(to)).toBe(hash)
+    expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
+  })
+
   it('an empty request is done', async () => {
     const w = await makeWorld()
     expect(await w.run([])).toEqual({ status: 'done' })
