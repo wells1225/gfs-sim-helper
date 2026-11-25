@@ -225,6 +225,9 @@ async function makeWorld(
       async backupStatus(folderPath) {
         world.asked.push(`backup ${folderPath}`)
         return typeof world.backup === 'function' ? world.backup() : world.backup
+      },
+      async shareRoot() {
+        return null
       }
     },
     run: (ops, overrides = {}) =>
