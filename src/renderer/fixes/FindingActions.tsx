@@ -48,7 +48,6 @@ export function FindingActions({ finding }: { finding: Finding }) {
   const [undoBusy, setUndoBusy] = useState(false)
   const mountedRef = useRef(true)
   const cardRef = useRef<HTMLDivElement>(null)
-  const focusCardOnIdleRef = useRef(false)
 
   useEffect(() => {
     mountedRef.current = true
@@ -59,12 +58,10 @@ export function FindingActions({ finding }: { finding: Finding }) {
 
   const isRunning = state.phase === 'running' || undoBusy
 
-  // The clicked button goes away when the card changes, so keep keyboard focus on the card.
+  // The clicked button goes away when the card changes, so keep keyboard focus on the card. A quiet return to idle
+  // after undo needs nothing here: the busy step before it already moved focus to the card, which stays.
   useEffect(() => {
-    if (state.phase === 'idle') {
-      if (!focusCardOnIdleRef.current) return
-      focusCardOnIdleRef.current = false
-    }
+    if (state.phase === 'idle') return
     const active = document.activeElement
     if (!active || active === document.body) {
       cardRef.current?.focus()
@@ -121,10 +118,7 @@ export function FindingActions({ finding }: { finding: Finding }) {
         // A stopped fix that never changed anything is dropped on undo: return to idle with no error and no toast.
         const dropped = outcome.refusal.why === 'out-of-date' && outcome.refusal.detail === 'nothing-to-do'
         if (dropped && neverRan) {
-          if (mountedRef.current) {
-            focusCardOnIdleRef.current = true
-            setState({ phase: 'idle' })
-          }
+          if (mountedRef.current) setState({ phase: 'idle' })
           return
         }
         if (mountedRef.current) {
