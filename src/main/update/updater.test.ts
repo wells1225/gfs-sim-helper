@@ -304,6 +304,53 @@ describe('when updates are off', () => {
     for (const installDir of unreadable) await expectOff({ installDir }, 'unsafe-install-folder')
   })
 
+  it('is off when a part of the install folder ends in a dot or a space, which Windows drops', async () => {
+    const dropped = [
+      'C:\\Users\\Lila\\Documents.\\Sims Helper',
+      'C:\\Users\\Lila\\Documents \\Sims Helper',
+      'C:\\Users\\Lila\\Documents...\\Sims Helper',
+      'C:\\Users\\Lila.\\Documents\\Sims Helper',
+      'D:\\Games\\Sims Helper.',
+      'D:\\Games\\Sims Helper ',
+      '\\\\?\\C:\\Users\\Lila\\Documents.\\Sims Helper'
+    ]
+    for (const installDir of dropped) await expectOff({ installDir }, 'unsafe-install-folder')
+  })
+
+  it('is off when the install folder holds a short name (DOCUME~1), which can be any folder', async () => {
+    await expectOff({ installDir: 'C:\\Users\\Lila\\DOCUME~1\\Sims Helper' }, 'unsafe-install-folder')
+    await expectOff({ installDir: 'C:\\Users\\LILA~1\\AppData\\Local\\Programs\\Sims Helper' }, 'unsafe-install-folder')
+    await expectOff({ installDir: 'D:\\Games\\SIMSHE~12' }, 'unsafe-install-folder')
+  })
+
+  it('is off when the install folder has a colon after the drive letter (a file stream)', async () => {
+    await expectOff({ installDir: 'C:\\Users\\Lila\\Documents::$INDEX_ALLOCATION\\x' }, 'unsafe-install-folder')
+    await expectOff({ installDir: 'C:\\Users\\Lila\\Documents:$I30:$INDEX_ALLOCATION\\x' }, 'unsafe-install-folder')
+    await expectOff({ installDir: 'D:\\Games\\Sims Helper:stream' }, 'unsafe-install-folder')
+  })
+
+  it('is off when the install folder is on a share, which can be her own drive by another name', async () => {
+    const shares = [
+      '\\\\localhost\\c$\\Users\\Lila\\Documents\\Sims Helper',
+      '\\\\127.0.0.1\\c$\\Users\\Lila\\Documents\\Sims Helper',
+      '\\\\LILA-PC\\Users\\Lila\\Documents\\Sims Helper',
+      '\\\\?\\UNC\\localhost\\c$\\Users\\Lila\\Documents\\Sims Helper',
+      '\\\\nas\\apps\\Sims Helper'
+    ]
+    for (const installDir of shares) await expectOff({ installDir }, 'unsafe-install-folder')
+  })
+
+  it('is off when a folder to keep out of has a spelling it cannot trust', async () => {
+    const untrusted = [
+      'C:\\Users\\Lila\\DOCUME~1',
+      'C:\\Users\\Lila\\Documents.',
+      'C:\\Users\\Lila \\Documents',
+      'C:\\Users\\Lila\\Documents::$INDEX_ALLOCATION',
+      '\\\\nas\\home\\Lila:x\\Documents'
+    ]
+    for (const folder of untrusted) await expectOff({ keepOutOf: [folder, ONEDRIVE] }, 'unsafe-install-folder')
+  })
+
   it('is off when any folder to keep out of cannot be read, even beside one that can', async () => {
     const dataDir = 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper'
     const install = { installDir: `${DOCUMENTS}\\Sims Helper` }
@@ -325,6 +372,25 @@ describe('when updates are on', () => {
   it('a folder that only starts with the same letters as Documents is a safe install folder', () => {
     expect(make({ installDir: 'C:\\Users\\Lila\\Documents2\\Sims Helper' }).updater.state()).toEqual(IDLE)
     expect(make({ installDir: 'D:\\Apps\\Sims Helper' }).updater.state()).toEqual(IDLE)
+  })
+
+  it('the usual install folders get updates, and so do names with a dot, a space or a ~ inside them', () => {
+    const usual = [
+      'C:\\Users\\Lila\\AppData\\Local\\Programs\\Sims Helper',
+      'C:\\Program Files\\Sims Helper',
+      'C:\\Program Files (x86)\\Sims Helper\\',
+      'D:\\Games\\Sims Helper',
+      'D:\\Games\\Sims.Helper v1.2',
+      'D:\\Games\\~mods\\Sims Helper',
+      'D:\\Games\\Sims~Helper',
+      'D:\\.apps\\Sims Helper',
+      '\\\\?\\D:\\Games\\Sims Helper'
+    ]
+    for (const installDir of usual) expect(make({ installDir }).updater.state()).toEqual(IDLE)
+  })
+
+  it('Documents on a share (moved to a NAS) still counts as a folder to keep out of', () => {
+    expect(make({ keepOutOf: ['\\\\nas\\home\\Lila\\Documents', ONEDRIVE] }).updater.state()).toEqual(IDLE)
   })
 
   it('starts idle without asking the engine for anything, so opening the app never waits for it', () => {
