@@ -39,6 +39,7 @@ const disk = vi.hoisted(() => ({
   readdirFails: null as null | { under: string; code: string; hits: number },
   foldersRead: [] as string[],
   unlinkFails: null as null | { file: string; hits: number; meanwhile?: () => Promise<void> },
+  noFileIds: null as null | { file: string; hits: number },
   writeFileQuotesItsData: null as null | { hits: number },
   whenTempOpens: null as null | (() => Promise<void>),
   noHardLinks: null as null | { code: string; hits: number },
@@ -106,6 +107,15 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       }
       return await real.stat(target, options)
     }) as unknown as typeof real.stat,
+    lstat: (async (target: string, options?: { bigint?: boolean }) => {
+      const info = await real.lstat(target, options)
+      // A disk that gives no file ids answers 0 for every file.
+      if (disk.noFileIds && options?.bigint && String(target) === disk.noFileIds.file) {
+        disk.noFileIds.hits += 1
+        return Object.assign(info, { ino: 0n })
+      }
+      return info
+    }) as unknown as typeof real.lstat,
     unlink: (async (file) => {
       if (disk.unlinkFails && String(file) === disk.unlinkFails.file) {
         disk.unlinkFails.hits += 1
@@ -248,6 +258,7 @@ afterEach(async () => {
   disk.readdirFails = null
   disk.foldersRead = []
   disk.unlinkFails = null
+  disk.noFileIds = null
   disk.writeFileQuotesItsData = null
   disk.whenTempOpens = null
   disk.noHardLinks = null
@@ -2154,7 +2165,7 @@ describe('doing the ops', () => {
   // Last check, 2026-11-24 (Opus). When the re-check after the copy fails, the copy is taken back on the word
   // "the source stays", which nothing checks. Here the source's folder was replaced during the copy and the
   // original is gone, so the copy is the only one left. It must stay, and the answer must say so.
-  it.fails('move across drives: when the source folder is replaced during the copy and the original is gone, the copy is kept', async () => {
+  it('move across drives: when the source folder is replaced during the copy and the original is gone, the copy is kept', async () => {
     const w = await makeWorld()
     const sub = w.inFolder('Mods', 'Sub')
     const other = w.inFolder('Mods', 'Other')
@@ -2184,7 +2195,7 @@ describe('doing the ops', () => {
   // Last check, 2026-11-24 (Opus). When the source cannot be removed, "the source is surely still there" is
   // judged by its path and size alone. Here its folder now leads to another folder that holds a different file
   // of the same name and size, and the original is gone. The copy is the only one left. It must stay.
-  it.fails('move across drives: when the source cannot be removed and a same-size file now stands at its path, the copy is kept', async () => {
+  it('move across drives: when the source cannot be removed and a same-size file now stands at its path, the copy is kept', async () => {
     const w = await makeWorld()
     const sub = w.inFolder('Mods', 'Sub')
     const other = w.inFolder('Mods', 'Other')
@@ -2213,6 +2224,25 @@ describe('doing the ops', () => {
     expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
     expect(await exists(to), 'the only copy of the mod is still at the target').toBe(true)
     expect(await sha256(to)).toBe(hash)
+    expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
+  })
+
+  // With no file id there is no way to tell the source from another file at its path. In doubt the copy stays.
+  it('move across drives: when the source cannot be removed on a disk that gives no file ids, the copy is kept', async () => {
+    const w = await makeWorld()
+    const from = w.inFolder(...MOD)
+    const to = w.inData('holding', 'e1', 'Mods', 'cozy_rug.package')
+    const hash = await sha256(from)
+    disk.crossDrive = { from, hits: 0 }
+    disk.unlinkFails = { file: from, hits: 0 }
+    disk.noFileIds = { file: from, hits: 0 }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
+    expect(disk.noFileIds.hits, 'the source was really asked for its id').toBeGreaterThan(0)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await sha256(from), 'the source is untouched').toBe(hash)
+    expect(await sha256(to), 'the copy is still at the target').toBe(hash)
     expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
   })
 
