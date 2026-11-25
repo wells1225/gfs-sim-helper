@@ -5,7 +5,7 @@ import { launchApp, shoot, stubIpc } from '../support/app.ts'
 
 const PR_SLUG = 'pr-10-fixes'
 
-// Main's recover is still PR 9's stub on this branch and answers failed; these shots show what is left, not that.
+// Main's recover is still PR 9's stub on this branch and answers failed, so every shot stubs journal:recovery itself.
 const NOTHING_RECOVERED: StartupRecovery = { status: 'finished', touched: [] }
 
 function buildHistoryEntries(): JournalEntry[] {
@@ -174,6 +174,49 @@ test('branch shot: recovery-notice', async () => {
     await expect(running.page.getByText('A change was cut off before it finished')).toBeVisible()
     expect(running.consoleErrors).toEqual([])
     await shoot(running.page, PR_SLUG, 'recovery-notice')
+  } finally {
+    await running.close()
+  }
+})
+
+test('branch shot: recovery-put-back', async () => {
+  const running = await launchApp()
+  try {
+    const putBack = sampleJournalEntry({
+      id: '20261124-120100-rec2',
+      action: 'disable-group',
+      summary: 'Set aside Wicked Wardrobe',
+      groupId: 'cf:901234',
+      groupLabel: 'Wicked Wardrobe',
+      status: 'undone',
+      undo: 'can-undo',
+      undoneAt: '2026-11-24T12:20:00.000Z'
+    })
+
+    await stubIpc(running.app, {
+      'journal:recovery': { status: 'finished', touched: [putBack] },
+      'journal:list': [putBack]
+    })
+
+    await expect(running.page.getByText('A change was cut off, so we put things back as they were.')).toBeVisible()
+    expect(running.consoleErrors).toEqual([])
+    await shoot(running.page, PR_SLUG, 'recovery-put-back')
+  } finally {
+    await running.close()
+  }
+})
+
+test('branch shot: recovery-failed', async () => {
+  const running = await launchApp()
+  try {
+    await stubIpc(running.app, {
+      'journal:recovery': { status: 'failed' },
+      'journal:list': []
+    })
+
+    await expect(running.page.getByText('We could not check for a cut-off change')).toBeVisible()
+    expect(running.consoleErrors).toEqual([])
+    await shoot(running.page, PR_SLUG, 'recovery-failed')
   } finally {
     await running.close()
   }
