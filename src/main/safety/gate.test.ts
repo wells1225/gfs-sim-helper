@@ -30,7 +30,7 @@ import type { GateRoots } from './gate.ts'
 
 // The gate keeps no test seam. Faults are injected here, under its imports.
 const disk = vi.hoisted(() => ({
-  crossDrive: null as null | { from: string; hits: number },
+  crossDrive: null as null | { from: string; hits: number; meanwhile?: () => Promise<void> },
   corruptNewFiles: null as null | { hits: number },
   realpathFails: null as null | { under: string; code: string; hits: number },
   beforeRealpath: null as null | ((target: string) => Promise<void>),
@@ -58,11 +58,22 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     disk.atTheLastMoment = null
     if (meanwhile) await meanwhile()
   }
+  // The moment the disk says "another drive". The fault is off while `meanwhile` runs, so that a test can
+  // rename the source itself.
+  const otherDrive = async (fault: NonNullable<typeof disk.crossDrive>): Promise<void> => {
+    fault.hits += 1
+    disk.crossDrive = null
+    try {
+      await fault.meanwhile?.()
+    } finally {
+      disk.crossDrive = fault
+    }
+  }
   const mocked = {
     ...real,
     rename: (async (from, to) => {
       if (disk.crossDrive && String(from) === disk.crossDrive.from) {
-        disk.crossDrive.hits += 1
+        await otherDrive(disk.crossDrive)
         throw errno('EXDEV', 'rename')
       }
       await lastMoment()
@@ -71,7 +82,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     }) as typeof real.rename,
     link: (async (existing, added) => {
       if (disk.crossDrive && String(existing) === disk.crossDrive.from && !disk.noHardLinks) {
-        disk.crossDrive.hits += 1
+        await otherDrive(disk.crossDrive)
         throw errno('EXDEV', 'link')
       }
       await lastMoment()
@@ -1905,6 +1916,47 @@ describe('doing the ops', () => {
     expect(await sha256(join(aside, 'cozy_rug.package')), 'the new name is where the gate put it').toBe(hash)
   })
 
+  // Pins the count of names. The old path leads to the new name, as two tests above, and the file has that
+  // one name. If the paths were followed without the count, a folder pointed elsewhere between the look at
+  // the files and the look at the paths would show two different real names for a file that has one, and
+  // the last name would be removed. The count answers first, so the second swap here never gets its turn.
+  it('a move on one drive: when the source path leads to the new name and is pointed elsewhere while the two are compared, the new name is kept', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    const other = w.inFolder('Mods', 'Other')
+    await mkdir(sub, { recursive: true })
+    await mkdir(other, { recursive: true })
+    const from = join(sub, 'only_copy.package')
+    await writeFile(from, 'the only copy of this mod')
+    await writeFile(join(other, 'only_copy.package'), 'a different mod')
+    const hash = await sha256(from)
+    const to = w.inData('holding', 'e1', 'Mods', 'only_copy.package')
+    let replaced = false
+    disk.unlinkFails = {
+      file: from,
+      hits: 0,
+      meanwhile: async () => {
+        await rm(sub, { recursive: true })
+        await linkFolder(dirname(to), sub)
+        replaced = true
+        let pointedElsewhere = false
+        disk.beforeRealpath = async (target) => {
+          if (target !== from || pointedElsewhere) return
+          pointedElsewhere = true
+          await rm(sub)
+          await linkFolder(other, sub)
+        }
+      }
+    }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
+    expect(replaced, 'the folder was really replaced').toBe(true)
+    expect(await exists(to), 'the last name of the mod is still at the target').toBe(true)
+    expect(await sha256(to)).toBe(hash)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect((result as { detail: string }).detail).toMatch(/the file at the target was left in place/)
+  })
+
   // With no file id there is no way to tell that both names are one file: every file answers 0, so the
   // ids match for any two. In doubt the new name stays.
   it('a move on one drive: when the source cannot be removed on a disk that gives no file ids, the new name is kept', async () => {
@@ -2248,6 +2300,38 @@ describe('doing the ops', () => {
     expect(await readdir(dirname(to))).toEqual([])
   })
 
+  // Only the source folder is swapped, for a link into saves. The target is left alone. The source path now
+  // leads to a real save of the same name, and nothing in saves may change. The decoy the copy was made from
+  // is gone, so the copy is the only one left: it stays, and the answer says so. (The TOCTOU test in the
+  // links group makes the same swap and checks saves. This one also says what becomes of the copy.)
+  it('move across drives: when only the source folder is swapped for a link into saves during the copy, saves is untouched and the copy is kept', async () => {
+    const w = await makeWorld()
+    const sub = w.inFolder('Mods', 'Sub')
+    await mkdir(sub, { recursive: true })
+    const from = join(sub, 'Slot_00000002.save')
+    await writeFile(from, 'decoy mod')
+    const to = w.inData('holding', 'e1', 'Mods', 'Slot_00000002.save')
+    const savesBefore = await snapshotTree(w.inFolder('saves'))
+    expect(savesBefore.has('Slot_00000002.save'), 'a real save has the name of the decoy').toBe(true)
+    disk.crossDrive = { from, hits: 0 }
+    let swapped = false
+    disk.atTheLastMoment = async () => {
+      await rm(sub, { recursive: true })
+      await linkFolder(w.inFolder('saves'), sub)
+      swapped = true
+    }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
+    expect(swapped, 'the source folder was really swapped during the copy').toBe(true)
+    // Asked first, so that a save that was touched shows as that, whatever the answer was.
+    expect(await snapshotTree(w.inFolder('saves')), 'saves is byte for byte as it was').toEqual(savesBefore)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect((result as { detail: string }).detail).toContain('saves-or-tray')
+    expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
+    expect(await readdir(dirname(to))).toEqual(['Slot_00000002.save'])
+    expect(await readFile(to, 'utf8'), 'the only copy of the decoy is still at the target').toBe('decoy mod')
+  })
+
   // The copy is taken back only from where the gate put it. A target folder that was swapped as well could
   // lead the removal to a file somewhere else, so the copy stays and the answer says so.
   it('move across drives: when the target folder was swapped as well, the copy is kept and the detail says so', async () => {
@@ -2444,6 +2528,45 @@ describe('doing the ops', () => {
     expect(await readFile(from), 'the source was really rewritten').toEqual(otherBytes)
     expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
     expect(await sha256(to), 'the copy still holds the old bytes').toBe(hash)
+    expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
+  })
+
+  // Pins "a plain file" in the proof of the source. Right when the disk says "another drive", the mod is
+  // moved aside and a file link to it takes its place. From then on the source path holds that link: the id
+  // read before the copy is the link's, and so is the id read after it, and the bytes read through the link
+  // are the bytes of the copy. Only the kind of thing at the path says it is not the file that was copied.
+  it('move across drives: when a file link took the place of the source before the copy, the copy is kept', async (ctx) => {
+    const w = await makeWorld()
+    const from = w.inFolder(...MOD)
+    const aside = w.inFolder('Mods', 'Aside', 'cozy_rug.package')
+    const to = w.inData('holding', 'e1', 'Mods', 'cozy_rug.package')
+    const hash = await sha256(from)
+    await mkdir(dirname(aside), { recursive: true })
+    try {
+      await symlink(from, join(w.root, 'probe.package'), 'file')
+    } catch {
+      ctx.skip() // Windows without the right to make file links
+      return
+    }
+    let swapped = false
+    disk.crossDrive = {
+      from,
+      hits: 0,
+      meanwhile: async () => {
+        await rename(from, aside)
+        await symlink(aside, from, 'file')
+        swapped = true
+      }
+    }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
+    expect(swapped, 'the source was really swapped for a link').toBe(true)
+    expect((await lstat(from)).isSymbolicLink(), 'the link still stands at the source path').toBe(true)
+    expect(await sha256(aside), 'the mod itself is untouched').toBe(hash)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect((result as { detail: string }).detail).toContain('link-escape')
+    expect(await exists(to), 'the copy is still at the target').toBe(true)
+    expect(await sha256(to)).toBe(hash)
     expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
   })
 
