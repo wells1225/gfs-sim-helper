@@ -13,14 +13,30 @@ function looksLikeEntry(value: unknown): value is JournalEntry {
   return typeof entry?.id === 'string' && Array.isArray(entry.steps) && typeof entry.status === 'string'
 }
 
-export async function readEntry(journalDir: string, id: string): Promise<JournalEntry | null> {
-  if (!isSafeId(id)) return null
+/**
+ * 'missing' only when no file holds the entry (or the id could never name one). A file that is there but cannot be
+ * read, does not parse, or holds some other entry is 'unreadable': the entry may still exist.
+ */
+export async function findEntry(journalDir: string, id: string): Promise<JournalEntry | 'missing' | 'unreadable'> {
+  if (!isSafeId(id)) return 'missing'
+  let text: string
   try {
-    const parsed: unknown = JSON.parse(await readFile(entryFile(journalDir, id), 'utf8'))
-    return looksLikeEntry(parsed) && parsed.id === id ? parsed : null
-  } catch {
-    return null
+    text = await readFile(entryFile(journalDir, id), 'utf8')
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'unreadable'
   }
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return looksLikeEntry(parsed) && parsed.id === id ? parsed : 'unreadable'
+  } catch {
+    return 'unreadable'
+  }
+}
+
+export async function readEntry(journalDir: string, id: string): Promise<JournalEntry | null> {
+  const found = await findEntry(journalDir, id)
+  return typeof found === 'string' ? null : found
 }
 
 /** Every readable entry, newest first. */

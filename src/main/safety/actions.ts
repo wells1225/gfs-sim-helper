@@ -5,7 +5,7 @@ import type { FixOutcome, FixRefusal, JournalEntry, JournalStep, Sha256 } from '
 import { sha256File } from '../fs-read.ts'
 import type { ActionPlan, GateResult, OnProgress, SafetyDeps, WriteOp } from '../ports.ts'
 import { backupStatus, makeBackup, tracked } from './backup.ts'
-import { readEntry, removeEntry, removeEntryIfSame, saveEntry } from './journal.ts'
+import { findEntry, removeEntry, removeEntryIfSame, saveEntry } from './journal.ts'
 import { exists, isInside, isSafeId, missingDirs, pathKey, samePath } from './where.ts'
 
 type BackupFirst = { status: 'ok'; backupId: string } | { status: 'refused'; refusal: FixRefusal }
@@ -522,8 +522,9 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
 const NOTHING_TO_DO: FixOutcome = { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
 
 export async function undoNow(deps: SafetyDeps, entryId: string, onProgress?: OnProgress): Promise<FixOutcome> {
-  const entry = await readEntry(deps.paths.journalDir, entryId)
-  if (!entry) return NOTHING_TO_DO
+  const entry = await findEntry(deps.paths.journalDir, entryId)
+  if (entry === 'missing') return NOTHING_TO_DO
+  if (entry === 'unreadable') return NOT_STARTED // it may still be there: never tell her it is gone, and touch nothing
   if (entry.status === 'undone') return { status: 'done', entry } // before the backup step: no gate request at all
   // In progress with every step pending and the disk as it was: the change never ran, so there is nothing to put
   // back. It is dropped as recover() drops it, before the backup step, and never marked undone.
