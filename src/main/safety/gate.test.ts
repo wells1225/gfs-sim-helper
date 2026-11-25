@@ -1938,6 +1938,34 @@ describe('a path in app data leads only to its own name', () => {
     expect((await readdir(join(realData, 'state'))).sort()).toEqual(['update.json'])
     expect(await exists(join(realData, 'assist', 'key.bin'))).toBe(true)
   })
+
+  // Review finding (Opus, round 7). Both spellings name one folder on her disk, and neither is a link. The first
+  // check passes, since the folder is not there yet. Then the gate makes it as 'Été', and the re-check before the
+  // last op finds 'été' leading to 'Été', which the A-to-Z fold does not match. The answer is `failed` with two
+  // ops done, so the gate stops a request it approved, part way through, on a folder it made itself. Whether
+  // the fix refuses up front or accepts, nothing should run before the refusal.
+  it.fails('two spellings of one new folder, differing in a letter beyond A to Z, are not stopped part way', async (ctx) => {
+    const w = await makeWorld()
+    const upper = w.inData('holding', 'e1', 'Mods', 'Été')
+    const lower = w.inData('holding', 'e1', 'Mods', 'été')
+    await mkdir(upper, { recursive: true })
+    const oneFolder = await exists(lower)
+    await rm(w.inData('holding'), { recursive: true })
+    if (!oneFolder) {
+      ctx.skip() // this disk keeps 'Été' and 'été' apart: two folders, nothing to stop
+      return
+    }
+    const result = await w.run(
+      [
+        { op: 'mkdir', path: upper },
+        { op: 'write', path: join(upper, 'a.json'), data: '{}', mode: 'create' },
+        { op: 'write', path: join(lower, 'b.json'), data: '{}', mode: 'create' }
+      ],
+      { folderPath: null, reason: 'state' }
+    )
+    expect(result.status).not.toBe('failed')
+    if (result.status === 'refused') expect(await exists(w.inData('holding', 'e1', 'Mods'))).toBe(false)
+  })
 })
 
 describe('doing the ops', () => {
