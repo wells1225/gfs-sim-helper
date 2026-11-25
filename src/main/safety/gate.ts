@@ -715,29 +715,37 @@ async function carryOut(
     }
     // Another drive: copy, check the copy, and only then remove the source. The copy took time, so the
     // paths are followed again first: a source whose folder was swapped meanwhile is not removed.
-    await placeCopy(op.from, op.to, source, true)
-    try {
-      await followAgain()
-    } catch (err) {
-      // The source stays, so the move did not run and its copy is taken back. When it cannot be, the
-      // disk is not as it was, and the answer says so.
-      const kept = await takeCopyBack(op.to, source, targetStillHolds)
+    const original = await lstat(op.from, { bigint: true })
+    const sha256 = await placeCopy(op.from, op.to, source, true)
+    // A move that stops here answers `failed`, never `done`. Its copy may be the only one left, so it is
+    // taken back only when the source is proven still in place, and only from where the gate put it.
+    // A copy that stays is named in the answer.
+    const stop = async (err: unknown): Promise<never> => {
+      const kept = (await sourceStillInPlace(op.from, original, sha256))
+        ? await takeCopyBack(op.to, source, targetStillHolds)
+        : 'the source is no longer surely there'
       if (kept === null) throw err
       throw new OpFailure(`${explain(err)}, and the copy at the target was left in place: ${kept}`)
     }
-    try {
-      await unlink(op.from)
-    } catch (err) {
-      // Both exist now. Take the copy back only while the source is surely still there, and only from
-      // where the gate put it. A copy that stays is named in the answer.
-      const still = await lstatOrNull(op.from).catch(() => null)
-      const kept =
-        still?.isFile() && still.size === source.size
-          ? await takeCopyBack(op.to, source, targetStillHolds)
-          : 'the source is no longer surely there'
-      if (kept === null) throw err
-      throw new OpFailure(`${explain(err)}, and the copy at the target was left in place: ${kept}`)
-    }
+    await followAgain().catch(stop)
+    await unlink(op.from).catch(stop)
+  }
+}
+
+/**
+ * True only when the file a copy was made from is proven still at its path: a plain file there, with the id
+ * it had before the copy and the bytes the copy has. Anything else is false, and so is any error and a disk
+ * that gives no file id: in doubt the copy stays. The id is read as a bigint, because as a plain number two
+ * NTFS ids can read the same. The bytes are compared as well, because a FAT or exFAT disk can give a new
+ * file the id of one that was removed.
+ */
+async function sourceStillInPlace(from: string, original: BigIntStats, sha256: string): Promise<boolean> {
+  try {
+    const now = await lstat(from, { bigint: true })
+    if (!now.isFile() || now.ino === 0n || fileId(now) !== fileId(original)) return false
+    return (await sha256File(from)) === sha256
+  } catch {
+    return false
   }
 }
 
@@ -833,7 +841,9 @@ async function flushFolder(folder: string): Promise<void> {
   }
 }
 
-async function placeCopy(from: string, to: string, source: Stats, verify: boolean): Promise<void> {
+/** Places a copy under its final name, and returns the hash of the bytes it read from the source. */
+async function placeCopy(from: string, to: string, source: Stats, verify: boolean): Promise<string> {
+  let sha256: string | null = null
   await viaTemp(to, false, async (temp) => {
     const copied = await copyBytes(from, temp, source)
     if (copied.bytes !== source.size) throw new OpFailure('the source changed while it was copied')
@@ -841,7 +851,10 @@ async function placeCopy(from: string, to: string, source: Stats, verify: boolea
       const matches = (await stat(temp)).size === source.size && (await sha256File(temp)) === copied.sha256
       if (!matches) throw new OpFailure('the copy does not match the source')
     }
+    sha256 = copied.sha256
   })
+  if (sha256 === null) throw new OpFailure('the copy was not made')
+  return sha256
 }
 
 /** Streams a file into a new file with the source's date, waits until the disk has it, and returns what was read. */
