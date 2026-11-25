@@ -10,8 +10,11 @@ import { useNav } from '../nav.tsx'
 import { useSession } from '../session.tsx'
 import { FIX_BUTTON_LABEL, UNEXPECTED_COPY, progressCopy, refusalMessage, type RefusalCopy } from './words.ts'
 
-/** What "Try again" repeats: the fix itself, or the undo of one entry. */
-type Retry = { kind: 'fix'; fix: FixId } | { kind: 'undo'; entryId: string; summary: string }
+/**
+ * What "Try again" repeats: the fix itself, or the undo of one entry. `neverRan` marks an undo from a stopped card
+ * where no step ran: only then does nothing-to-do mean the fix can simply be offered again.
+ */
+type Retry = { kind: 'fix'; fix: FixId } | { kind: 'undo'; entryId: string; summary: string; neverRan: boolean }
 
 type ActionState =
   | { phase: 'idle' }
@@ -86,9 +89,9 @@ export function FindingActions({ finding }: { finding: Finding }) {
   }, [go, setScan])
 
   const handleUndo = useCallback(
-    async (entryId: string, originalSummary: string) => {
+    async (entryId: string, originalSummary: string, neverRan = false) => {
       setUndoBusy(true)
-      const retry: Retry = { kind: 'undo', entryId, summary: originalSummary }
+      const retry: Retry = { kind: 'undo', entryId, summary: originalSummary, neverRan }
       let outcome: FixOutcome
       try {
         outcome = await api.invoke('journal:undo', { entryId })
@@ -116,7 +119,8 @@ export function FindingActions({ finding }: { finding: Finding }) {
       }
       if (outcome.status === 'refused') {
         // A stopped fix that never changed anything is dropped on undo: return to idle with no error and no toast.
-        if (outcome.refusal.why === 'out-of-date' && outcome.refusal.detail === 'nothing-to-do') {
+        const dropped = outcome.refusal.why === 'out-of-date' && outcome.refusal.detail === 'nothing-to-do'
+        if (dropped && neverRan) {
           if (mountedRef.current) {
             focusCardOnIdleRef.current = true
             setState({ phase: 'idle' })
@@ -206,7 +210,7 @@ export function FindingActions({ finding }: { finding: Finding }) {
   const retry = useCallback(
     (target: Retry) => {
       if (target.kind === 'fix') void runFix(target.fix)
-      else void handleUndo(target.entryId, target.summary)
+      else void handleUndo(target.entryId, target.summary, target.neverRan)
     },
     [handleUndo, runFix]
   )
@@ -321,7 +325,13 @@ export function FindingActions({ finding }: { finding: Finding }) {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => void handleUndo(state.entry.id, state.entry.summary)}
+                    onClick={() =>
+                      void handleUndo(
+                        state.entry.id,
+                        state.entry.summary,
+                        state.entry.steps.every((s) => s.state === 'pending')
+                      )
+                    }
                   >
                     <Undo2 className="size-4" aria-hidden="true" />
                     Undo
