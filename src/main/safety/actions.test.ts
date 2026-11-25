@@ -462,6 +462,37 @@ describe('runAction', () => {
       expect(ws.gate.requests.some((r) => r.ops.some((op) => op.op === 'remove'))).toBe(false)
     })
 
+    it.each(['dir', 'junction'] as const)(
+      'a %s link between two holding entries is never removed, keeping the other entry intact',
+      async (type) => {
+        const ws = await backedUp()
+        const status = await backupStatus(ws.deps, ws.simsFolder)
+        if (status.state !== 'verified') throw new Error('expected verified backup')
+        const lampB = join(ws.mods, 'BuildBuy', 'lamp_b.package')
+        const sha = await sha256File(lampB)
+        const bytes = (await readFile(lampB)).length
+        const hold2BuildBuy = held(ws, 'hold-2', 'BuildBuy')
+        const hold2LampB = join(hold2BuildBuy, 'lamp_b.package')
+        await mkdir(hold2BuildBuy, { recursive: true })
+        await copyFile(lampB, hold2LampB)
+        const hold1BuildBuy = held(ws, 'hold-1', 'BuildBuy')
+        const hold1LampB = join(hold1BuildBuy, 'lamp_b.package')
+        await mkdir(dirname(hold1BuildBuy), { recursive: true })
+        await symlink(hold2BuildBuy, hold1BuildBuy, type)
+        await writeEntry(ws, 'hold-1', status.backupId, [
+          { kind: 'move', from: lampB, to: hold1LampB, bytes, sha256: sha, state: 'applied' }
+        ])
+
+        const undone = await undo(ws.deps, 'hold-1')
+
+        expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+        expect(await pathExists(hold2LampB)).toBe(true)
+        expect(await sha256File(hold2LampB)).toBe(sha)
+        expect(ws.gate.requests.some((r) => r.ops.some((op) => op.op === 'remove'))).toBe(false)
+        expect((await listJournal(ws.deps))[0]!.status).toBe('needs-attention')
+      }
+    )
+
     it('a copy left by a move inside Mods is never removed: the entry needs attention with plain Mods wording', async () => {
       const ws = await backedUp()
       const from = join(ws.mods, 'BuildBuy', 'lamp_b.package')
