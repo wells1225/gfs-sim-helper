@@ -137,7 +137,8 @@ export interface Scan {
 export type ScanResult =
   | { status: 'done'; scan: Scan } | { status: 'failed'; why: 'folder-not-found' | 'folder-unreadable' | 'unexpected'; detail: string }
 export interface Progress {
-  task: 'scan' | 'backup' | 'fix'; stage: 'counting' | 'mods' | 'logs' | 'rules' | 'copying' | 'checking' | 'moving'
+  task: 'scan' | 'backup' | 'fix' | 'share'
+  stage: 'counting' | 'mods' | 'logs' | 'rules' | 'copying' | 'checking' | 'moving' | 'sending' | 'getting'
   done: number; total: number | null // null while still counting
 }
 export interface Settings { welcome: 'not-seen' | 'seen'; folderPath: string | null }
@@ -163,8 +164,9 @@ export type JournalStep =
   | { kind: 'move'; from: string; to: string; bytes: number; sha256: Sha256; state: StepState }
   | { kind: 'edit'; path: string; savedCopy: string; beforeSha256: Sha256; afterSha256: Sha256; state: StepState }
   | { kind: 'remove-cache'; path: string; state: StepState } // never undone: the game rebuilds caches
-export type ActionKind = Exclude<FixId, 'enable-group'> // enabling a group is the undo of its disable entry
+export type ActionKind = Exclude<FixId, 'enable-group'> | 'share-receive' | 'share-restore' // enabling a group is the undo of its disable entry; the two share kinds are a save swap (PR 14)
 export type JournalOrigin = { by: 'fix' } | { by: 'fifty-fifty'; sessionId: string; round: number }
+  | { by: 'share'; shareId: string; seq: number | null } // seq null: an old copy put back
 export interface JournalEntry {
   id: string; at: IsoTime; action: ActionKind; summary: string; origin: JournalOrigin
   folderPath: string; groupId: string | null
@@ -172,6 +174,8 @@ export interface JournalEntry {
   backupId: string; steps: JournalStep[]
   status: 'in-progress' | 'done' | 'undone' | 'needs-attention'; undo: 'can-undo' | 'cannot-undo'; undoneAt: IsoTime | null
 }
+/** What the start-up recovery did (journal:recovery): the entries it settled, or that it could not run at all. */
+export type StartupRecovery = { status: 'finished'; touched: JournalEntry[] } | { status: 'failed' }
 // ── Fixes (PR 10)
 /** What the renderer sends. Main looks the request up in its own last scan. */
 export type FixCall =
@@ -233,6 +237,49 @@ export type UpdateState =
   | { state: 'ready'; current: string; next: string } // downloaded, checksum passed, waits for her click
   | { state: 'failed'; current: string; step: 'check' | 'download'; why: 'offline' | 'bad-file' | 'error' }
 export type UpdateInstall = { status: 'restarting' } | { status: 'refused'; why: 'busy' | 'not-ready' }
+// ── Share saves (PR 14)
+export type PcRole = 'lila' | 'tyler'
+export type ShareLinkState =
+  | { state: 'no-role' } | { state: 'no-folder' } | { state: 'folder-missing' } // missing: chosen before, not there now
+  | { state: 'waiting'; since: IsoTime } | { state: 'same-role' } // same-role: the other PC says it is this PC
+  | { state: 'connected'; otherSeenAt: IsoTime; otherHeardUs: boolean } | { state: 'damaged' } // share.json unreadable
+export interface ShareSettings { role: PcRole | null; folderLabel: string | null; keepOld: number; keepInDrive: number }
+export interface LocalSave { slotId: string; savedAt: IsoTime; bytes: number; shareId: string | null } // 'Slot_0000000a', never a path
+export type ModNeed = { key: string; name: string; hasScript: boolean; state: 'missing' | 'other-version' } & (
+  | { source: 'curseforge'; linkId: string }
+  | { source: 'other'; files: string[]; linkId: string | null; shownLink: string | null }) // shownLink: the full address
+export interface ShareNeeds {
+  game: 'same' | 'theirs-newer' | 'theirs-older' | 'unknown'; theirVersion: string | null
+  packs: { code: PackCode; name: string | null }[]; mods: ModNeed[]; modsOff: boolean // modsOff: mods are off on this PC
+}
+export interface IncomingSave {
+  seq: number; from: PcRole; sentAt: IsoTime; state: 'arriving' | 'ready' | 'damaged' | 'needs-newer-app'
+  will: 'replace' | 'add' | 'ask' | null; needs: ShareNeeds | null // null until the manifest can be read
+}
+export interface SharedSave {
+  shareId: string; name: string
+  here: { slotId: string; savedAt: IsoTime; changed: boolean } | null // changed: played here since the last handoff
+  lastSent: { seq: number; at: IsoTime; gotAt: IsoTime | null } | null
+  incoming: IncomingSave | null; ask: 'which-to-keep' | null
+  canSend: 'yes' | 'nothing-new' | 'get-first' | 'answer-first' | 'save-missing'
+}
+export interface ShareView { link: ShareLinkState; settings: ShareSettings; saves: SharedSave[]; aiFind: 'offer' | 'hide' }
+export type ShareRefusal =
+  | { why: 'gate'; refusal: GateRefusal } | { why: 'backup'; reason: BackupRefusal | 'backup-failed' }
+  | { why: 'game-running' } | { why: 'game-state-unknown' } | { why: 'fifty-fifty-running' } | { why: 'not-connected' }
+  | { why: 'state-damaged' } | { why: 'not-ready'; state: 'arriving' | 'damaged' | 'needs-newer-app' }
+  | { why: 'game-older'; theirs: string; ours: string } | { why: 'nothing-new' } | { why: 'get-first' } | { why: 'answer-first' }
+  | { why: 'out-of-date'; detail: 'unknown-save' | 'unknown-share' | 'file-changed' | 'no-free-slot' }
+export type ShareSendResult = { status: 'sent'; view: ShareView } | { status: 'refused'; refusal: ShareRefusal } | { status: 'failed'; detail: string }
+export type ShareReceiveResult =
+  | { status: 'replaced' | 'added' | 'kept-both' | 'restored'; entry: JournalEntry; view: ShareView }
+  | { status: 'already-here'; view: ShareView } | { status: 'refused'; refusal: ShareRefusal }
+  | { status: 'stopped-part-way'; entry: JournalEntry; detail: string }
+export interface OldSave { oldId: string; shareId: string; name: string; savedAt: IsoTime; replacedAt: IsoTime; bytes: number }
+export interface FindPreview { id: string; text: string } // text: exactly what will be sent
+export type FindAnswer =
+  | { status: 'found'; linkId: string; shownLink: string; host: string; place: 'usual' | 'creator-site' | 'not-usual'; why: string }
+  | { status: 'not-found' } | { status: 'no-answer'; why: Extract<AssistAnswer, { status: 'no-answer' }>['why'] }
 ```
 
 Differences from `plan.md`, on purpose: times are `IsoTime`; `ModFile` keeps a key count, not the keys; files are
@@ -247,8 +294,9 @@ export interface Clock { now(): Date }
 export interface AppPaths {
   dataDir: string // %LOCALAPPDATA%\SimsHelper, never Electron's userData
   backupsDir: string; holdingDir: string // <dataDir>\backups\<backupId>\ and <dataDir>\holding\<entryId>\Mods\<relPath>
-  journalDir: string; stateDir: string // <dataDir>\journal\<entryId>.json and <dataDir>\state\{settings,fiftyfifty}.json
+  journalDir: string; stateDir: string // <dataDir>\journal\<entryId>.json and <dataDir>\state\{settings,fiftyfifty,update}.json
   keyFile: string; desktopDir: string // <dataDir>\assist\key.bin
+  oldSavesDir: string; shareDir: string // <dataDir>\old-saves and <dataDir>\share\{incoming,outgoing} (PR 14)
   oneDriveRoots: string[] // from the OneDrive environment variables. A path part starting 'OneDrive' also counts
   curseForgeInstanceFile: string | null // %APPDATA%\CurseForge\agent\GameInstances\AddonGameInstance.json
 }
@@ -263,7 +311,7 @@ export type WriteOp =
   | { op: 'write'; path: string; data: string | Uint8Array; mode: 'create' | 'replace' } // temp file, then rename
   | { op: 'remove'; path: string } // a file, or a folder and everything in it
 export interface WriteRequest {
-  reason: 'backup' | 'journal' | 'state' | 'report' | 'key' | 'fix' | 'undo'
+  reason: 'backup' | 'journal' | 'state' | 'report' | 'key' | 'fix' | 'undo' | 'share' | 'share-save'
   folderPath: string | null // the Sims folder the ops touch or read; null for app data and the report only
   ops: WriteOp[]
 }
@@ -275,9 +323,11 @@ export interface GateDeps {
   paths: AppPaths
   gameState(): Promise<GameRunState> // asked fresh on every call, never cached
   backupStatus(folderPath: string): Promise<BackupStatus>
+  shareRoot(): Promise<string | null> // PR 14: asked fresh for each request; null or a throw refuses a share op
 }
 export type PlannedStep =
-  | { kind: 'move'; from: string; to: string } | { kind: 'remove-cache'; path: string }
+  | { kind: 'move'; from: string; to: string; expect?: { bytes: number; sha256: Sha256 } } // expect: runAction refuses 'file-changed' if the source differs
+  | { kind: 'remove-cache'; path: string }
   | { kind: 'edit'; path: string; newText: string; beforeSha256: Sha256 } // the hash when read; runAction refuses 'file-changed' if it differs
 export interface ActionPlan {
   entryId: string // chosen by the planner; runAction uses it for the journal entry and holding/<entryId>/ paths
@@ -301,6 +351,7 @@ export interface Safety { // PR 9
   undo(entryId: string, onProgress?: OnProgress): Promise<FixOutcome>
   listJournal(): Promise<JournalEntry[]> // newest first
   recover(): Promise<JournalEntry[]> // finishes or undoes interrupted entries; returns the ones it touched
+  closeUndo(entryId: string): Promise<void> // PR 14: a done entry becomes 'cannot-undo'; an unknown id or a second call does nothing
 }
 export interface SafetyDeps { gate: Gate; paths: AppPaths; clock: Clock; newId(): string; gameState(): Promise<GameRunState> }
 export type GroupsOutcome =
@@ -321,14 +372,18 @@ export interface DisableMechanism { // section 6
 export interface AssistMessage { model: string; system: string; user: string; maxTokens: number }
 export type AssistReply = // key-rejected: HTTP 401, the stored key no longer works
   | { status: 'text'; text: string } | { status: 'failed'; why: 'no-key' | 'key-rejected' | 'declined' | 'offline' | 'limit-reached' | 'error' }
+export interface AssistFind { model: string; system: string; user: string; maxTokens: number; searches: number }
+export type AssistFound = { status: 'text'; text: string; pages: string[] } | Extract<AssistReply, { status: 'failed' }>
 export interface KeyStore { // PR 12, section 8
   status(): Promise<KeyStatus>; set(key: string): Promise<KeySetResult>; clear(): Promise<KeyStatus>
   send(message: AssistMessage): Promise<AssistReply>
+  find(message: AssistFind): Promise<AssistFound> // PR 14: one request with the web search tool; pages: the addresses the search returned
 }
 export interface SafeStorageLike { isEncryptionAvailable(): boolean; encryptString(text: string): Uint8Array; decryptString(data: Uint8Array): string }
 export interface KeyStoreDeps {
   gate: Gate; paths: AppPaths; safeStorage: SafeStorageLike
   transport?: (apiKey: string, message: AssistMessage) => Promise<AssistReply> // tests only; the default is in key-store.ts
+  findTransport?: (apiKey: string, message: AssistFind) => Promise<AssistFound> // tests only, the same way
 }
 export interface ScanDeps { // the real functions of PRs 4, 5 and 6, or fakes
   buildInventory: typeof import('./inventory/index.ts').buildInventory
@@ -351,6 +406,15 @@ export interface Updater { // PR 13. The feed is only the installed app's app-up
   download(): Promise<UpdateState> // only from 'available'
   install(): UpdateInstall // only from 'ready': quitAndInstall(true, true), once
 }
+export interface Share { // PR 14: createShare(deps) in src/main/share/index.ts; one method per share:* channel
+  view(): Promise<ShareView>; setRole(role: PcRole): Promise<ShareView>
+  findFolder(by: 'look' | 'pick' | 'make'): Promise<ShareView>; check(): Promise<ShareView>
+  send(what: { shareId: string } | { slotId: string; name: string }, onProgress?: OnProgress): Promise<ShareSendResult>
+  receive(what: { shareId: string; seq: number; olderGame: 'stop' | 'go' }, onProgress?: OnProgress): Promise<ShareReceiveResult>
+  restore(oldId: string): Promise<ShareReceiveResult>; keep(shareId: string, keep: 'mine' | 'theirs'): Promise<ShareView>
+  stop(shareId: string): Promise<ShareView>; oldSaves(): Promise<OldSave[]>; localSaves(): Promise<LocalSave[]>
+  shareRoot(): Promise<string | null> // what GateDeps.shareRoot is wired to
+}
 /** Built once in services.ts and handed to every handlers file. */
 export interface AppContext {
   host: Host; clock: Clock; paths: AppPaths; newId(): string // newId: 'yyyymmdd-hhmmss-xxxx', sorts by time
@@ -358,7 +422,11 @@ export interface AppContext {
   gameState(): Promise<GameRunState>
   scan: ScanDeps; gate: Gate; safety: Safety; fixes: Fixes; keyStore: KeyStore
   updater: Updater // createContext's optional `updater`: an Updater, or (seams) => Updater called once with this busy(); without one, always 'off'
-  busy(): boolean // true while any gate.run or any changing IPC call (CHANGING_CHANNELS in src/main/ipc.ts) is in flight; update:install refuses 'busy'
+  share: Share // PR 14
+  pickFolder(): Promise<string | null> // Electron's folder dialog on the app window; null when she cancels (tests: always null)
+  openWeb(url: string): Promise<'opened' | 'refused'> // only the url safeWebLink gives back reaches shell.openExternal; a refusal or a throw is 'refused'
+  startupRecovery(): Promise<StartupRecovery> // lazy, runs safety.recover() once, never rejects; index.ts calls it before the window opens
+  busy(): boolean // true while any gate.run or any changing IPC call (CHANGING_CHANNELS in src/main/ipc.ts) is in flight; update:install refuses 'busy'. update:check's one write (the time of the last check) is counted by its gate.run
   holdBusy?(): () => void // optional; registerIpc holds busy for the whole of every changing call
   session: { scan: Scan | null } // the last finished scan
   emit(progress: Progress): void // sends the 'progress' event to the window
@@ -415,6 +483,19 @@ ASSIST_MODEL = 'claude-haiku-5-5'
 createUpdater(input: UpdaterInput, seams?: UpdaterSeams): Updater // seams: { engine?, busy?, now? }; index.ts passes busy = ctx.busy
 // the stub takes (input, seams?: { busy?: () => boolean }) and is always { state: 'off', why: 'switched-off', current: input.version }
 // services.ts: updaterKeepOutOf(documentsDirs, paths) = Documents dirs + paths.oneDriveRoots + paths.dataDir, deduped
+// services.ts (contract): onceRecovery(recover) gives ctx.startupRecovery; makeOpenWeb(safeWebLink, openExternal) gives ctx.openWeb
+// PR 14  src/main/share/index.ts, handlers.ts (unit F); decide.ts, links.ts, receive.ts (unit C, Fable)
+type ShareDeps = Pick<AppContext, 'gate' | 'safety' | 'paths' | 'clock' | 'newId' | 'host' | 'gameState' | 'redact' | 'pickFolder'> // unit F may widen it
+createShare(deps: ShareDeps): Share
+shareHandlers(ctx: AppContext): Handlers<'share:*'> // unit H's findHandlers (the two share:find-* channels) is spread in
+safeWebLink(text: string): { url: string; host: string } | null // https only, no user, password or port, a dotted host name, 300 characters at most
+curseForgePage(addonId: number): string; placeOf(host: string): 'usual' | 'not-usual'
+receiveSave(deps: ShareDeps, what: { shareId: string; seq: number; olderGame: 'stop' | 'go' }): Promise<ShareReceiveResult>
+restoreOldSave(deps: ShareDeps, oldId: string): Promise<ShareReceiveResult>
+// decide.ts lands with its own types (checkManifest, decideReceive, pickFreeSlot, decideSend, answerAsk): briefs/pr-14.md, unit C
+// The contract wires two stubs inline in services.ts until their owners land them: Safety.closeUndo (throws; unit E
+// rewires it to closeUndo(safetyDeps, entryId)) and KeyStore.find ({ status: 'failed', why: 'no-key' }; unit D
+// rewires it to findWithKey(keyStoreDeps, message)).
 ```
 
 ## 5. The write gate (PR 8, written by Fable)
@@ -450,6 +531,8 @@ The source of a `copy` is only read, so it may be anywhere inside the Sims folde
   re-checked right before its own op. `runGate` handles one request at a time, so never call it from inside a gate
   call. `refused` means no op ran (a re-check that fails before the first op is also `refused`). The Sims folder may
   have any name once resolved, as long as it holds `Options.ini` and is not inside a `saves` or `Tray` folder.
+- **PR 14 (unit B, Fable, not built yet)** adds two zones, a **save slot** and the **share** folder. Until it lands
+  the gate refuses all of `saves/**` as above. Their rules are in [`briefs/pr-14.md`](briefs/pr-14.md), "unit B".
 - The lint test for the read and write rule in section 1 is `src/main/safety/gate-lint.test.ts`. The contract commit
   ships a first version, so every branch is checked from its first commit; PR 8 owns it from then on and hardens it.
 
@@ -477,7 +560,8 @@ export interface IpcInvoke { // renderer asks, main answers
   'report:reveal': { req: void; res: void } // shows the last report in Explorer
   'backup:status': { req: void; res: BackupStatus } // PR 10 owns this block
   'fix:apply': { req: FixCall; res: FixOutcome }
-  'journal:list': { req: void; res: JournalEntry[] } // the first call also runs safety.recover()
+  'journal:list': { req: void; res: JournalEntry[] } // reads only; waits for the start-up recovery to finish
+  'journal:recovery': { req: void; res: StartupRecovery } // reads only: what the start-up recovery did, once it finished
   'journal:undo': { req: { entryId: string }; res: FixOutcome }
   'groups:disabled': { req: void; res: DisabledGroup[] }
   'fifty:get': { req: void; res: FiftyGet } // PR 11 owns this block. { status: 'damaged' }: the file cannot be read
@@ -495,6 +579,22 @@ export interface IpcInvoke { // renderer asks, main answers
   'update:check': { req: { by: 'start' | 'click' }; res: UpdateState } // 'start' checks at most once in 24 hours
   'update:download': { req: void; res: UpdateState } // only from 'available'
   'update:install': { req: void; res: UpdateInstall } // only from 'ready'; 'busy' while ctx.busy()
+  'share:get': { req: void; res: ShareView } // PR 14 owns this block. Reads the folder again
+  'share:set-role': { req: { role: PcRole }; res: ShareView }
+  'share:find-folder': { req: { by: 'look' | 'pick' | 'make' }; res: ShareView } // pick: main's own dialog; make: create it in My Drive
+  'share:check': { req: void; res: ShareView } // writes our hello file, reads the other PC's
+  'share:settings': { req: { keepOld?: number; keepInDrive?: number }; res: ShareView }
+  'share:local-saves': { req: void; res: LocalSave[] }
+  'share:send': { req: { shareId: string } | { slotId: string; name: string }; res: ShareSendResult } // second form: a save's first send
+  'share:receive': { req: { shareId: string; seq: number; olderGame: 'stop' | 'go' }; res: ShareReceiveResult }
+  'share:keep': { req: { shareId: string; keep: 'mine' | 'theirs' }; res: ShareView } // answers 'which-to-keep'
+  'share:old-saves': { req: void; res: OldSave[] }
+  'share:restore': { req: { oldId: string }; res: ShareReceiveResult }
+  'share:stop': { req: { shareId: string }; res: ShareView } // forgets the link; every file stays
+  'share:mod-link': { req: { groupId: string; link: string | null }; res: 'saved' | 'refused' } // typed for a manual mod
+  'share:open-link': { req: { linkId: string }; res: 'opened' | 'refused' } // only addresses main validated itself
+  'share:find-preview': { req: { shareId: string; seq: number; key: string }; res: FindPreview | null }
+  'share:find-send': { req: { previewId: string }; res: FindAnswer }
 }
 export interface IpcEvents { progress: Progress } // main tells the renderer
 export const INVOKE_CHANNELS: readonly (keyof IpcInvoke)[] // every key above; preload refuses any other channel
@@ -507,8 +607,22 @@ export interface SimsHelperApi { // window.simsHelper
 
 Each UI PR owns one handlers file exporting `<name>Handlers(ctx: AppContext): Handlers<its channels>`: `scanHandlers`
 (PR 7, `src/main/scan/handlers.ts`), `fixHandlers` (PR 10), `fiftyHandlers` (PR 11), `assistHandlers` (PR 12),
-`updateHandlers` (PR 13, `src/main/update/handlers.ts`). `src/main/ipc.ts` (contract) registers all five and accepts calls only from the app's own window. A handler never
+`updateHandlers` (PR 13, `src/main/update/handlers.ts`), `shareHandlers` (PR 14, `src/main/share/handlers.ts`).
+`src/main/ipc.ts` (contract) registers all six and accepts calls only from the app's own window. A handler never
 trusts a path or a list of files from the renderer.
+
+`CHANGING_CHANNELS` in `src/main/ipc.ts` marks the calls that hold `busy()` from first line to last. It is `true` for
+`settings:update`, `report:build`, `fix:apply`, `journal:undo`, the five changing `fifty:*` calls, `assist:set-key`,
+`assist:clear-key`, and `share:set-role`, `find-folder`, `check`, `settings`, `send`, `receive`, `keep`, `restore`,
+`stop` and `mod-link`, so an update cannot restart the app in the middle of a Get. `journal:list` and
+`journal:recovery` only read; the start-up recovery holds `busy()` through `safety.recover`. No `update:*` channel is
+`true`: `update:check` writes only the time of the last check, through the gate, which counts it.
+
+**Start-up recovery (Tyler, 2026-11-24).** When a change was cut off by a crash, main puts things back when it next
+opens: `index.ts` calls `ctx.startupRecovery()` once, after `registerIpc` and before the window opens. It runs
+`safety.recover()` (which checks the backup first) a single time and never rejects. `journal:recovery` tells the
+renderer what it did; `journal:list`, `journal:undo`, `fix:apply` and `groups:disabled` wait for it. PR 10 awaits
+`ctx.startupRecovery()` instead of starting its own run.
 
 ## 8. The AI key store (PR 12; Fable writes `key-store.ts`)
 
@@ -521,7 +635,11 @@ trusts a path or a list of files from the renderer.
 - The key never appears in a log line, an error message, a thrown error, the report zip, the journal or
   `settings.json`. Errors from the SDK are mapped to `AssistReply` reasons and their text is dropped. An HTTP 401 is
   `key-rejected`, not `no-key`.
-- Tests and CI use a fake `transport` and a made-up key. No test calls the network.
+- **`find` (PR 14, unit D, Fable):** `findWithKey(deps, message: AssistFind)` sends one Messages request with
+  Anthropic's server-side web search tool (3 searches at most) and returns the text plus `pages`, the addresses the
+  search itself returned. Nothing else a reply holds gets out; a paused or cut-off turn is `error`. Until it lands,
+  `KeyStore.find` answers `{ status: 'failed', why: 'no-key' }`.
+- Tests and CI use a fake `transport` (and `findTransport`) and a made-up key. No test calls the network.
 
 ## 9. Renderer
 
@@ -530,7 +648,9 @@ trusts a path or a list of files from the renderer.
   folder.
 - **Routing:** no router package. `src/renderer/nav.tsx` holds a `Route` union (`{ screen: '<route>' }`) and
   `useNav()` (`route`, `go(route)`). `src/renderer/App.tsx` is the shell: header (emblem, name, nav), the screen for
-  the route, and the footer line "Saves and Tray are never touched · A backup is made before any change". The shell
+  the route, and the footer line "Your saves and households are never touched · A backup is made before any change"
+  (PR 14 changes it to "Your saves change only when you click Get in Share saves · A backup is made before any
+  change" when it lands). The shell
   never calls IPC: a screen or slot that needs data asks for it, so a stub never reaches a stub handler.
 - **Shared state:** `src/renderer/session.tsx` gives `useSession()` (`scan`, `setScan`, `symptom`, `setSymptom`).
   The check-up screen scans whenever `scan` is `null`, so "check again" is `setScan(null)` then `go` to `check-up`.
@@ -545,6 +665,7 @@ trusts a path or a list of files from the renderer.
 | `mods`, `history` | `fixes/ModsScreen.tsx`, `fixes/HistoryScreen.tsx` | PR 10 |
 | `fifty-fifty` | `fiftyfifty/FiftyFiftyScreen.tsx` | PR 11 |
 | `ask-for-help`, `key-setup` (opened with Ctrl+Shift+K) | `assist/AskScreen.tsx`, `assist/KeySetupScreen.tsx` | PR 12 |
+| `share`, `share-setup`, `share-old-saves`, `share-settings` | `share/ShareScreen.tsx`, `SetupScreen.tsx`, `OldSavesScreen.tsx`, `SharingSettingsScreen.tsx` | PR 14 |
 
 Slots, so no PR edits another PR's screen. Each is a stub that renders nothing until its owner fills it:
 
@@ -557,6 +678,8 @@ Slots, so no PR edits another PR's screen. Each is a stub that renders nothing u
 | `fiftyfifty/ResumeBanner.tsx` | shell, under the header | PR 11 |
 | `assist/AskEntry.tsx` `<AskEntry scan />` | PR 7's check-up screen, under the cards | PR 12 |
 | `update/UpdateBanner.tsx` | shell, first under the header | PR 13 |
+| `share/ShareBanner.tsx` | shell, under `<UpdateBanner />` | PR 14 |
+| `share/feature.ts` `SHARE_READY` (stub: `false`) | shell shows "Share saves" when `true` | PR 14 |
 | `update/UpdateRow.tsx` | the `about` route, after `<About />` | PR 13 |
 
 **Content-Security-Policy.** The built page gets `default-src 'self'; script-src 'self'; style-src 'self'
@@ -578,8 +701,12 @@ broken CC, 50/50, last exception, patch day (`docs/research/grok-ui-x.md`).
   a temp folder (`generateFixture(await loadSpec(...), tmpDir)`), never in `test/fixtures/`. The generator and the
   existing specs are frozen; a PR may add `scripts/fixtures/specs/<its slug>-*.json`.
 - **Sample data.** `src/shared/testing/sample.ts` (contract): `sampleScan(overrides?)`, `sampleFinding`,
-  `sampleJournalEntry`, `sampleFiftyFifty` (round 1, with the round 0 control in its history). Component tests and
-  screenshots use these. `fakeApi()` answers `update:get` and `update:check` with `off` unless a test passes its own.
+  `sampleJournalEntry`, `sampleFiftyFifty` (round 1, with the round 0 control in its history), `sampleShareView`
+  (Lila's PC, connected, one save ready to get that will replace hers). Component tests and screenshots use these.
+  `fakeApi()` answers these unless a test passes its own: `update:get` and `update:check` with `off`,
+  `journal:recovery` with `{ status: 'finished', touched: [] }`, `share:get` with `{ link: { state: 'no-role' },
+  settings: { role: null, folderLabel: null, keepOld: 5, keepInDrive: 3 }, saves: [], aiFind: 'hide' }`, and
+  `share:local-saves` and `share:old-saves` with `[]`.
 - **Screens while main is stubs.** `test/e2e/support/app.ts` (contract): `launchApp(options?)`;
   `stubIpc(app, { '<channel>': value | inOrder([...]) })`, which replaces handlers inside the running main process
   and reloads the window, so no fake code ships in the app; and `shoot(page, '<pr-slug>', '<name>')`, which saves
@@ -590,6 +717,8 @@ broken CC, 50/50, last exception, patch day (`docs/research/grok-ui-x.md`).
   `SIMS_HELPER_DOCUMENTS_DIR`, `SIMS_HELPER_DESKTOP_DIR`, `LOCALAPPDATA`, `APPDATA`, `USERNAME`, `ProgramFiles` and
   `ProgramFiles(x86)` pointing into it. `src/main/app-host.ts` (contract) reads the two `SIMS_HELPER_*` variables.
   Every `launchApp` sets `SIMS_HELPER_UPDATES=off` unless the caller's `env` overrides it, so no test reaches GitHub.
+  `launchApp({ shareDir })` sets `SIMS_HELPER_SHARE_DIR`, a local folder that stands in for Google Drive; PR 14's
+  `findShareRoot` reads it from `host.env` as one more place to look (test seam, like `SIMS_HELPER_DOCUMENTS_DIR`).
 - **CI.** `ci.yml` runs `smoke` and `screens` for every PR and uploads the artifact `screens`. After the silent
   install it checks `dist/latest.yml` and the installed `resources\app-update.yml` (provider `github`, this repo). It runs `live` only
   on pushes to `main` and on PRs whose base is `main` (details in `ownership.md`).
