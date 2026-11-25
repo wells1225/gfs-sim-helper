@@ -514,6 +514,8 @@ describe('runAction', () => {
         const undone = await undo(ws.deps, 'hold-1')
 
         expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+        if (undone.status !== 'stopped-part-way') return
+        expect(undone.detail).toBe('This file is back where it was, and the app kept a spare copy of it to be safe: lamp_b.package')
         expect(await pathExists(hold2LampB)).toBe(true)
         expect(await sha256File(hold2LampB)).toBe(sha)
         expect(ws.gate.requests.some((r) => r.ops.some((op) => op.op === 'remove'))).toBe(false)
