@@ -323,7 +323,8 @@ describe('runAction', () => {
 
       expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
       if (undone.status === 'stopped-part-way') {
-        expect(undone.detail).toContain('still in the holding folder')
+        expect(undone.detail).toBe('This file is back where it was, and the app kept a spare copy of it to be safe: lamp_b.package')
+        expect(undone.detail).not.toContain('holding')
         expect(undone.detail).toContain('lamp_b.package')
         expect(undone.detail).not.toContain(ws.root)
         expect(undone.detail).not.toContain(ws.paths.holdingDir)
@@ -362,7 +363,8 @@ describe('runAction', () => {
 
       expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
       if (undone.status === 'stopped-part-way') {
-        expect(undone.detail).toContain('still in the holding folder')
+        expect(undone.detail).toBe('This file is back where it was, and the app kept a spare copy of it to be safe: lamp_b.package')
+        expect(undone.detail).not.toContain('holding')
         expect(undone.detail).toContain('lamp_b.package')
         expect(undone.detail).not.toContain('EPERM')
         expect(undone.detail).not.toContain(ws.root)
