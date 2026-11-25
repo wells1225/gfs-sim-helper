@@ -161,10 +161,11 @@ async function fromLeadsToItsOwnName(folderPath: string, from: string): Promise<
 }
 
 /**
- * True only when `file` is strictly inside `holdingDir` both by name and after resolving links, does not resolve
- * to the same real path as `step.from`, and `step.from` leads to its own name in the real Mods folder. Hard links
- * (same-drive interrupted moves) have two distinct real paths and still pass; a symlink escaping to backupsDir or
- * back to Mods never passes, and neither does a file in Mods reached through a link.
+ * True only when `file` leads to its own name strictly inside the real `holdingDir` (no link on the way), does not
+ * resolve to the same real path as `step.from`, and `step.from` leads to its own name in the real Mods folder. Hard
+ * links (same-drive interrupted moves) have two distinct real paths and still pass; a symlink escaping to backupsDir,
+ * crossing into another holding entry, or leading back to Mods never passes, and neither does a file in Mods reached
+ * through a link.
  */
 async function isHoldingCopy(
   deps: SafetyDeps,
@@ -173,13 +174,23 @@ async function isHoldingCopy(
   file: string
 ): Promise<boolean> {
   if (!isInside(file, deps.paths.holdingDir) || samePath(file, deps.paths.holdingDir)) return false
+  const holding =
+    deps.paths.holdingDir.length > 1 && deps.paths.holdingDir.endsWith(sep)
+      ? deps.paths.holdingDir.slice(0, -1)
+      : deps.paths.holdingDir
+  if (fold(file.slice(0, holding.length)) !== fold(holding)) return false
+  const below = file.slice(holding.length)
+  const parts = below.split(sep)
+  if (parts[0] !== '' || parts.length < 2 || parts.some((p, i) => i > 0 && (p === '' || p === '.' || p === '..'))) {
+    return false
+  }
   try {
     const [realFile, realHolding, realFrom] = await Promise.all([
       realpath(file),
-      realpath(deps.paths.holdingDir),
+      realpath(holding),
       realpath(step.from)
     ])
-    if (!isInside(realFile, realHolding) || samePath(realFile, realHolding) || samePath(realFile, realFrom)) return false
+    if (fold(realFile) !== fold(realHolding + below) || samePath(realFile, realFrom)) return false
   } catch {
     return false
   }
