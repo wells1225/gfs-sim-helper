@@ -28,6 +28,9 @@ function fakeKeyStore(initial: KeyStatus = 'set', reply: AssistReply = { status:
     async send(message) {
       sent.push(message)
       return reply
+    },
+    async find() {
+      throw new Error('find is not used in these tests')
     }
   }
   return { store, sent, setCalls }

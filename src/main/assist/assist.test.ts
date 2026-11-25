@@ -61,6 +61,9 @@ function fakeKeyStore(reply: AssistReply = { status: 'text', text: 'My guess: Wi
     async send(message) {
       sent.push(message)
       return reply
+    },
+    async find() {
+      throw new Error('find is not used in these tests')
     }
   }
   return { store, sent }
