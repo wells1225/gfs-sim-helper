@@ -77,7 +77,7 @@ export function Intro({
         <div className="flex items-start gap-2">
           <ShieldCheck className="mt-0.5 size-4 shrink-0" strokeWidth={1.75} aria-hidden />
           <span className="text-sm">
-            We make a safety copy before moving anything. Saves and Tray are never touched, and you can stop at any time
+            We make a safety copy before moving anything. Your saves and households are never touched, and you can stop at any time
             to put every mod back.
           </span>
         </div>
