@@ -34,6 +34,8 @@ function groupsProblem(outcome: GroupsOutcome | FixOutcome): Problem | null {
   return { status: 'stopped-part-way', detail: outcome.detail }
 }
 
+const MOVE_DID_NOT_FINISH = 'Some mods did not finish moving. Try again in a moment.'
+
 /**
  * A fixes call can also throw after it moved some groups (runAction on a later group). That is a half-done
  * step like any other: the session is kept, and the next round or stop reads what is set aside and finishes.
@@ -41,8 +43,9 @@ function groupsProblem(outcome: GroupsOutcome | FixOutcome): Problem | null {
 async function moveProblem(call: () => Promise<GroupsOutcome | FixOutcome>): Promise<Problem | null> {
   try {
     return groupsProblem(await call())
-  } catch (err) {
-    return { status: 'stopped-part-way', detail: err instanceof Error ? err.message : String(err) }
+  } catch {
+    // The error text names files and codes, so it never reaches her.
+    return { status: 'stopped-part-way', detail: MOVE_DID_NOT_FINISH }
   }
 }
 

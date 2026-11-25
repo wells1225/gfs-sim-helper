@@ -94,11 +94,14 @@ export async function loadState(deps: Pick<AppContext, 'paths'>): Promise<FiftyF
   return saved.kind === 'session' ? saved.state : null
 }
 
+const PROGRESS_NOT_SAVED = 'The 50/50 test could not save its progress. Try again in a moment.'
+
 async function runState(deps: StoreDeps, ops: WriteOp[]): Promise<Problem | null> {
   const result = await deps.gate.run({ reason: 'state', folderPath: null, ops })
   if (result.status === 'done') return null
   if (result.status === 'refused') return { status: 'refused', refusal: { why: 'gate', refusal: result.refusal } }
-  return { status: 'stopped-part-way', detail: `Could not save the 50/50 progress: ${result.detail}` }
+  // The gate's own detail names files and the raw error, so it never reaches her.
+  return { status: 'stopped-part-way', detail: PROGRESS_NOT_SAVED }
 }
 
 export async function saveState(deps: StoreDeps, state: FiftyFifty): Promise<Problem | null> {
