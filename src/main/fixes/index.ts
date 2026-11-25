@@ -142,7 +142,7 @@ function groupPlan(
 /**
  * A set-aside that stopped part way is undone at once, so no group is left half moved. When the undo works the
  * group is fully back: 'rolled-back'. When it does not (refused, stopped, or threw), the entry stays
- * needs-attention and the original outcome stands.
+ * needs-attention: the original outcome stands, with the undo's entry and, when it has one, the undo's sentence.
  */
 async function rollBackHalfDone(
   deps: FixDeps,
@@ -156,7 +156,8 @@ async function rollBackHalfDone(
     return outcome
   }
   if (undone.status === 'done') return 'rolled-back'
-  if (undone.status === 'stopped-part-way') return { ...outcome, entry: undone.entry }
+  // The undo ran last, so its sentence says what is true now (its files may all be back, say).
+  if (undone.status === 'stopped-part-way') return { ...outcome, entry: undone.entry, detail: undone.detail || outcome.detail }
   return outcome
 }
 
