@@ -276,6 +276,7 @@ export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgres
   if (written.status === 'failed') {
     // A create can fail after the file got its name. Left there, the next start would put back a change that never
     // ran and History would say "undone". Only this very entry is taken back, never an older one with the same id.
+    // If the take-back fails too, the entry is in progress with every step pending: the next start sees it never ran.
     await removeEntryIfSame(deps, entry)
     return NOT_STARTED
   }
@@ -309,6 +310,7 @@ export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgres
   }
 
   if (result.status === 'refused') {
+    // If this fails, the entry stays in progress with every step pending: the next start sees it never ran.
     await removeEntry(deps, entry.id)
     return { status: 'refused', refusal: { why: 'gate', refusal: result.refusal } }
   }
@@ -506,6 +508,19 @@ export async function recoverNow(deps: SafetyDeps, entries: JournalEntry[]): Pro
   const touched: JournalEntry[] = []
   for (const entry of entries) {
     if (entry.status !== 'in-progress') continue
+    // In progress with every step pending and the disk as it was: the change never ran. A refused or failed start
+    // whose take-back failed leaves exactly this, and so does a crash before the first op. There is nothing to put
+    // back and nothing to tell her: the entry is taken back, or left as it is for the next start if that fails.
+    let untouched: boolean
+    try {
+      untouched = await neverRan(entry)
+    } catch {
+      continue
+    }
+    if (untouched) {
+      await removeEntry(deps, entry.id)
+      continue
+    }
     if (entry.undo === 'cannot-undo') {
       const settled = await settleCacheClear(deps, entry)
       if (settled) touched.push(settled)
