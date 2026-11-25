@@ -244,7 +244,7 @@ describe('UpdateRow', () => {
       'Updates are off because Sims Helper is installed in your Documents or OneDrive folder. Reinstall it in the folder Setup suggests to get updates.'
     ]
   ] as const)('with updates off (%s), says why and offers no check', async (why, note) => {
-    show({ 'update:get': { state: 'off', why } }, 'row')
+    show({ 'update:get': { state: 'off', why, current: '0.2.0' } }, 'row')
     expect(await screen.findByText(note)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Check for updates' })).toBeNull()
   })

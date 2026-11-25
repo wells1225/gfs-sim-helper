@@ -210,7 +210,7 @@ describe('when updates are off', () => {
 
   async function expectOff(over: Partial<UpdaterInput>, why: string) {
     const updater = createUpdater(input(over), { engine: never })
-    const off = { state: 'off', why }
+    const off = { state: 'off', why, current: input(over).version } // About shows the version with updates off too
     expect(updater.state()).toEqual(off)
     expect(await updater.check()).toEqual(off)
     expect(await updater.download()).toEqual(off)
@@ -273,8 +273,8 @@ describe('when updates are off', () => {
 
   it('is off, and does not throw, when the engine cannot start', async () => {
     const broken = createUpdater(input(), { engine: never })
-    expect(broken.state()).toEqual({ state: 'off', why: 'not-installed-app' })
-    expect(await broken.check()).toEqual({ state: 'off', why: 'not-installed-app' })
+    expect(broken.state()).toEqual({ state: 'off', why: 'not-installed-app', current: '0.2.0' })
+    expect(await broken.check()).toEqual({ state: 'off', why: 'not-installed-app', current: '0.2.0' })
   })
 })
 
@@ -744,8 +744,8 @@ describe('the real engine', () => {
   it('is never read outside Electron, where reading it would load Electron itself', async () => {
     packaged.engine = fakeEngine().engine
     const updater = createUpdater(input())
-    expect(updater.state()).toEqual({ state: 'off', why: 'not-installed-app' })
-    expect(await updater.check()).toEqual({ state: 'off', why: 'not-installed-app' })
+    expect(updater.state()).toEqual({ state: 'off', why: 'not-installed-app', current: '0.2.0' })
+    expect(await updater.check()).toEqual({ state: 'off', why: 'not-installed-app', current: '0.2.0' })
     expect(packaged.reads).toBe(0)
   })
 
@@ -771,10 +771,10 @@ describe('the real engine', () => {
   it('leaves updates off, and does not throw, when electron-updater cannot start or is missing from the build', () => {
     insideElectron()
     packaged.broken = true
-    expect(createUpdater(input()).state()).toEqual({ state: 'off', why: 'not-installed-app' })
+    expect(createUpdater(input()).state()).toEqual({ state: 'off', why: 'not-installed-app', current: '0.2.0' })
     packaged.broken = false
     packaged.engine = undefined
-    expect(createUpdater(input()).state()).toEqual({ state: 'off', why: 'not-installed-app' })
+    expect(createUpdater(input()).state()).toEqual({ state: 'off', why: 'not-installed-app', current: '0.2.0' })
     expect(packaged.reads).toBe(2)
   })
 })

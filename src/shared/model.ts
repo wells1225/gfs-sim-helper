@@ -391,7 +391,7 @@ export type AssistAnswer =
 
 // ── Updates (PR 13)
 export type UpdateState =
-  | { state: 'off'; why: 'not-installed-app' | 'switched-off' | 'unsafe-install-folder' }
+  | { state: 'off'; current: string; why: 'not-installed-app' | 'switched-off' | 'unsafe-install-folder' } // current: About shows it
   | { state: 'idle'; current: string; checkedAt: IsoTime | null; justUpdated: boolean }
   | { state: 'checking'; current: string }
   | { state: 'available'; current: string; next: string }

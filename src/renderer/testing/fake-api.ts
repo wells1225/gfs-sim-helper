@@ -19,9 +19,9 @@ export interface FakeApi extends SimsHelperApi {
   emitProgress(progress: Progress): void
 }
 
-const UPDATES_OFF: UpdateState = { state: 'off', why: 'switched-off' }
+const UPDATES_OFF: UpdateState = { state: 'off', why: 'switched-off', current: '0.2.0' }
 
-/** Every test gets these unless it passes its own: the update banner and About row then render nothing. */
+/** Every test gets these unless it passes its own: no update banner, and the About row shows the version and a note saying why updates are off. */
 const DEFAULT_ANSWERS: FakeApiAnswers = {
   'update:get': UPDATES_OFF,
   'update:check': UPDATES_OFF

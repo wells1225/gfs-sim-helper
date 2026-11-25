@@ -138,8 +138,8 @@ function packagedEngine(): UpdateEngine | null {
   return typeof process.versions['electron'] === 'string' ? electronUpdater.autoUpdater : null
 }
 
-function alwaysOff(why: OffReason): Updater {
-  const off: UpdateState = { state: 'off', why }
+function alwaysOff(why: OffReason, current: string): Updater {
+  const off: UpdateState = { state: 'off', why, current } // About shows the version even with updates off
   return {
     state: () => off,
     check: async () => off,
@@ -151,9 +151,9 @@ function alwaysOff(why: OffReason): Updater {
 export function createUpdater(input: UpdaterInput, seams: UpdaterSeams = {}): Updater {
   const current = input.version
   const parsed = versionParts(current)
-  if (isSwitchedOff(input.env)) return alwaysOff('switched-off')
-  if (!input.isPackaged || input.platform !== 'win32' || parsed === null) return alwaysOff('not-installed-app')
-  if (isUnsafeInstallFolder(input.installDir, input.keepOutOf)) return alwaysOff('unsafe-install-folder')
+  if (isSwitchedOff(input.env)) return alwaysOff('switched-off', current)
+  if (!input.isPackaged || input.platform !== 'win32' || parsed === null) return alwaysOff('not-installed-app', current)
+  if (isUnsafeInstallFolder(input.installDir, input.keepOutOf)) return alwaysOff('unsafe-install-folder', current)
   const currentParts: [number, number, number] = parsed
 
   const now = seams.now ?? (() => new Date())
@@ -167,7 +167,7 @@ export function createUpdater(input: UpdaterInput, seams: UpdaterSeams = {}): Up
   let engine: UpdateEngine
   try {
     const loaded = seams.engine ? seams.engine() : packagedEngine()
-    if (loaded === null || loaded === undefined) return alwaysOff('not-installed-app')
+    if (loaded === null || loaded === undefined) return alwaysOff('not-installed-app', current)
     engine = loaded
     lockDown(engine)
     engine.on('download-progress', (info) => {
@@ -176,7 +176,7 @@ export function createUpdater(input: UpdaterInput, seams: UpdaterSeams = {}): Up
       if (percent > state.percent) state = { ...state, percent: Math.min(percent, 100) }
     })
   } catch {
-    return alwaysOff('not-installed-app') // no engine, no updates: outside Electron, or a build that lost it
+    return alwaysOff('not-installed-app', current) // no engine, no updates: outside Electron, or a build that lost it
   }
 
   // Anything but a plain "no" counts as busy, a throw included: a restart in the middle of a change is a power cut.
