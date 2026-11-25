@@ -457,6 +457,54 @@ describe('RecoveryNotice', () => {
     expect(screen.queryByText(/undo/i)).toBeNull()
   })
 
+  it('waits for a late journal:list before saying all is well, then warns about a change it lists as cut off', async () => {
+    const putBack = sampleJournalEntry({ id: 'e-put-back', status: 'undone', undoneAt: '2026-11-24T12:20:00.000Z' })
+    const stuck = sampleJournalEntry({ id: 'e-stuck', status: 'needs-attention', undo: 'can-undo' })
+    let answerList: (entries: JournalEntry[]) => void = () => {}
+    const api = fakeApi({
+      'journal:recovery': { status: 'finished', touched: [putBack] },
+      'journal:list': () => new Promise<JournalEntry[]>((resolve) => (answerList = resolve))
+    })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'about' }}>
+        <RecoveryNotice />
+      </Harness>
+    )
+
+    await waitFor(() => expect(api.calls.map((call) => call.channel)).toContain('journal:list'))
+    await act(async () => {})
+    expect(screen.queryByText(/we put things back as they were/i)).toBeNull()
+    expect(screen.queryByText(/nothing more to do/i)).toBeNull()
+
+    await act(async () => answerList([putBack, stuck]))
+
+    expect(await screen.findByText('A change was cut off before it finished')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Open History' })).toBeInTheDocument()
+    expect(screen.queryByText(/nothing more to do/i)).toBeNull()
+  })
+
+  it('shows the put-back notice once a late journal:list comes back empty', async () => {
+    const putBack = sampleJournalEntry({ id: 'e-put-back', status: 'undone', undoneAt: '2026-11-24T12:20:00.000Z' })
+    let answerList: (entries: JournalEntry[]) => void = () => {}
+    const api = fakeApi({
+      'journal:recovery': { status: 'finished', touched: [putBack] },
+      'journal:list': () => new Promise<JournalEntry[]>((resolve) => (answerList = resolve))
+    })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'about' }}>
+        <RecoveryNotice />
+      </Harness>
+    )
+
+    await waitFor(() => expect(api.calls.map((call) => call.channel)).toContain('journal:list'))
+    await act(async () => answerList([]))
+
+    expect(await screen.findByText('A change was cut off, so we put things back as they were.')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open History' })).toBeNull()
+  })
+
   it('renders nothing when mounted without ApiProvider', () => {
     const { container } = render(
       <NavProvider initial={{ screen: 'about' }}>
