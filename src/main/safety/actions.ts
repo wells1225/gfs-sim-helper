@@ -253,11 +253,11 @@ async function removeCopiesLeft(deps: SafetyDeps, entry: JournalEntry, indexes: 
 function copyLeftDetail(deps: SafetyDeps, entry: JournalEntry, file: string): string {
   const name = basename(file)
   if (isInside(file, deps.paths.holdingDir) && !samePath(file, deps.paths.holdingDir)) {
-    return `This file is back where it was, and the app kept a spare copy of it to be safe: ${name}`
+    return `This file is back where it was, and the app kept a spare copy of it to be safe: ${name}.`
   }
   const mods = join(entry.folderPath, 'Mods')
   if (isInside(file, mods) && !samePath(file, mods)) {
-    return `This file is back where it was, and an extra copy is still in your Mods folder (${name}). The app left it there to be safe.`
+    return `This file is back where it was, and an extra copy is still in your Mods folder (${name}). The app left it there to be safe. You can delete the extra copy.`
   }
   return `This file is back where it was, and an extra copy of it was left where the change put it (${name}). The app left it there to be safe.`
 }
@@ -265,8 +265,8 @@ function copyLeftDetail(deps: SafetyDeps, entry: JournalEntry, file: string): st
 /** What History says about a step whose file is not back. Never includes full paths or raw error text. */
 function notBack(deps: SafetyDeps, entry: JournalEntry, step: JournalStep, onDisk: StepOnDisk): string {
   if (onDisk.where === 'copy-left') return copyLeftDetail(deps, entry, onDisk.file)
-  if (onDisk.where === 'unclear') return `This file is not as the change left it: ${basename(onDisk.file)}`
-  return `This file did not come back as it was: ${basename(step.kind === 'move' ? step.from : step.path)}`
+  if (onDisk.where === 'unclear') return `This file is not as the change left it: ${basename(onDisk.file)}.`
+  return `This file did not come back as it was: ${basename(step.kind === 'move' ? step.from : step.path)}.`
 }
 
 export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgress?: OnProgress): Promise<FixOutcome> {
