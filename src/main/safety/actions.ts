@@ -525,6 +525,22 @@ export async function undoNow(deps: SafetyDeps, entryId: string, onProgress?: On
   const entry = await readEntry(deps.paths.journalDir, entryId)
   if (!entry) return NOTHING_TO_DO
   if (entry.status === 'undone') return { status: 'done', entry } // before the backup step: no gate request at all
+  // In progress with every step pending and the disk as it was: the change never ran, so there is nothing to put
+  // back. It is dropped as recover() drops it, before the backup step, and never marked undone.
+  let untouched = false
+  if (entry.status === 'in-progress') {
+    try {
+      untouched = await neverRan(entry)
+    } catch {
+      untouched = false // the disk could not say: undo looks at it step by step instead
+    }
+  }
+  if (untouched) {
+    const removed = await removeEntry(deps, entry.id)
+    if (removed.status === 'done') return NOTHING_TO_DO
+    if (removed.status === 'refused') return { status: 'refused', refusal: { why: 'gate', refusal: removed.refusal } }
+    return NOT_STARTED // left in progress: the next start sees it never ran and drops it
+  }
   if (entry.undo === 'cannot-undo') return NOTHING_TO_DO
   return await revert(deps, entry, onProgress)
 }
