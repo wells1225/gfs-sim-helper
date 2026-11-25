@@ -35,7 +35,8 @@ async function fileHash(path: string): Promise<Sha256 | null> {
 const ACTION_STOPPED = 'This change stopped part way through. You can undo what already moved from History.'
 const UNDO_STOPPED = 'Some files could not be put back. You can try Undo again.'
 const ACTION_HISTORY_NOT_SAVED = 'The files changed, but the app could not save your History record.'
-const UNDO_HISTORY_NOT_SAVED = 'Could not save your History record.'
+// Only used when every file is back (any file not back sets its own detail first), so it says so.
+const UNDO_HISTORY_NOT_SAVED = 'Your files are back as they were, but the app could not save this to History.'
 
 const OUT_OF_DATE: FixOutcome = { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
 /** The journal entry could not be written, so no change was started. */

@@ -86,6 +86,8 @@ async function storedCopiesInPlace(backupsDir: string, lines: ManifestFile[]): P
   return true
 }
 
+const STATUS_UNKNOWN = 'We could not check your safety copy right now.'
+
 export async function backupStatus(deps: SafetyDeps, folderPath: string): Promise<BackupStatus> {
   try {
     const manifest = await newestVerified(deps.paths.backupsDir, folderPath)
@@ -125,8 +127,9 @@ export async function backupStatus(deps: SafetyDeps, folderPath: string): Promis
       return { state: 'stale', backupId, at }
     }
     return { state: 'verified', backupId, at }
-  } catch (err) {
-    return { state: 'unknown', detail: (err as Error).message ?? String(err) }
+  } catch {
+    // backup:status sends this to the screen side, so the raw error and its paths stay here.
+    return { state: 'unknown', detail: STATUS_UNKNOWN }
   }
 }
 
