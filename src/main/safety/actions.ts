@@ -6,7 +6,7 @@ import { sha256File } from '../fs-read.ts'
 import type { ActionPlan, GateResult, OnProgress, SafetyDeps, WriteOp } from '../ports.ts'
 import { backupStatus, makeBackup, tracked } from './backup.ts'
 import { readEntry, removeEntry, removeEntryIfSame, saveEntry } from './journal.ts'
-import { exists, isSafeId, missingDirs, pathKey } from './where.ts'
+import { exists, isInside, isSafeId, missingDirs, pathKey } from './where.ts'
 
 type BackupFirst = { status: 'ok'; backupId: string } | { status: 'refused'; refusal: FixRefusal }
 
@@ -107,8 +107,8 @@ async function inspect(step: JournalStep): Promise<StepOnDisk> {
     if (atTo === step.sha256 && !fromTaken) return { where: 'done' }
     if (atFrom === step.sha256 && !toTaken) return { where: 'not-done' }
     // The original is in place, and a second, identical file sits at `to`: what a move to another drive leaves when
-    // it is cut off after the copy and before the source is removed. Nothing to move, but the step is not finished:
-    // the copy is left alone, and the entry is never called undone while it is there.
+    // it is cut off after the copy and before the source is removed. Nothing to move, but the step is not finished
+    // until that copy is gone: see removeCopiesLeft.
     if (atFrom === step.sha256 && atTo === step.sha256) return { where: 'copy-left', file: step.to }
     return { where: 'unclear', file: fromTaken && atFrom !== step.sha256 ? step.from : step.to }
   }
@@ -119,6 +119,54 @@ async function inspect(step: JournalStep): Promise<StepOnDisk> {
     return { where: 'unclear', file: step.path }
   }
   return (await exists(step.path)) ? { where: 'not-done' } : { where: 'done' }
+}
+
+/**
+ * Removes the copies that copy-left steps left in the app's holding folder, through the gate, as one app-data
+ * request. Each copy is hashed again just before: only a file byte for byte the same as the one back in Mods is
+ * removed, so nothing is lost, and the file in Mods is never touched. A copy anywhere else (a move inside Mods),
+ * one that differs, or one whose removal is refused, fails or throws is kept. Returns the detail for the first
+ * step that is not back, or null when every one is.
+ */
+async function removeCopiesLeft(deps: SafetyDeps, entry: JournalEntry, indexes: number[]): Promise<string | null> {
+  const ops: WriteOp[] = []
+  const tried: number[] = []
+  let detail: string | null = null
+  for (const index of indexes) {
+    const step = entry.steps[index]!
+    const now = await inspect(step)
+    if (now.where === 'not-done') step.state = 'reverted'
+    else if (step.kind === 'move' && now.where === 'copy-left' && isInside(now.file, deps.paths.holdingDir) && !samePathIn(ops, now.file)) {
+      ops.push({ op: 'remove', path: now.file })
+      tried.push(index)
+    } else detail ??= notBack(step, now)
+  }
+  if (ops.length > 0) {
+    try {
+      await deps.gate.run({ reason: 'undo', folderPath: entry.folderPath, ops })
+    } catch {
+      // What ran is read from the disk below.
+    }
+    for (const index of tried) {
+      const step = entry.steps[index]!
+      const after = await inspect(step)
+      if (after.where === 'not-done') step.state = 'reverted'
+      else detail ??= notBack(step, after)
+    }
+  }
+  return detail
+}
+
+/** What History says about a step whose file is not back. */
+function notBack(step: JournalStep, onDisk: StepOnDisk): string {
+  if (onDisk.where === 'copy-left') return `${COPY_LEFT}${onDisk.file}`
+  if (onDisk.where === 'unclear') return `This file is not as the change left it: ${onDisk.file}`
+  return `This file did not come back as it was: ${step.kind === 'move' ? step.from : step.path}`
+}
+
+function samePathIn(ops: WriteOp[], path: string): boolean {
+  const key = pathKey(path)
+  return ops.some((op) => op.op === 'remove' && pathKey(op.path) === key)
 }
 
 function saveError(result: GateResult): string {
@@ -246,7 +294,7 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
   const toRevert: { index: number; lastOp: number }[] = []
   const planned = new Set<string>()
   let problem: string | null = null
-  let copyLeft: string | null = null
+  const copiesLeft: number[] = []
   for (let i = entry.steps.length - 1; i >= 0; i -= 1) {
     const step = entry.steps[i]!
     if (step.kind === 'remove-cache' || step.state !== 'applied') continue
@@ -256,7 +304,7 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
       continue
     }
     if (onDisk.where === 'copy-left') {
-      copyLeft ??= onDisk.file // the original is back: the rest of the undo goes on, and the step stays applied
+      copiesLeft.push(i) // the original is back: the rest of the undo goes on, and the copy is seen to after it
       continue
     }
     if (onDisk.where === 'unclear') {
@@ -278,11 +326,12 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
   }
 
   const statusBefore = entry.status
-  let detail: string | null = problem
-    ? `This file is not as the change left it: ${problem}`
-    : copyLeft
-      ? `${COPY_LEFT}${copyLeft}`
-      : null
+  let detail: string | null = problem ? `This file is not as the change left it: ${problem}` : null
+  let undoFailed = false
+  const copyLeftWords = (index: number): string => {
+    const step = entry.steps[index]!
+    return `${COPY_LEFT}${step.kind === 'move' ? step.to : ''}`
+  }
   if (ops.length > 0) {
     // Marked in-progress first, so a crash during the undo is finished by recover() on the next start.
     entry.status = 'in-progress'
@@ -311,10 +360,21 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
       // Undo checks what it put back.
       const after = await inspect(step)
       if (after.where === 'not-done') step.state = 'reverted'
+      else if (after.where === 'copy-left' && result.status === 'done') copiesLeft.push(index)
       else if (after.where === 'copy-left') detail ??= `${COPY_LEFT}${after.file}`
       else detail ??= `This file did not come back as it was: ${step.kind === 'move' ? step.from : step.kind === 'edit' ? step.path : ''}`
     }
-    if (result.status === 'failed') detail ??= result.detail
+    if (result.status === 'failed') {
+      // After an undo request that failed, the copies are left for the next undo, which looks at the disk afresh.
+      undoFailed = true
+      if (copiesLeft.length > 0) detail ??= copyLeftWords(copiesLeft[0]!)
+      detail ??= result.detail
+    }
+  }
+
+  if (copiesLeft.length > 0 && !undoFailed) {
+    const left = await removeCopiesLeft(deps, entry, copiesLeft)
+    if (left !== null) detail ??= left
   }
 
   const allBack = entry.steps.every((s) => s.kind === 'remove-cache' || s.state !== 'applied')
