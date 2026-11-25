@@ -365,11 +365,24 @@ export async function runActionNow(deps: SafetyDeps, plan: ActionPlan, onProgres
   return { status: 'done', entry }
 }
 
-/** What History says about the steps undo skipped: each file by its name alone, and nothing else. */
-function skippedDetail(names: string[]): string | null {
-  if (names.length === 0) return null
-  if (names.length === 1) return `This file is not as the change left it: ${names[0]}`
-  return `These files are not as the change left them: ${names.join(', ')}`
+/**
+ * What History says about the steps undo skipped: each file by its name alone, and nothing else. A file of hers that
+ * changed and an edit whose saved copy in holding was missing or changed (her file is as the change left it) each
+ * get their own sentence.
+ */
+function skippedDetail(changed: string[], copyGone: string[]): string | null {
+  const sentences: string[] = []
+  if (changed.length === 1) sentences.push(`This file is not as the change left it: ${changed[0]}`)
+  if (changed.length > 1) sentences.push(`These files are not as the change left them: ${changed.join(', ')}`)
+  if (copyGone.length === 1) {
+    sentences.push(`The app's copy of this file was missing or changed, so it was left as it is: ${copyGone[0]}`)
+  }
+  if (copyGone.length > 1) {
+    sentences.push(
+      `The app's copies of these files were missing or changed, so they were left as they are: ${copyGone.join(', ')}`
+    )
+  }
+  return sentences.length === 0 ? null : sentences.join(' ')
 }
 
 /**
@@ -401,7 +414,7 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
   const ops: WriteOp[] = []
   const toRevert: { index: number; lastOp: number }[] = []
   const planned = new Set<string>()
-  const skipped: { index: number; name: string }[] = []
+  const skipped: { index: number; name: string; copyGone: boolean }[] = []
   const copiesLeft: number[] = []
   for (let i = entry.steps.length - 1; i >= 0; i -= 1) {
     const step = entry.steps[i]!
@@ -416,7 +429,7 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
       continue
     }
     if (onDisk.where === 'unclear') {
-      skipped.push({ index: i, name: basename(onDisk.file) }) // left alone: the rest of the undo goes on
+      skipped.push({ index: i, name: basename(onDisk.file), copyGone: false }) // left alone: the rest goes on
       continue
     }
     if (step.kind === 'move') {
@@ -425,7 +438,7 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
     } else {
       const saved = await readFile(step.savedCopy).catch(() => null)
       if (!saved || sha256Of(saved) !== step.beforeSha256) {
-        skipped.push({ index: i, name: basename(step.path) })
+        skipped.push({ index: i, name: basename(step.path), copyGone: true }) // her file is as the change left it
         continue
       }
       ops.push({ op: 'write', path: step.path, data: new Uint8Array(saved), mode: 'replace' })
@@ -434,7 +447,11 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
   }
 
   const statusBefore = entry.status
-  let detail = skippedDetail(skipped.sort((a, b) => a.index - b.index).map((s) => s.name))
+  skipped.sort((a, b) => a.index - b.index)
+  let detail = skippedDetail(
+    skipped.filter((s) => !s.copyGone).map((s) => s.name),
+    skipped.filter((s) => s.copyGone).map((s) => s.name)
+  )
   let undoFailed = false
   if (ops.length > 0) {
     // Marked in-progress first, so a crash during the undo is finished by recover() on the next start.
