@@ -477,10 +477,39 @@ async function isAlsoInForbidden(ground: Ground, glance: Glance, target: string)
  * copy in holding that is really a file in a backup, a journal entry, the key, or what another change holds.
  * Only the part below the app data folder is compared, since the folder itself may be reached through a link
  * or a short 8.3 name. Both paths are written out in full, so the given one is cut by length.
+ *
+ * The disk may spell a name its own way: a folder made as 'Été' answers to 'été' too, and its real path comes
+ * back as 'Été'. A to Z is compared without letter case, as in every allow check. For any other letter the
+ * answer comes from the disk, never from a table of letters. The wide fold reads two names as one that Windows
+ * keeps apart, so a link from one such name to the other would pass a compare that used it. The wide fold only
+ * narrows here: two names it reads apart are refused, and two it reads as one still have to be one on the disk.
  */
-function leadsToItsOwnName(ground: Ground, target: string, real: string): boolean {
-  const realData = ground.realRoots.dataDir
-  return fold(real) === fold(realData + target.slice(ground.roots.dataDir.length))
+async function leadsToItsOwnName(ground: Ground, target: string, real: string): Promise<boolean> {
+  const own = ground.realRoots.dataDir + target.slice(ground.roots.dataDir.length)
+  if (fold(real) === fold(own)) return true
+  const asked = own.split(nativePath.sep)
+  const found = real.split(nativePath.sep)
+  if (asked.length !== found.length) return false
+  for (const [index, name] of asked.entries()) {
+    const spelled = found[index]!
+    if (fold(name) === fold(spelled)) continue
+    if (index === 0 || looseFold(name) !== looseFold(spelled)) return false
+    const parent = found.slice(0, index).join(nativePath.sep) + nativePath.sep
+    if (!(await isOneEntry(parent + name, parent + spelled))) return false
+  }
+  return true
+}
+
+/**
+ * True only when the disk proves that two spellings in one folder are one name: neither is a link, and both
+ * give the same file id. A link has its own id, and it is refused before ids are compared. A disk that gives
+ * no file id proves nothing, so there the answer is false. An error is thrown on: the check failed.
+ */
+async function isOneEntry(asked: string, spelled: string): Promise<boolean> {
+  const first = await lstat(asked, { bigint: true })
+  const second = await lstat(spelled, { bigint: true })
+  if (first.isSymbolicLink() || second.isSymbolicLink()) return false
+  return first.ino !== 0n && fileId(first) === fileId(second)
 }
 
 async function checkWrite(ground: Ground, glance: Glance, use: WriteUse, target: string): Promise<Lead | GateRefusal> {
@@ -494,7 +523,7 @@ async function checkWrite(ground: Ground, glance: Glance, use: WriteUse, target:
     if (sorted === null) return savesOrTray(target)
     if (sorted.zone !== named.zone || !mayWrite(use, sorted)) return linkEscape(target)
     if (await isAlsoInForbidden(ground, glance, target)) return savesOrTray(target)
-    if (named.zone === 'app-data' && !leadsToItsOwnName(ground, target, real)) return linkEscape(target)
+    if (named.zone === 'app-data' && !(await leadsToItsOwnName(ground, target, real))) return linkEscape(target)
     return { path: target, real }
   } catch (err) {
     return err instanceof LinkToNowhere ? linkEscape(target) : checkFailed(target)
