@@ -30,6 +30,18 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
+/** A temp root reached through a link, as her AppData may be (a junction on Windows). */
+const LINKED_TOOLS: WorkspaceTools = {
+  ...TOOLS,
+  makeTempRoot: async () => {
+    const real = await TOOLS.makeTempRoot()
+    const link = `${real}-link`
+    await symlink(real, link, process.platform === 'win32' ? 'junction' : 'dir')
+    roots.push(link)
+    return link
+  }
+}
+
 async function backedUp(): Promise<Workspace> {
   const ws = await makeWorkspace(TOOLS)
   const result = await createBackup(ws.deps, ws.simsFolder)
@@ -291,6 +303,22 @@ describe('runAction', () => {
       // The duplicate goes through the gate as one app-data remove of the holding copy, and nothing else.
       const removes = ws.gate.requests.flatMap((r) => r.ops.filter((op) => op.op === 'remove').map((op) => ({ reason: r.reason, op })))
       expect(removes).toEqual([{ reason: 'undo', op: { op: 'remove', path: held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package') } }])
+    })
+
+    it('both places, with the app-data folder reached through a link: the identical copy in holding is still removed', async () => {
+      const ws = await makeWorkspace(LINKED_TOOLS)
+      const made = await createBackup(ws.deps, ws.simsFolder)
+      if (made.status !== 'verified') throw new Error(`backup ${made.status}`)
+      const before = await snapshotTree(ws.simsFolder)
+      const entry = await stoppedAtLampB(ws, 'both')
+      expect(await realpath(ws.paths.holdingDir)).not.toBe(ws.paths.holdingDir)
+
+      const undone = await undo(ws.deps, entry.id)
+
+      expect(undone).toMatchObject({ status: 'done', entry: { status: 'undone' } })
+      expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+      expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package'))).toBe(false)
+      expect((await listJournal(ws.deps))[0]!.status).toBe('undone')
     })
 
     it('both places with different bytes in holding: both are kept, and the entry needs attention', async () => {
@@ -990,6 +1018,46 @@ describe('a cache clear that stops part way', () => {
     expect(await recover(ws.deps)).toEqual([])
   })
 
+  it('a gate that throws inside a cache folder: a cleared file counts, the folder stays pending, and it settles as CACHE_STOPPED', async () => {
+    const ws = await backedUp()
+    const cacheDir = join(ws.simsFolder, 'cachestr')
+    const cleared = join(cacheDir, 'cleared.bin')
+    await mkdir(cacheDir, { recursive: true })
+    await writeFile(cleared, 'first cache file')
+    await writeFile(join(cacheDir, 'locked.bin'), 'locked cache file')
+    ws.gate.hooks.beforeOp = async (op, _i, request) => {
+      if (request.reason !== 'fix' || op.op !== 'remove' || op.path !== cacheDir) return undefined
+      await rm(cleared)
+      throw new Error(`EPERM on ${cacheDir}`)
+    }
+
+    const outcome = await runAction(ws.deps, cachePlan(ws))
+    ws.gate.hooks.beforeOp = undefined
+
+    expect(outcome).toMatchObject({ status: 'stopped-part-way', detail: CACHE_STOPPED, entry: { status: 'done' } })
+    if (outcome.status === 'stopped-part-way') expect(outcome.entry.steps.map((s) => s.state)).toEqual(['applied', 'pending'])
+    expect((await listJournal(ws.deps)).map((e) => [e.status, e.steps.map((s) => s.state)])).toEqual([
+      ['done', ['applied', 'pending']]
+    ])
+    expect(await recover(ws.deps)).toEqual([])
+  })
+
+  it('a gate that throws before a file-only cache clear removed anything never ran, and leaves no History line', async () => {
+    const ws = await backedUp()
+    const thumbs = join(ws.simsFolder, 'localthumbcache.package')
+    ws.gate.hooks.beforeOp = (_op, _i, request) => {
+      if (request.reason === 'fix') throw new Error(`EPERM on ${thumbs}`)
+      return undefined
+    }
+
+    const outcome = await runAction(ws.deps, { ...cachePlan(ws), steps: [{ kind: 'remove-cache', path: thumbs }] })
+    ws.gate.hooks.beforeOp = undefined
+
+    expect(outcome).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
+    expect(await listJournal(ws.deps)).toEqual([])
+    expect(await pathExists(thumbs)).toBe(true)
+  })
+
   it('that stopped before clearing anything is a change that never ran, and leaves no History line', async () => {
     const ws = await backedUp()
     ws.gate.hooks.beforeOp = (_op, _i, request) => (request.reason === 'fix' ? 'file in use' : undefined)
@@ -1366,6 +1434,38 @@ describe('undo', () => {
     expect(outcome.detail).toBe('Your files are back as they were, but the app could not save this to History.')
     expect(outcome.detail).not.toContain('ENOSPC')
     expect(outcome.detail).not.toContain(ws.root)
+    expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+  })
+
+  it('a move back cut off after its copy says undo stopped, keeps both files, and the next undo settles the copy', async () => {
+    const ws = await backedUp()
+    const before = await snapshotTree(ws.simsFolder)
+    const moved = await runAction(ws.deps, disablePlan(ws))
+    if (moved.status !== 'done') throw new Error(moved.status)
+    const copy = held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package')
+    // Across drives the move back copies first: cut off there, the file is back in Mods and its copy is still held.
+    ws.gate.hooks.beforeOp = async (op, _i, request) => {
+      if (request.reason !== 'undo' || op.op !== 'move' || op.from !== copy) return undefined
+      await mkdir(dirname(op.to), { recursive: true })
+      await copyFile(op.from, op.to)
+      return 'the move stopped'
+    }
+
+    const undone = await undo(ws.deps, moved.entry.id)
+    ws.gate.hooks.beforeOp = undefined
+
+    expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    if (undone.status === 'stopped-part-way') {
+      expect(undone.detail).toBe('Some files could not be put back. You can try Undo again.')
+      expect(undone.entry.steps[1]!.state).toBe('applied') // left for the next undo, which looks at the disk afresh
+    }
+    expect(await pathExists(copy)).toBe(true)
+    expect(ws.gate.requests.some((r) => r.ops.some((op) => op.op === 'remove'))).toBe(false)
+
+    const again = await undo(ws.deps, moved.entry.id)
+
+    expect(again).toMatchObject({ status: 'done', entry: { status: 'undone' } })
+    expect(await pathExists(copy)).toBe(false)
     expect(await snapshotTree(ws.simsFolder)).toEqual(before)
   })
 
