@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { lstat, readFile, realpath } from 'node:fs/promises'
-import { basename, dirname, extname, join } from 'node:path'
+import { basename, dirname, extname, join, sep } from 'node:path'
 import type { FixOutcome, FixRefusal, JournalEntry, JournalStep, Sha256 } from '../../shared/model.ts'
 import { sha256File } from '../fs-read.ts'
 import type { ActionPlan, GateResult, OnProgress, SafetyDeps, WriteOp } from '../ports.ts'
@@ -125,13 +125,41 @@ async function inspect(step: JournalStep): Promise<StepOnDisk> {
   return (await exists(step.path)) ? { where: 'not-done' } : { where: 'done' }
 }
 
+// Letter case as the gate may ignore it: A to Z and nothing else.
+const fold = (text: string): string => text.replace(/[A-Z]/g, (letter) => letter.toLowerCase())
+
 /**
- * True only when `file` is strictly inside `holdingDir` both by name and after resolving links, and does not
- * resolve to the same real path as `step.from`. Hard links (same-drive interrupted moves) have two distinct real
- * paths and still pass; a symlink escaping to backupsDir or back to Mods never passes.
+ * True only when `from` leads to its own name inside the real Mods folder: the same names below the place the
+ * Sims folder really is, with no link on the way. A folder in Mods swapped for a link (into a backup, say) leads
+ * somewhere else, and the file there is not hers to rely on. Only the part below the Sims folder is compared,
+ * since the Sims folder itself may be reached through a link or a short 8.3 name.
+ */
+async function fromLeadsToItsOwnName(folderPath: string, from: string): Promise<boolean> {
+  const sims = folderPath.length > 1 && folderPath.endsWith(sep) ? folderPath.slice(0, -1) : folderPath
+  if (fold(from.slice(0, sims.length)) !== fold(sims)) return false
+  const below = from.slice(sims.length)
+  const parts = below.split(sep)
+  // below is '<sep>Mods<sep>...<sep>name': an empty first part, Mods, then at least one name.
+  if (parts[0] !== '' || parts.length < 3 || fold(parts[1]!) !== 'mods' || parts.some((p, i) => i > 0 && p === '')) {
+    return false
+  }
+  try {
+    const [realSims, realFrom] = await Promise.all([realpath(sims), realpath(from)])
+    return fold(realFrom) === fold(realSims + below)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * True only when `file` is strictly inside `holdingDir` both by name and after resolving links, does not resolve
+ * to the same real path as `step.from`, and `step.from` leads to its own name in the real Mods folder. Hard links
+ * (same-drive interrupted moves) have two distinct real paths and still pass; a symlink escaping to backupsDir or
+ * back to Mods never passes, and neither does a file in Mods reached through a link.
  */
 async function isHoldingCopy(
   deps: SafetyDeps,
+  entry: JournalEntry,
   step: Extract<JournalStep, { kind: 'move' }>,
   file: string
 ): Promise<boolean> {
@@ -142,10 +170,11 @@ async function isHoldingCopy(
       realpath(deps.paths.holdingDir),
       realpath(step.from)
     ])
-    return isInside(realFile, realHolding) && !samePath(realFile, realHolding) && !samePath(realFile, realFrom)
+    if (!isInside(realFile, realHolding) || samePath(realFile, realHolding) || samePath(realFile, realFrom)) return false
   } catch {
     return false
   }
+  return await fromLeadsToItsOwnName(entry.folderPath, step.from)
 }
 
 /**
@@ -165,8 +194,15 @@ async function removeCopiesLeft(deps: SafetyDeps, entry: JournalEntry, indexes: 
       step.state = 'reverted'
       continue
     }
-    if (step.kind !== 'move' || now.where !== 'copy-left' || !(await isHoldingCopy(deps, step, now.file))) {
+    if (step.kind !== 'move' || now.where !== 'copy-left') {
       detail ??= notBack(deps, entry, step, now)
+      continue
+    }
+    if (!(await isHoldingCopy(deps, entry, step, now.file))) {
+      // A file in Mods reached through a link is not back as it was, whatever its bytes: say so, not "back".
+      detail ??= (await fromLeadsToItsOwnName(entry.folderPath, step.from))
+        ? notBack(deps, entry, step, now)
+        : notBack(deps, entry, step, { where: 'done' })
       continue
     }
     try {
