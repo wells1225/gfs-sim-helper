@@ -863,6 +863,74 @@ describe('runAction', () => {
   })
 })
 
+describe('a cache clear that stops part way', () => {
+  const CACHE_STOPPED = 'Some temporary cache files were cleared before it stopped. That is safe: the game makes them again.'
+
+  function cachePlan(ws: Workspace): ActionPlan {
+    return {
+      entryId: 'clear-1',
+      action: 'clear-caches',
+      summary: 'Cleared caches',
+      origin: { by: 'fix' },
+      folderPath: ws.simsFolder,
+      groupId: null,
+      groupLabel: null,
+      hasScript: false,
+      steps: [
+        { kind: 'remove-cache', path: join(ws.simsFolder, 'localthumbcache.package') },
+        { kind: 'remove-cache', path: join(ws.simsFolder, 'cachestr') }
+      ]
+    }
+  }
+
+  it('says so in plain words, and the entry settles as done so it never stays stuck', async () => {
+    const ws = await backedUp()
+    ws.gate.hooks.beforeOp = (op, _i, request) =>
+      request.reason === 'fix' && op.op === 'remove' && op.path.endsWith('cachestr') ? 'file in use' : undefined
+
+    const outcome = await runAction(ws.deps, cachePlan(ws))
+
+    expect(outcome).toMatchObject({ status: 'stopped-part-way', detail: CACHE_STOPPED, entry: { status: 'done' } })
+    if (outcome.status === 'stopped-part-way') expect(outcome.entry.steps.map((s) => s.state)).toEqual(['applied', 'pending'])
+    ws.gate.hooks.beforeOp = undefined
+    expect((await listJournal(ws.deps)).map((e) => e.status)).toEqual(['done'])
+    expect(await recover(ws.deps)).toEqual([])
+  })
+
+  it('that stopped before clearing anything is a change that never ran, and leaves no History line', async () => {
+    const ws = await backedUp()
+    ws.gate.hooks.beforeOp = (_op, _i, request) => (request.reason === 'fix' ? 'file in use' : undefined)
+
+    const outcome = await runAction(ws.deps, cachePlan(ws))
+
+    expect(outcome).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
+    ws.gate.hooks.beforeOp = undefined
+    expect(await listJournal(ws.deps)).toEqual([])
+    expect(await pathExists(join(ws.simsFolder, 'localthumbcache.package'))).toBe(true)
+  })
+
+  it('cut off by a crash after one cache went: the next start settles it as done, not needing attention', async () => {
+    const ws = await backedUp()
+    let saved: JournalEntry | null = null
+    ws.gate.hooks.beforeRequest = async (request) => {
+      if (request.reason !== 'fix') return undefined
+      saved = JSON.parse(await readFile(join(ws.paths.journalDir, 'clear-1.json'), 'utf8')) as JournalEntry
+      return { status: 'refused', refusal: { reason: 'game-running' } }
+    }
+    await runAction(ws.deps, cachePlan(ws))
+    ws.gate.hooks.beforeRequest = undefined
+    if (!saved) throw new Error('no entry was written')
+    await writeFile(join(ws.paths.journalDir, 'clear-1.json'), JSON.stringify(saved))
+    await rm(join(ws.simsFolder, 'localthumbcache.package'))
+
+    const touched = await recover(ws.deps)
+
+    expect(touched.map((e) => [e.id, e.status])).toEqual([['clear-1', 'done']])
+    expect(touched[0]!.steps.map((s) => s.state)).toEqual(['applied', 'pending'])
+    expect(await recover(ws.deps)).toEqual([])
+  })
+})
+
 describe('undo', () => {
   it('round trip: a move and an edit, both undone, leave the folder byte for byte as it was', async () => {
     const ws = await backedUp()
