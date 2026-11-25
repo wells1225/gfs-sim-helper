@@ -2227,6 +2227,24 @@ describe('doing the ops', () => {
     expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
   })
 
+  // The same file, with other bytes written into it meanwhile. The copy now holds the only copy of the old bytes.
+  it('move across drives: when the source cannot be removed and was rewritten with the same size, the copy is kept', async () => {
+    const w = await makeWorld()
+    const from = w.inFolder(...MOD)
+    const to = w.inData('holding', 'e1', 'Mods', 'cozy_rug.package')
+    const hash = await sha256(from)
+    const otherBytes = Buffer.alloc((await stat(from)).size, 'b')
+    disk.crossDrive = { from, hits: 0 }
+    disk.unlinkFails = { file: from, hits: 0, meanwhile: async () => await writeFile(from, otherBytes) }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
+    expect(await readFile(from), 'the source was really rewritten').toEqual(otherBytes)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await sha256(to), 'the copy still holds the old bytes').toBe(hash)
+    expect((result as { detail: string }).detail).toMatch(/the copy at the target was left in place/)
+  })
+
   // With no file id there is no way to tell the source from another file at its path. In doubt the copy stays.
   it('move across drives: when the source cannot be removed on a disk that gives no file ids, the copy is kept', async () => {
     const w = await makeWorld()
