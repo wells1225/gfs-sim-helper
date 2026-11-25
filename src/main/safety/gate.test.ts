@@ -1941,10 +1941,9 @@ describe('a path in app data leads only to its own name', () => {
 
   // Review finding (Opus, round 7). Both spellings name one folder on her disk, and neither is a link. The first
   // check passes, since the folder is not there yet. Then the gate makes it as 'Été', and the re-check before the
-  // last op finds 'été' leading to 'Été', which the A-to-Z fold does not match. The answer is `failed` with two
-  // ops done, so the gate stops a request it approved, part way through, on a folder it made itself. Whether
-  // the fix refuses up front or accepts, nothing should run before the refusal.
-  it.fails('two spellings of one new folder, differing in a letter beyond A to Z, are not stopped part way', async (ctx) => {
+  // last op finds 'été' leading to 'Été', which the A-to-Z fold does not match. The answer was `failed` with two
+  // ops done: the gate stopped a request it had approved, part way through, on a folder it made itself.
+  it('two spellings of one new folder, differing in a letter beyond A to Z, are one folder and the request is done', async (ctx) => {
     const w = await makeWorld()
     const upper = w.inData('holding', 'e1', 'Mods', 'Été')
     const lower = w.inData('holding', 'e1', 'Mods', 'été')
@@ -1963,8 +1962,9 @@ describe('a path in app data leads only to its own name', () => {
       ],
       { folderPath: null, reason: 'state' }
     )
-    expect(result.status).not.toBe('failed')
-    if (result.status === 'refused') expect(await exists(w.inData('holding', 'e1', 'Mods'))).toBe(false)
+    expect(result).toEqual({ status: 'done' })
+    expect(await readdir(w.inData('holding', 'e1', 'Mods'))).toEqual(['Été'])
+    expect((await readdir(upper)).sort()).toEqual(['a.json', 'b.json'])
   })
 })
 
