@@ -13,6 +13,7 @@ export interface UpdateView {
   hidden: boolean // Later: hidden until the next start, or until she checks again from About
   busy: boolean // Restart now was refused: a change is running
   restarting: boolean
+  retrying: boolean // Try again is checking before retrying the download
 }
 
 export interface UpdateStore {
@@ -28,9 +29,11 @@ export interface UpdateStore {
 }
 
 function createUpdateStore(api: SimsHelperApi): UpdateStore {
-  let view: UpdateView = { state: null, hidden: false, busy: false, restarting: false }
+  let view: UpdateView = { state: null, hidden: false, busy: false, restarting: false, retrying: false }
   const listeners = new Set<() => void>()
   let pollTimer: ReturnType<typeof setTimeout> | null = null
+  let actionSeq = 0
+  let pendingStartCheck: Promise<UpdateState | null> | null = null
 
   function set(patch: Partial<UpdateView>): void {
     view = { ...view, ...patch }
@@ -54,19 +57,26 @@ function createUpdateStore(api: SimsHelperApi): UpdateStore {
     }
   }
 
-  // While a download runs, update:get once a second for the percent. A late answer never undoes a newer state.
+  // While a download runs, update:get once a second for the percent. A late or rejected poll never undoes an active download.
   function schedulePoll(): void {
     if (pollTimer !== null || listeners.size === 0) return
     pollTimer = setTimeout(() => {
       pollTimer = null
       void answer(() => api.invoke('update:get')).then((state) => {
-        if (view.state?.state === 'downloading') set({ state })
+        if (view.state?.state !== 'downloading') return
+        if (state !== null) set({ state })
+        else schedulePoll()
       })
     }, POLL_EVERY_MS)
   }
 
   async function checkByClick(): Promise<UpdateState | null> {
-    const state = await answer(() => api.invoke('update:check', { by: 'click' }))
+    actionSeq += 1
+    const inFlightStart = pendingStartCheck
+    let state = await answer(() => api.invoke('update:check', { by: 'click' }))
+    if (state?.state === 'checking' && inFlightStart !== null) {
+      state = await inFlightStart
+    }
     set({ state, hidden: false, busy: false })
     return state
   }
@@ -74,6 +84,7 @@ function createUpdateStore(api: SimsHelperApi): UpdateStore {
   async function download(): Promise<void> {
     const before = view.state
     if (before?.state !== 'available') return
+    actionSeq += 1
     set({ state: { state: 'downloading', current: before.current, next: before.next, percent: 0 }, busy: false })
     set({ state: await answer(() => api.invoke('update:download')) })
   }
@@ -91,7 +102,17 @@ function createUpdateStore(api: SimsHelperApi): UpdateStore {
     },
 
     async checkOnStart() {
-      set({ state: await answer(() => api.invoke('update:check', { by: 'start' })) })
+      if (view.restarting || view.state?.state === 'downloading' || view.state?.state === 'ready') return
+      const seq = actionSeq
+      const call = answer(() => api.invoke('update:check', { by: 'start' }))
+      pendingStartCheck = call
+      try {
+        const state = await call
+        if (seq !== actionSeq || view.restarting) return
+        set({ state })
+      } finally {
+        if (pendingStartCheck === call) pendingStartCheck = null
+      }
     },
 
     checkByClick,
@@ -103,11 +124,18 @@ function createUpdateStore(api: SimsHelperApi): UpdateStore {
     download,
 
     async tryAgain() {
-      const state = await checkByClick()
-      if (state?.state === 'available') await download()
+      if (view.retrying) return
+      set({ retrying: true })
+      try {
+        const state = await checkByClick()
+        if (state?.state === 'available') await download()
+      } finally {
+        set({ retrying: false })
+      }
     },
 
     async install() {
+      actionSeq += 1
       const result = await answer(() => api.invoke('update:install'))
       if (result === null) return set({ state: null })
       if (result.status === 'restarting') return set({ restarting: true, busy: false })

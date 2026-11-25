@@ -73,8 +73,8 @@ export function UpdateBanner() {
         <Alert variant="warn" role="status" aria-label="Update">
           <AlertTitle>{WORDS.downloadFailed}</AlertTitle>
           <div className="mt-2 flex gap-2">
-            <Button size="sm" variant="outline" onClick={() => void store.tryAgain()}>
-              {WORDS.tryAgain}
+            <Button size="sm" variant="outline" disabled={view.retrying} onClick={() => void store.tryAgain()}>
+              {view.retrying ? WORDS.checking : WORDS.tryAgain}
             </Button>
             <Button size="sm" variant="ghost" onClick={store.later}>
               {WORDS.later}

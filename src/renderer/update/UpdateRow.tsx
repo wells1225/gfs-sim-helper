@@ -6,7 +6,7 @@ import { OFF_NOTE, WORDS } from './words.ts'
 
 type Result = 'newest' | 'could-not-check' | 'found-one'
 
-function resultOf(state: UpdateState | null): Result {
+function resultOf(state: UpdateState | null): Result | null {
   switch (state?.state) {
     case 'idle':
       return 'newest'
@@ -14,6 +14,8 @@ function resultOf(state: UpdateState | null): Result {
     case 'downloading':
     case 'ready':
       return 'found-one'
+    case 'checking':
+      return null
     default:
       return 'could-not-check'
   }
@@ -49,6 +51,8 @@ export function UpdateRow() {
     setChecking(false)
   }
 
+  const isChecking = checking || state.state === 'checking'
+
   return (
     <section aria-label="Updates" className="mt-6 flex flex-col items-start gap-2 border-t border-border pt-4">
       {version !== null && <p className="font-medium">{WORDS.version(version)}</p>}
@@ -56,8 +60,8 @@ export function UpdateRow() {
         <p className="text-sm text-muted-foreground">{OFF_NOTE[state.why]}</p>
       ) : (
         <>
-          <Button variant="outline" size="sm" disabled={checking} onClick={() => void check()}>
-            {checking ? WORDS.checking : WORDS.checkForUpdates}
+          <Button variant="outline" size="sm" disabled={isChecking} onClick={() => void check()}>
+            {isChecking ? WORDS.checking : WORDS.checkForUpdates}
           </Button>
           {result !== null && (
             <p role="status" className="text-sm text-muted-foreground">
