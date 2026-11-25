@@ -636,6 +636,20 @@ describe('recover', () => {
     }
   })
 
+  it('listJournal only reads: an entry left in progress stays as it is until recover() is called', async () => {
+    const ws = await backedUp()
+    const entry = await interrupted(ws, 1)
+    const tree = await snapshotTree(ws.simsFolder)
+    const requests = ws.gate.requests.length
+
+    const listed = await listJournal(ws.deps)
+    await listJournal(ws.deps)
+
+    expect(listed.find((e) => e.id === entry.id)!.status).toBe('in-progress')
+    expect(ws.gate.requests.length).toBe(requests)
+    expect(await snapshotTree(ws.simsFolder)).toEqual(tree)
+  })
+
   it('preserves earlier moved steps as applied when recover stops on a later unclear step, so a follow-up undo restores everything', async () => {
     const ws = await backedUp()
     const before = await snapshotTree(ws.simsFolder)
