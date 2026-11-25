@@ -4,10 +4,11 @@ import { APP_TITLE } from '../shared/app.ts'
 import { ApiProvider } from './api.tsx'
 import { App } from './App.tsx'
 import { FIXES_READY } from './fixes/feature.ts'
+import { SHARE_READY } from './share/feature.ts'
 import type { Route } from './nav.tsx'
 import { fakeApi } from './testing/fake-api.ts'
 
-const FOOTER = 'Saves and Tray are never touched · A backup is made before any change'
+const FOOTER = 'Your saves and households are never touched · A backup is made before any change'
 const SIMS_FOLDER = 'C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4'
 
 afterEach(() => {
@@ -51,6 +52,7 @@ describe('App shell', () => {
     expect(screen.getByRole('button', { name: 'About' })).toBeInTheDocument()
     expect(screen.queryAllByRole('button', { name: 'Your mods' })).toHaveLength(FIXES_READY ? 1 : 0)
     expect(screen.queryAllByRole('button', { name: 'History' })).toHaveLength(FIXES_READY ? 1 : 0)
+    expect(screen.queryAllByRole('button', { name: 'Share saves' })).toHaveLength(SHARE_READY ? 1 : 0)
   })
 
   it('opens key setup on Ctrl+Shift+K without throwing', async () => {
@@ -65,5 +67,13 @@ describe('App shell', () => {
     const nav = screen.getByRole('navigation', { name: 'Primary' })
     expect(nav.querySelector('[aria-current]')).toBeNull()
     expect(screen.getByText(FOOTER)).toBeInTheDocument()
+  })
+
+  it('opens each Share saves route, whose stubs render nothing yet, inside the shell', async () => {
+    for (const screenName of ['share', 'share-setup', 'share-old-saves', 'share-settings'] as const) {
+      renderApp({ screen: screenName })
+      expect(await screen.findByText(FOOTER)).toBeInTheDocument()
+      cleanup()
+    }
   })
 })
