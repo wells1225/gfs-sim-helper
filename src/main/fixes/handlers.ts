@@ -4,6 +4,7 @@ import type { Handlers } from '../../shared/ipc.ts'
 import type { DisabledGroup, FixCall, FixOutcome } from '../../shared/model.ts'
 import type { AppContext } from '../ports.ts'
 import { disabledGroupOf } from './index.ts'
+import { startRecovery } from './recovery.ts'
 
 export type FixChannel = 'backup:status' | 'fix:apply' | 'journal:list' | 'journal:undo' | 'groups:disabled'
 
@@ -81,24 +82,9 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
     }
   }
 
-  let recovered = false
-  let recoveryPromise: Promise<unknown> | null = null
-
-  async function ensureRecovered(): Promise<void> {
-    if (recovered) return
-    if (!recoveryPromise) {
-      recoveryPromise = ctx.safety
-        .recover()
-        .then(() => {
-          recovered = true
-        })
-        .catch((err: unknown) => {
-          recoveryPromise = null
-          throw err
-        })
-    }
-    await recoveryPromise
-  }
+  // Built by registerIpc in main at start, before the window opens: recovery runs here, once, on purpose.
+  // Reading the journal never starts it; the changing calls below wait for it to finish.
+  const recovery = startRecovery(ctx.safety)
 
   return {
     async 'backup:status'() {
@@ -110,6 +96,7 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
     },
 
     async 'fix:apply'(call: FixCall) {
+      await recovery
       if (!isFixCall(call)) {
         return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-finding' } }
       }
@@ -157,11 +144,12 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
     },
 
     async 'journal:list'() {
-      await ensureRecovered()
+      await recovery
       return ctx.safety.listJournal()
     },
 
     async 'journal:undo'(req) {
+      await recovery
       if (await isFiftyFiftyRunning(ctx.paths.stateDir)) {
         return { status: 'refused', refusal: { why: 'fifty-fifty-running' } }
       }
@@ -172,6 +160,7 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
     },
 
     async 'groups:disabled'() {
+      await recovery
       const folderPath = ctx.session.scan?.folder.path ?? (await readSavedFolderPath(ctx.paths.stateDir))
       if (folderPath) {
         return ctx.fixes.disabledGroups(folderPath)

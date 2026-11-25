@@ -15,6 +15,7 @@ export function RecoveryNotice() {
   useEffect(() => {
     if (!api) return
     let cancelled = false
+    // Main has already tried to put a cut-off change back at start; this list only reads what is left.
 
     api
       .invoke('journal:list')
@@ -38,11 +39,13 @@ export function RecoveryNotice() {
     return null
   }
 
-  const count = flagged.length
+  // Only a change with an undo can be put back from History. A cache clear has none, and needs nothing more.
+  const canUndo = flagged.some((entry) => entry.undo === 'can-undo')
   const title =
-    count === 1
-      ? 'A previous change stopped partway through'
-      : `${count} previous changes stopped partway through`
+    flagged.length === 1 ? 'A change was cut off before it finished' : `${flagged.length} changes were cut off before they finished`
+  const description = canUndo
+    ? 'We could not put everything back on our own. Your saves and households were never touched. Open History and press Undo to put it back.'
+    : 'It was clearing temporary cache files, which is safe: the game makes them again when it starts. Your saves and households were never touched, and there is nothing more to do.'
 
   return (
     <Alert variant="warn">
@@ -52,16 +55,18 @@ export function RecoveryNotice() {
           <div className="flex flex-col gap-1">
             <AlertTitle>{title}</AlertTitle>
             <AlertDescription>
-              Your Saves and Tray were never touched. Open History to review or undo what moved.
+              {description}
             </AlertDescription>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => go({ screen: 'history' })}>
-            <History className="size-4" aria-hidden="true" />
-            Open History
-          </Button>
+          {canUndo && (
+            <Button variant="outline" size="sm" onClick={() => go({ screen: 'history' })}>
+              <History className="size-4" aria-hidden="true" />
+              Open History
+            </Button>
+          )}
           <Button variant="ghost" size="sm" onClick={() => setDismissed(true)}>
             Dismiss
           </Button>
