@@ -736,8 +736,8 @@ async function carryOut(
  * True only when the file a copy was made from is proven still at its path: a plain file there, with the id
  * it had before the copy and the bytes the copy has. Anything else is false, and so is any error and a disk
  * that gives no file id: in doubt the copy stays. The id is read as a bigint, because as a plain number two
- * NTFS ids can read the same. The bytes are compared as well, because a FAT or exFAT disk can give a new
- * file the id of one that was removed.
+ * NTFS ids can read the same. The bytes are compared as well, because a file id alone is not proof: Windows
+ * lets a disk use an id again, and on FAT the id is only the place of the name in its folder.
  */
 async function sourceStillInPlace(from: string, original: BigIntStats, sha256: string): Promise<boolean> {
   try {
@@ -807,15 +807,16 @@ async function nameWithoutOverwrite(from: string, to: string): Promise<void> {
 }
 
 /**
- * True only when both paths are proven to be two names of one file: the same file id, and more than one
- * name on the file, so that removing one leaves another. Two paths that reach a single name do not pass.
- * Any error is false, and so is a disk that gives no file id.
+ * True only when the two paths are proven to be two names of one file: the same file id, more than one name
+ * on the file, and two different real names. Two paths that lead to a single name do not pass, since removing
+ * through one of them removes that name for both. Any error is false, and so is a disk that gives no file id.
  */
 async function twoNamesOfOneFile(one: string, other: string): Promise<boolean> {
   try {
     const first = await lstat(one, { bigint: true })
     const second = await lstat(other, { bigint: true })
-    return first.ino !== 0n && fileId(first) === fileId(second) && first.nlink > 1n
+    if (first.ino === 0n || fileId(first) !== fileId(second) || first.nlink < 2n) return false
+    return looseFold(await realpath(one)) !== looseFold(await realpath(other))
   } catch {
     return false
   }
