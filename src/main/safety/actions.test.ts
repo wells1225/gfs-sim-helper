@@ -884,6 +884,35 @@ describe('runAction', () => {
     expect(made[0]!.ops.every((op) => op.op === 'remove')).toBe(true)
   })
 
+  it.each(['failed', 'refused'] as const)(
+    'undo of an entry that never ran whose drop is %s stops there: nothing put back, no backup, still in progress',
+    async (answer) => {
+      const ws = await backedUp()
+      const before = await snapshotTree(ws.simsFolder)
+      ws.gate.hooks.beforeRequest = (request) => {
+        if (request.reason === 'fix') return { status: 'refused', refusal: { reason: 'game-running' } }
+        if (request.reason === 'journal' && request.ops.some((op) => op.op === 'remove')) {
+          if (answer === 'refused') return { status: 'refused', refusal: { reason: 'game-running' } }
+          return { status: 'failed', opsDone: 0, detail: 'the disk said no' }
+        }
+        return undefined
+      }
+      await runAction(ws.deps, disablePlan(ws))
+      const requestsBefore = ws.gate.requests.length
+
+      const outcome = await undo(ws.deps, 'hold-1')
+
+      expect(outcome).toEqual(
+        answer === 'refused'
+          ? { status: 'refused', refusal: { why: 'gate', refusal: { reason: 'game-running' } } }
+          : { status: 'refused', refusal: { why: 'not-started' } }
+      )
+      expect((await listJournal(ws.deps)).map((e) => e.status)).toEqual(['in-progress'])
+      expect(ws.gate.requests.slice(requestsBefore).map((r) => r.reason)).toEqual(['journal'])
+      expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+    }
+  )
+
   it('a failed create whose take-back also fails never ran: the next start says nothing and marks nothing undone', async () => {
     const ws = await backedUp()
     ws.gate.hooks.beforeRequest = async (request) => {
