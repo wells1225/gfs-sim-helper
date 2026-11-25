@@ -1357,7 +1357,7 @@ describe('undo', () => {
 
       expect(outcome, `attempt ${attempt}`).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
       if (outcome.status !== 'stopped-part-way') return
-      expect(outcome.detail).toBe('This file is not as the change left it: lamp_b.package')
+      expect(outcome.detail).toBe('This file is not as the change left it: lamp_b.package.')
       expect(outcome.entry.steps.map((s) => s.state)).toEqual(['reverted', 'applied'])
       expect(await sha256File(join(ws.mods, 'BuildBuy', 'lamp_a.package'))).toBe(lampA)
       expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_a.package'))).toBe(false)
@@ -1381,7 +1381,7 @@ describe('undo', () => {
 
     expect(outcome).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
     if (outcome.status !== 'stopped-part-way') return
-    expect(outcome.detail).toBe('These files are not as the change left them: lamp_a.package, lamp_b.package')
+    expect(outcome.detail).toBe('These files are not as the change left them: lamp_a.package, lamp_b.package.')
     expect(await readFile(third.from, 'utf8')).toBe('a tiny mod')
     expect(outcome.entry.steps.map((s) => s.state)).toEqual(['applied', 'applied', 'reverted'])
   })
@@ -1412,7 +1412,7 @@ describe('undo', () => {
 
     expect(outcome).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
     if (outcome.status !== 'stopped-part-way') return
-    expect(outcome.detail).toBe("The app's copy of this file was missing or changed, so it was left as it is: Options.ini")
+    expect(outcome.detail).toBe("The app's copy of this file was missing or changed, so it was left as it is: Options.ini.")
     expect(await sha256File(from)).toBe(lampA)
     expect(await sha256File(options)).toBe(afterSha256)
     expect(outcome.entry.steps.map((s) => s.state)).toEqual(['reverted', 'applied'])
@@ -1444,7 +1444,7 @@ describe('undo', () => {
     expect(outcome).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
     if (outcome.status !== 'stopped-part-way') return
     expect(outcome.detail).toBe(
-      "This file is not as the change left it: lamp_a.package The app's copy of this file was missing or changed, so it was left as it is: Options.ini"
+      "This file is not as the change left it: lamp_a.package. The app's copy of this file was missing or changed, so it was left as it is: Options.ini."
     )
     expect(await readFile(from, 'utf8')).toBe('a new download')
     expect(await sha256File(options)).toBe(afterSha256)
@@ -1479,7 +1479,7 @@ describe('undo', () => {
     expect(outcome).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
     if (outcome.status !== 'stopped-part-way') return
     expect(outcome.detail).toBe(
-      "The app's copies of these files were missing or changed, so they were left as they are: Options.ini, UserSetting.ini"
+      "The app's copies of these files were missing or changed, so they were left as they are: Options.ini, UserSetting.ini."
     )
     expect(outcome.detail).not.toContain(ws.root)
     expect(await sha256File(options)).toBe(afterOptions)
