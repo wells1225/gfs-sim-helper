@@ -317,7 +317,9 @@ export interface WriteRequest {
 }
 export type GateResult =
   | { status: 'done' } | { status: 'refused'; refusal: GateRefusal } // refused: no op ran
-  | { status: 'failed'; opsDone: number; detail: string } // ops[0 .. opsDone-1] ran, the rest did not
+  // failed: ops[0 .. opsDone-1] ran. Op opsDone may have run in part (a move: its file at the source, at both, or at
+  // the target). The ops after it did not run. A caller that undoes must check op opsDone on the disk.
+  | { status: 'failed'; opsDone: number; detail: string }
 export interface Gate { run(request: WriteRequest): Promise<GateResult> }
 export interface GateDeps {
   paths: AppPaths
