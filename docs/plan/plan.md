@@ -16,18 +16,18 @@ tools and the stack. Sol covered crash causes and rules. Grok covered posts on X
 | Stack | Electron, TypeScript, React with Vite, Vitest, Playwright for Electron | One language from the package reader to the UI. Chromium renders the same on the Mac and on Windows. Neon's report, section 5. |
 | Installer | electron-builder NSIS, **assisted** wizard (`oneClick: false`), unsigned | Tyler asked for a wizard. The NSIS default is one-click, which has no pages for a finish-page note. |
 | Build machine | GitHub Actions `windows-latest` | Builds the `.exe` and runs every test on real Windows. Tyler works on a Mac. |
-| Delivery | A Google Drive link to the `.exe` | Gmail blocks `.exe` attachments, zipped ones too. The repo is private, so she cannot use a GitHub release link. |
+| Delivery | First install: a Google Drive link to the `.exe`. Later versions: the in-app Update button (plan PR 13) | Gmail blocks `.exe` attachments, zipped ones too. The repo is public now, so updates come from GitHub Releases. |
 | Beside PlumbBuddy, not a fork | Own app | PlumbBuddy (MIT, C#) has no crash-log explainer, no CurseForge awareness and no guided 50/50. We borrow its rules and cite it. |
 | Package reader | Our own DBPF index reader, about 60 lines, written from the spec | We need only resource keys. Fable and Neon disagree on whether `@s4tk/models` is maintained. |
 | CurseForge API | Not in v1 | The key cannot ship inside an `.exe`, and the terms forbid saving API data to disk. Neon's report, section 3. |
-| Saves and Tray | Never written, by any code path | EA and CurseForge both document ways to lose them. Fable's report, section 6. |
+| Saves and Tray | Tray is never written. Saves are never written, with one exception from plan PR 14: Share saves moves one linked `Slot_*.save` out to Old saves and moves the checked copy in, on her click, with the game closed | EA and CurseForge both document ways to lose them. Fable's report, section 6. |
 
 ## The core data shapes
 
 PR 3 defines these types in `src/shared/model.ts`. Every later PR builds on them.
 
 ```ts
-type SimsFolder = { path: string; inOneDrive: boolean; hasOptionsIni: boolean; newestFileAt: Date }
+type SimsFolder = { path: string; inOneDrive: boolean; newestFileAt: Date }   // only folders holding Options.ini; date from game-written files, not Mods
 type GameInstall = { path: string; version: string; packs: PackCode[] }   // PackCode: "EP01", "GP02", "SP18"
 type ModFile = { relPath: string; kind: "package" | "script" | "archive" | "other"; bytes: number; sha256: string;
 	depth: number; dbpf?: { major: number; minor: number; keys: ResourceKey[] } | { error: string } }
@@ -45,6 +45,12 @@ type FiftyFifty = { round: number; suspects: string[]; cleared: string[]; parked
 
 ## Landing order and dependencies
 
+For PRs 4 to 12, these files win over this one where they differ: [`contracts.md`](contracts.md) (types and
+functions), [`ownership.md`](ownership.md) (paths), [`merge-order.md`](merge-order.md) (merge order, with PR 8
+before PR 7) and [`briefs/`](briefs/). Builders: Opus builds PRs 6, 9, 11 and 12 (except `key-store.ts`), and
+Neon reviews them. Neon builds the contract commit and PRs 4, 5, 7 and 10, and Opus reviews them. Fable writes
+PR 8 and `key-store.ts`, and does the last check on every PR. PRs 10 and 11 merge only after G1.
+
 | PR | Change | Depends on | Builder | Files it may touch |
 |---|---|---|---|---|
 | 1 | Scaffold, Windows CI, installer wizard, dedication | none | Neon | everything at the root, `src/`, `.github/`, `build/`, `AGENTS.md` |
@@ -59,11 +65,13 @@ type FiftyFifty = { round: number; suspects: string[]; cleared: string[]; parked
 | 9 | Backup, journal and undo | 8, G1 | Neon, from a Fable brief | `src/main/safety/` except `gate.ts` |
 | 10 | One-click fixes | 9 | Neon | `src/main/fixes/`, `src/renderer/fixes/` |
 | 11 | Guided 50/50 test | 10 | Neon | `src/main/fiftyfifty/`, `src/renderer/fiftyfifty/` |
+| 12 | Optional: "Ask for help" with AI | 7, G1 | Neon; **Fable** writes `key-store.ts` | `src/main/assist/`, `src/renderer/assist/` |
+| 14 | Share saves between her PC and Tyler's | 4, 8, 9, 10, 12, 13, G1 | Opus and Neon; **Fable** writes the gate change, `decide.ts`, `links.ts`, `receive.ts` and the key store search | `src/main/share/`, `src/renderer/share/`, and the named files in [`briefs/pr-14.md`](briefs/pr-14.md) |
 
 PRs 4 and 5 are independent and can run at the same time. PR 8 can start once 7 lands. Every other PR waits for
 the one above it.
 
-The **review-gated set** is PRs 1, 7, 10 and 11. Each one changes what she sees or clicks. Tyler looks at the
+The **review-gated set** is PRs 1, 7, 10, 11 and 14. Each one changes what she sees or clicks. Tyler looks at the
 screens before each one merges.
 
 Neon builds every PR except PR 8. Opus reviews each PR, then Fable does the last check. Whoever finds an issue fixes
@@ -131,7 +139,8 @@ Her game crashes now, and the app is weeks away. Two things can help this week.
 - [ ] Change:
   - Finds every candidate user folder. It looks under `app.getPath('documents')`, under both OneDrive Documents paths
     and in every localized folder name. A candidate counts when it holds `Options.ini`.
-  - For each candidate it reports `inOneDrive` and the newest file date.
+  - For each candidate it reports `inOneDrive` and the newest date of the files the game writes (`Options.ini`, logs,
+    `saves/`). `Mods/` does not count, because CurseForge can install into a stale folder.
   - Finds the game from the registry value `Install Dir` (`HKLM\SOFTWARE\WOW6432Node\Maxis\The Sims 4`), then from the
     EA app, Steam and Origin default paths.
   - Reads the version from the file version of `Game\Bin\TS4_x64.exe`, and from `GameVersion.txt` as a fallback.
@@ -320,6 +329,87 @@ Nothing that writes files is built until this gate passes. Tyler does each step 
 - [ ] Perf: none.
 - [ ] Tyler approves the flow before merge.
 
+## PR 12 (optional): "Ask for help" with AI
+
+Tyler asked for this on 2026-11-24. It comes after G1 and PR 7, so her real files show which crashes the rules
+miss. It is optional, and v1 ships without it.
+
+- [ ] Depends on: PR 7 and G1. It does not need PRs 8 to 11.
+- [ ] Files: `src/main/assist/*.ts`, `src/renderer/assist/**` and tests. Fable writes `src/main/assist/key-store.ts`,
+  the only code that stores, reads or sends the key. Fable briefs the rest and Neon builds it.
+- [ ] Change:
+  - **Key setup:** a hidden setup screen opens with a key combination. Tyler types the Anthropic API key once on her
+    PC. Electron `safeStorage` encrypts it with Windows DPAPI, and the encrypted key goes in the app's own data
+    folder. The key is never in the code, the installer, the repo, a log or the "Send to Tyler" zip.
+  - **The button:** **Ask for help** shows only when the rules give no `stop` or `warn` finding, or a crash log
+    names no mod.
+  - **What gets sent:** first the button shows her the exact text it will send, which is the newest log reports, the
+    game version, and the mod group names and file names. It never sends saves, Tray files, her Windows user name or
+    other paths. She clicks **Send** or **Cancel**.
+  - **The answer:** it shows in plain words, labelled as a guess. The answer can point to a fix button, but the AI
+    never runs a fix itself.
+  - **Model:** Claude Haiku 5.5 (`claude-haiku-5-5`, $0.10 in and $0.50 out per million tokens) by default, through
+    the official `@anthropic-ai/sdk`. Claude Sonnet 5.5 (`claude-sonnet-5-5`, $2 and $10) is the step up. The model ID
+    is one constant. Before merge, run both on her real logs from G1, and keep Haiku unless its answers are vague or
+    wrong. Haiku has no server-side fallback on a refusal, so the app shows a plain "couldn't answer this one" message.
+  - **Cost:** Tyler sets a monthly spending cap on the key in the Anthropic console before setup.
+- [ ] Result you see: on the `exceptions` fixture, the button sends the previewed text and shows the answer.
+- [ ] Unit: the key never appears in any log, report zip or renderer message. The text sent matches the preview,
+  byte for byte. With no key stored, the button doesn't appear.
+- [ ] Live: Tyler sets up the key on her PC, and one real question gets an answer. The Anthropic console shows the
+  spending cap.
+- [ ] Perf: none.
+- [ ] Tyler approves the wording and the preview screen before merge.
+
+## PR 14: Share saves between her PC and Tyler's
+
+Tyler asked for this on 2026-11-24. They live apart and want to play one save in turns. The full design is in
+[`briefs/pr-14.md`](briefs/pr-14.md), which wins over this section. Research:
+[`sol-save-sharing.md`](../research/sol-save-sharing.md), [`grok-save-sharing-x.md`](../research/grok-save-sharing-x.md),
+[`fable-missing-mods.md`](../research/fable-missing-mods.md), [`grok-missing-mods-x.md`](../research/grok-missing-mods-x.md).
+
+- [ ] Depends on: PRs 4, 8, 9, 10, 12 and 13, and G1. It reaches her through the Update button.
+- [ ] Files: `src/main/share/**`, `src/renderer/share/**`, `src/main/assist/find-mod.ts`, and tests. It also changes
+  `src/main/safety/gate.ts` and its two tests (Fable), three files of PR 9's journal, and `key-store.ts` (Fable).
+  **Fable writes** the gate change and `src/main/share/decide.ts`, `links.ts` and `receive.ts`: the lines that
+  decide whether a save may be replaced.
+- [ ] Change:
+  - **Same app, both PCs.** A new **Share saves** section. First use asks "Whose PC is this?" (Lila's PC or
+    Tyler's PC). The answer sets the button words and that PC's settings.
+  - **Transport:** a Google Drive folder named `Sims Helper Share`, owned by Tyler, shared only with her account,
+    synced by Google Drive for desktop. The app reads and writes plain files there. It never signs in to Google.
+  - **Setup guide:** one step per screen, one version per PC, ending with a real sync check: each PC writes a
+    small hello file and reads the other's.
+  - **Send:** with the game closed, the app copies one `Slot_*.save`, checks the copy by SHA-256, puts it in the
+    Drive folder, and writes a manifest last. The manifest holds the size, the hash, the handoff number, the copies
+    this one grew from, and the mods and packs it was played with. It holds no path, slot name or user name.
+  - **Get it:** the app copies the file out of the Drive folder, checks that copy against the manifest, and only
+    then swaps it in: the old copy moves to Old saves, the checked copy moves into the slot. Two moves through the
+    gate, one journal entry, Undo in History. The game's own `.ver` files and Tray are never touched.
+  - **A replace is bound to a hash.** The local copy is replaced only when it still has the hash from the last
+    handoff and the incoming copy grew from it. When both PCs played since the last handoff, nothing is replaced:
+    the incoming copy is added as a separate save and she picks which one to keep sharing. A save of his own that
+    sits in that slot is never replaced.
+  - **Old saves:** the last 5 replaced copies per save, outside `Saves/`, each with **Put this one back**.
+  - **Missing mods:** the receiving PC lists what the save was played with and this PC lacks. A CurseForge mod's
+    **Get it** opens `https://www.curseforge.com/projects/<id>` in the browser; he clicks Install there. A manual
+    mod shows its name and a link only. The app never copies, downloads or installs a mod file.
+  - **Find where to get it:** for a manual mod with no link, the PR 12 key store asks Claude Haiku with Anthropic's
+    web search, only on a click, after a preview of what is sent. The result is labelled "Found by AI, check it",
+    and the app only opens the page.
+- [ ] Result you see: on two fixture copies and a temp folder standing in for Drive, send from one, get on the
+  other, and the slot there holds the sender's bytes with the old copy in Old saves.
+- [ ] Unit: the tests are written first and fail first. The gate refuses every `saves/` name but one slot file,
+  every op but `move`, and every partner folder but Old saves and the incoming folder. A half-written file, a wrong
+  hash and a missing manifest each leave `saves/` unchanged. A changed local copy is never replaced.
+- [ ] Live: Playwright on CI Windows runs the round trip and its Undo, and a Get while a dummy game runs is refused.
+  Then Tyler and Lila do one real handoff each way.
+- [ ] Before the build: the live checks on Tyler's Windows PC listed in the brief (how the shared folder appears on
+  her PC, what a half-synced file looks like, whether the game loads a save under another slot number).
+- [ ] Perf: none.
+- [ ] Tyler approves every screen and the wording before merge.
+- [ ] When it lands, `AGENTS.md`'s rule "Never write to `Saves/` or `Tray/`" is reworded as the brief says.
+
 ---
 
 ## After v1 (not planned in detail)
@@ -327,7 +417,7 @@ Nothing that writes files is built until this gate passes. Tyler does each step 
 - **Conflict scan:** list two packages that hold the same resource key. It is kept apart from crash diagnosis,
   because shared keys are often on purpose (MCCC's author, Fable's report, section 3).
 - **CurseForge API lookups:** only if Tyler gets a personal key and a way to keep it out of the `.exe`.
-- **Auto-update:** needs a public download location, because the repo is private.
+- **Auto-update:** the repo is public now, so GitHub releases can serve updates.
 - **Code signing:** about $10 a month. It removes the SmartScreen warning.
 
 ## What stays unproven
@@ -341,3 +431,7 @@ Nothing that writes files is built until this gate passes. Tyler does each step 
   another place for the note.
 - Some of Sol's sources are EA forum pages that Fable could not open. Any rule that rests only on one of them gets
   checked before it ships.
+- For PR 14: how a Drive folder Tyler owns appears on her PC, what a half-synced file looks like in Drive for
+  desktop, whether the game loads a save placed under another slot number, and whether `AddonGameInstance.json`
+  holds the project id. Tyler's Windows PC and G1 settle them (`briefs/pr-14.md`).
+- Reading a save's in-game name from the `.save` file. PR 14 lists saves by date and size, and she types a name.
