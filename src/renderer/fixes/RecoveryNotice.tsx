@@ -22,6 +22,7 @@ export function RecoveryNotice() {
   const { go } = useNav()
   const [recovery, setRecovery] = useState<StartupRecovery | null>(null)
   const [listEntries, setListEntries] = useState<JournalEntry[] | null>(null)
+  const [listSettled, setListSettled] = useState(false)
   const [dismissed, setDismissed] = useState(false)
 
   useEffect(() => {
@@ -43,10 +44,13 @@ export function RecoveryNotice() {
     api
       .invoke('journal:list')
       .then((entries) => {
-        if (!cancelled) setListEntries(entries)
+        if (cancelled) return
+        setListEntries(entries)
+        setListSettled(true)
       })
       .catch(() => {
         // Ignore when safety handlers are unavailable (e.g. smoke tests before PR 9 merges).
+        if (!cancelled) setListSettled(true)
       })
 
     return () => {
@@ -82,7 +86,8 @@ export function RecoveryNotice() {
       : allCacheClears
         ? `It was clearing temporary cache files, which is safe: the game makes them again when it starts. ${UNTOUCHED}, and there is nothing more to do.`
         : `We could not put everything back on our own. ${UNTOUCHED}.`
-  } else if (putBack.length > 0) {
+  } else if (putBack.length > 0 && listSettled) {
+    // Saying all is well waits for the list, which may still hold a change left cut off.
     title =
       putBack.length === 1
         ? 'A change was cut off, so we put things back as they were.'
