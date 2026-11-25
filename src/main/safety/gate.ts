@@ -470,6 +470,19 @@ async function isAlsoInForbidden(ground: Ground, glance: Glance, target: string)
   return (await glance.forbiddenIds).has(fileId(found))
 }
 
+/**
+ * The gate makes every folder and file in app data, and it never makes a link. So a path in app data must
+ * lead to its own name: the same names, below the place the app data folder really is. One that leads
+ * anywhere else goes through a link something else made, and names one thing while it reaches another: a
+ * copy in holding that is really a file in a backup, a journal entry, the key, or what another change holds.
+ * Only the part below the app data folder is compared, since the folder itself may be reached through a link
+ * or a short 8.3 name. Both paths are written out in full, so the given one is cut by length.
+ */
+function leadsToItsOwnName(ground: Ground, target: string, real: string): boolean {
+  const realData = ground.realRoots.dataDir
+  return fold(real) === fold(realData + target.slice(ground.roots.dataDir.length))
+}
+
 async function checkWrite(ground: Ground, glance: Glance, use: WriteUse, target: string): Promise<Lead | GateRefusal> {
   const named = sortPath(nativePath, ground.roots, target)
   if (named.zone === 'forbidden') return savesOrTray(target)
@@ -481,6 +494,7 @@ async function checkWrite(ground: Ground, glance: Glance, use: WriteUse, target:
     if (sorted === null) return savesOrTray(target)
     if (sorted.zone !== named.zone || !mayWrite(use, sorted)) return linkEscape(target)
     if (await isAlsoInForbidden(ground, glance, target)) return savesOrTray(target)
+    if (named.zone === 'app-data' && !leadsToItsOwnName(ground, target, real)) return linkEscape(target)
     return { path: target, real }
   } catch (err) {
     return err instanceof LinkToNowhere ? linkEscape(target) : checkFailed(target)
