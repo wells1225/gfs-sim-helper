@@ -1022,6 +1022,71 @@ describe('a cache clear that stops part way', () => {
     expect(touched[0]!.steps.map((s) => s.state)).toEqual(['applied', 'pending'])
     expect(await recover(ws.deps)).toEqual([])
   })
+
+  it('first step is a cache folder that fails at opsDone 0 after removing one file inside: settles as CACHE_STOPPED and done', async () => {
+    const ws = await backedUp()
+    const cacheDir = join(ws.simsFolder, 'cachestr')
+    const cleared = join(cacheDir, 'cleared.bin')
+    const locked = join(cacheDir, 'locked.bin')
+    await mkdir(cacheDir, { recursive: true })
+    await writeFile(cleared, 'first cache file')
+    await writeFile(locked, 'locked cache file')
+    ws.gate.hooks.beforeOp = async (op, _i, request) => {
+      if (request.reason !== 'fix' || op.op !== 'remove' || op.path !== cacheDir) return undefined
+      await rm(cleared)
+      return 'file in use'
+    }
+
+    const outcome = await runAction(ws.deps, {
+      ...cachePlan(ws),
+      entryId: 'clear-folder-1',
+      steps: [
+        { kind: 'remove-cache', path: cacheDir },
+        { kind: 'remove-cache', path: join(ws.simsFolder, 'localthumbcache.package') }
+      ]
+    })
+    ws.gate.hooks.beforeOp = undefined
+
+    expect(outcome).toMatchObject({ status: 'stopped-part-way', detail: CACHE_STOPPED, entry: { status: 'done' } })
+    expect(await pathExists(cleared)).toBe(false)
+    expect(await pathExists(locked)).toBe(true)
+    expect((await listJournal(ws.deps)).map((e) => [e.id, e.status])).toEqual([['clear-folder-1', 'done']])
+    expect(await recover(ws.deps)).toEqual([])
+  })
+
+  it('cut off by a crash inside a cache folder that still exists: the next start settles it as done instead of dropping it', async () => {
+    const ws = await backedUp()
+    const cacheDir = join(ws.simsFolder, 'cachestr')
+    const cleared = join(cacheDir, 'cleared.bin')
+    const locked = join(cacheDir, 'locked.bin')
+    await mkdir(cacheDir, { recursive: true })
+    await writeFile(cleared, 'first cache file')
+    await writeFile(locked, 'locked cache file')
+    let saved: JournalEntry | null = null
+    ws.gate.hooks.beforeRequest = async (request) => {
+      if (request.reason !== 'fix') return undefined
+      saved = JSON.parse(await readFile(join(ws.paths.journalDir, 'clear-folder-crash.json'), 'utf8')) as JournalEntry
+      return { status: 'refused', refusal: { reason: 'game-running' } }
+    }
+    await runAction(ws.deps, {
+      ...cachePlan(ws),
+      entryId: 'clear-folder-crash',
+      steps: [
+        { kind: 'remove-cache', path: cacheDir },
+        { kind: 'remove-cache', path: join(ws.simsFolder, 'localthumbcache.package') }
+      ]
+    })
+    ws.gate.hooks.beforeRequest = undefined
+    if (!saved) throw new Error('no entry was written')
+    await writeFile(join(ws.paths.journalDir, 'clear-folder-crash.json'), JSON.stringify(saved))
+    await rm(cleared)
+
+    const touched = await recover(ws.deps)
+
+    expect(touched.map((e) => [e.id, e.status])).toEqual([['clear-folder-crash', 'done']])
+    expect((await listJournal(ws.deps)).map((e) => [e.id, e.status])).toEqual([['clear-folder-crash', 'done']])
+    expect(await recover(ws.deps)).toEqual([])
+  })
 })
 
 describe('undo', () => {
