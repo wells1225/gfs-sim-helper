@@ -22,14 +22,14 @@ export const NO_ANSWER_WORDS: Record<NoAnswerWhy, NoAnswerCopy> = {
     canRetry: false
   },
   declined: {
-    title: "It couldn't answer this one.",
+    title: "It couldn't answer this one",
     detail:
       'Nothing on your PC was changed. The 50/50 test on your check-up can still find the mod that causes the trouble, or you can send your report to Tyler.',
     canRetry: false
   },
   offline: {
-    title: "Couldn't reach the online helper right now",
-    detail: 'Nothing on your PC changed. Check your internet and try again.',
+    title: 'No internet connection',
+    detail: 'Check your internet connection and try again. Nothing on your PC was changed.',
     canRetry: true
   },
   'limit-reached': {
@@ -38,8 +38,8 @@ export const NO_ANSWER_WORDS: Record<NoAnswerWhy, NoAnswerCopy> = {
     canRetry: true
   },
   'preview-expired': {
-    title: 'That preview is out of date',
-    detail: 'Make a new one to send.',
+    title: 'That summary is out of date',
+    detail: 'Make a fresh summary to send. Nothing was sent and nothing on your PC was changed.',
     canRetry: true
   },
   error: {
