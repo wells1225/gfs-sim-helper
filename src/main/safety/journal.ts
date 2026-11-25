@@ -56,6 +56,16 @@ export async function removeEntry(deps: SafetyDeps, id: string): Promise<GateRes
 }
 
 /**
+ * Removes the entry's file only when it holds exactly this entry, byte for byte as saveEntry wrote it: an older
+ * entry that already had the id is never touched. Does nothing when the file is missing or cannot be read.
+ */
+export async function removeEntryIfSame(deps: SafetyDeps, entry: JournalEntry): Promise<void> {
+  if (!isSafeId(entry.id)) return
+  const onDisk = await readFile(entryFile(deps.paths.journalDir, entry.id), 'utf8').catch(() => null)
+  if (onDisk === JSON.stringify(entry)) await removeEntry(deps, entry.id)
+}
+
+/**
  * A journal write never throws: a gate that throws counts as a write that failed. So once files have moved, the
  * caller always gets to report how far it got.
  */
