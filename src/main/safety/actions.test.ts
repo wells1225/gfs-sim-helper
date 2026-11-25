@@ -985,7 +985,7 @@ describe('runAction', () => {
 })
 
 describe('a cache clear that stops part way', () => {
-  const CACHE_STOPPED = 'Some temporary cache files were cleared before it stopped. That is safe: the game makes them again.'
+  const CACHE_STOPPED = 'Some temporary cache files may have been cleared before it stopped. That is safe: the game makes them again.'
 
   function cachePlan(ws: Workspace): ActionPlan {
     return {
