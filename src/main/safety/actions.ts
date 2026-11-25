@@ -35,7 +35,7 @@ async function fileHash(path: string): Promise<Sha256 | null> {
 const ACTION_STOPPED = 'This change stopped part way through. You can undo what already moved from History.'
 const UNDO_STOPPED = 'Some files could not be put back. You can try Undo again.'
 // Caches are safe to lose: the game makes them again. So a cache clear that stops part way is settled, not undone.
-const CACHE_STOPPED = 'Some temporary cache files were cleared before it stopped. That is safe: the game makes them again.'
+const CACHE_STOPPED = 'Some temporary cache files may have been cleared before it stopped. That is safe: the game makes them again.'
 const ACTION_HISTORY_NOT_SAVED = 'The files changed, but the app could not save your History record.'
 // Only used when every file is back (any file not back sets its own detail first), so it says so.
 const UNDO_HISTORY_NOT_SAVED = 'Your files are back as they were, but the app could not save this to History.'
