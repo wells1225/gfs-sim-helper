@@ -1070,6 +1070,54 @@ describe('lead decision: a set-aside that stops part way is put back at once', (
     }
   })
 
+  it('a set-aside that moved a file keeps stopped-part-way when undo answers nothing-to-do (its entry could not be read)', async () => {
+    const scan = sampleScan()
+    // undo answers nothing-to-do for an entry it cannot read, too: a moved file must never be called not-started.
+    const makeMovedOneStop = (plan: ActionPlan): FixOutcome => ({
+      status: 'stopped-part-way',
+      entry: sampleJournalEntry({
+        id: plan.entryId,
+        action: plan.action,
+        summary: plan.summary,
+        origin: plan.origin,
+        folderPath: plan.folderPath,
+        groupId: plan.groupId,
+        groupLabel: plan.groupLabel,
+        hasScript: plan.hasScript,
+        status: 'needs-attention',
+        steps: plan.steps.map((s, i) =>
+          s.kind === 'move'
+            ? { kind: 'move', from: s.from, to: s.to, bytes: 1, sha256: SAMPLE_SHA_A, state: i === 0 ? 'applied' : 'pending' }
+            : { kind: 'remove-cache', path: s.path, state: 'pending' }
+        )
+      }),
+      detail: 'This change stopped part way through. You can undo what already moved from History.'
+    })
+    const makeSafety = () => {
+      const safety = makeFakeSafety({
+        async runAction(plan) {
+          safety.ranPlans.push(plan)
+          return makeMovedOneStop(plan)
+        },
+        async undo(entryId) {
+          safety.undoneIds.push(entryId)
+          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+        }
+      })
+      return safety
+    }
+
+    const applySafety = makeSafety()
+    const fromApply = await applyFix(makeDeps(applySafety), scan, { fix: 'disable-group', groupId: 'dir:hair' })
+    expect(fromApply).toMatchObject({ status: 'stopped-part-way', entry: { groupId: 'dir:hair', status: 'needs-attention' } })
+    expect(applySafety.undoneIds).toEqual([applySafety.ranPlans[0]!.entryId])
+
+    const setAsideSafety = makeSafety()
+    const fromSetAside = await setAside(makeDeps(setAsideSafety), folderPath, groups, { by: 'fix' })
+    expect(fromSetAside.status).toBe('stopped-part-way')
+    expect(setAsideSafety.undoneIds).toEqual([setAsideSafety.ranPlans[0]!.entryId])
+  })
+
   it('a half-moved group is in neither list: disabledGroups leaves it out and putBack does not touch it', async () => {
     const stuck = sampleJournalEntry({
       id: 'e-stuck',
