@@ -206,21 +206,68 @@ describe('runAction', () => {
     expect(await snapshotTree(ws.simsFolder)).toEqual(before)
   })
 
-  it('undo after a part-way stop ignores the step that never ran, even when its file changed since', async () => {
-    const ws = await backedUp()
-    const lampA = await sha256File(join(ws.mods, 'BuildBuy', 'lamp_a.package'))
-    ws.gate.hooks.beforeOp = (op, _i, request) =>
-      request.reason === 'fix' && op.op === 'move' && op.from.endsWith('lamp_b.package') ? 'file in use' : undefined
-    const outcome = await runAction(ws.deps, disablePlan(ws))
-    if (outcome.status !== 'stopped-part-way') throw new Error(outcome.status)
-    ws.gate.hooks.beforeOp = undefined
-    await writeFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), 'updated by CurseForge')
+  describe('a failed answer whose move at opsDone ran in part', () => {
+    // The gate answers failed with opsDone at lamp_b's move. That move may have done nothing, left the file at both
+    // places (a move to another drive cut off after the copy), or finished before the answer went wrong.
+    async function stoppedAtLampB(ws: Workspace, layout: 'source-only' | 'both' | 'target-only') {
+      ws.gate.hooks.beforeOp = async (op, _i, request) => {
+        if (request.reason !== 'fix' || op.op !== 'move' || !op.from.endsWith('lamp_b.package')) return undefined
+        if (layout !== 'source-only') await mkdir(dirname(op.to), { recursive: true })
+        if (layout === 'both') await copyFile(op.from, op.to)
+        if (layout === 'target-only') await rename(op.from, op.to)
+        return 'the move stopped'
+      }
+      const outcome = await runAction(ws.deps, disablePlan(ws))
+      ws.gate.hooks.beforeOp = undefined
+      if (outcome.status !== 'stopped-part-way') throw new Error(outcome.status)
+      return outcome.entry
+    }
 
-    const undone = await undo(ws.deps, outcome.entry.id)
+    it('source only: the step stays pending, and undo leaves her newer file alone', async () => {
+      const ws = await backedUp()
+      const lampA = await sha256File(join(ws.mods, 'BuildBuy', 'lamp_a.package'))
+      const entry = await stoppedAtLampB(ws, 'source-only')
+      expect(entry.steps.map((s) => s.state)).toEqual(['applied', 'pending'])
+      await writeFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), 'updated by CurseForge')
 
-    expect(undone).toMatchObject({ status: 'done', entry: { status: 'undone' } })
-    expect(await sha256File(join(ws.mods, 'BuildBuy', 'lamp_a.package'))).toBe(lampA)
-    expect(await readFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), 'utf8')).toBe('updated by CurseForge')
+      const undone = await undo(ws.deps, entry.id)
+
+      expect(undone).toMatchObject({ status: 'done', entry: { status: 'undone' } })
+      expect(await sha256File(join(ws.mods, 'BuildBuy', 'lamp_a.package'))).toBe(lampA)
+      expect(await readFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), 'utf8')).toBe('updated by CurseForge')
+    })
+
+    it('target only: the step counts as applied, and undo brings the file back from holding', async () => {
+      const ws = await backedUp()
+      const before = await snapshotTree(ws.simsFolder)
+      const entry = await stoppedAtLampB(ws, 'target-only')
+      expect(entry.steps.map((s) => s.state)).toEqual(['applied', 'applied'])
+      expect((await listJournal(ws.deps))[0]!.steps.map((s) => s.state)).toEqual(['applied', 'applied'])
+
+      const undone = await undo(ws.deps, entry.id)
+
+      expect(undone).toMatchObject({ status: 'done', entry: { status: 'undone' } })
+      expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+      expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package'))).toBe(false)
+    })
+
+    it('both places: the step counts as applied, and undo never says undone while the copy sits in holding', async () => {
+      const ws = await backedUp()
+      const lampB = await sha256File(join(ws.mods, 'BuildBuy', 'lamp_b.package'))
+      const entry = await stoppedAtLampB(ws, 'both')
+      expect(entry.steps.map((s) => s.state)).toEqual(['applied', 'applied'])
+
+      const undone = await undo(ws.deps, entry.id)
+
+      expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+      if (undone.status === 'stopped-part-way') expect(undone.detail).toContain('lamp_b.package')
+      // lamp_a still comes back: the copy left behind does not stop the rest of the undo.
+      expect(await pathExists(join(ws.mods, 'BuildBuy', 'lamp_a.package'))).toBe(true)
+      expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_a.package'))).toBe(false)
+      expect(await sha256File(join(ws.mods, 'BuildBuy', 'lamp_b.package'))).toBe(lampB)
+      expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package'))).toBe(true) // nothing is deleted
+      expect((await listJournal(ws.deps))[0]!.status).toBe('needs-attention')
+    })
   })
 
   it('counts a cache that is already gone as cleared, and still goes through the gate so the game check runs', async () => {
@@ -382,6 +429,37 @@ describe('runAction', () => {
       expect(await snapshotTree(ws.simsFolder), how).toEqual(before)
       expect(ws.gate.count('fix'), how).toBe(0)
     }
+  })
+
+  it('takes back an entry file that a failed create left on disk, so the next start writes no false History line', async () => {
+    const ws = await backedUp()
+    // The real gate names the file, then fails (the temp name will not go, or the folder flush fails).
+    ws.gate.hooks.beforeRequest = async (request) => {
+      const write = request.ops.find((op) => op.op === 'write' && op.mode === 'create')
+      if (request.reason !== 'journal' || !write || write.op !== 'write') return undefined
+      await mkdir(dirname(write.path), { recursive: true })
+      await writeFile(write.path, write.data)
+      return { status: 'failed', opsDone: request.ops.length - 1, detail: 'flush failed' }
+    }
+
+    const outcome = await runAction(ws.deps, disablePlan(ws))
+
+    expect(outcome).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
+    ws.gate.hooks.beforeRequest = undefined
+    expect(await journalFiles(ws)).toEqual([])
+    expect(await recover(ws.deps)).toEqual([])
+    expect(await listJournal(ws.deps)).toEqual([])
+  })
+
+  it('never takes back an older entry that already has the id when the create fails', async () => {
+    const ws = await backedUp()
+    const first = await runAction(ws.deps, disablePlan(ws))
+    if (first.status !== 'done') throw new Error(first.status)
+
+    const second = await runAction(ws.deps, await editPlan(ws, '[options]\nmodsdisabled = 0\n', first.entry.id))
+
+    expect(second).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
+    expect(await listJournal(ws.deps)).toEqual([first.entry])
   })
 
   it('never throws once files have moved: a journal save that throws afterwards is a part-way stop that undo can finish', async () => {
@@ -730,7 +808,7 @@ describe('recover', () => {
     expect(await readFile(join(ws.mods, 'BuildBuy', 'lamp_b.package'), 'utf8')).toBe('updated by CurseForge')
   })
 
-  it('puts back an action that crashed half way through a move to another drive (the copy is made, the original not yet removed)', async () => {
+  it('puts back an action that crashed half way through a move to another drive, and never calls it undone while the copy is in holding', async () => {
     const ws = await backedUp()
     const before = await snapshotTree(ws.simsFolder)
     const entry = await interrupted(ws, 1)
@@ -740,13 +818,13 @@ describe('recover', () => {
 
     const touched = await recover(ws.deps)
 
-    expect(touched.map((e) => [e.id, e.status])).toEqual([[entry.id, 'undone']])
+    expect(touched.map((e) => [e.id, e.status])).toEqual([[entry.id, 'needs-attention']])
     expect(await snapshotTree(ws.simsFolder)).toEqual(before)
     expect(await pathExists(stray)).toBe(true) // recover deletes nothing
-    expect((await listJournal(ws.deps))[0]!.status).toBe('undone')
+    expect((await listJournal(ws.deps))[0]!.status).toBe('needs-attention')
   })
 
-  it('finishes an undo that crashed half way through a move back from another drive', async () => {
+  it('puts back the rest of an undo that crashed half way through a move back from another drive, and says the copy is still in holding', async () => {
     const ws = await backedUp()
     const before = await snapshotTree(ws.simsFolder)
     const moved = await runAction(ws.deps, disablePlan(ws))
@@ -758,9 +836,30 @@ describe('recover', () => {
 
     const touched = await recover(ws.deps)
 
-    expect(touched.map((e) => e.status)).toEqual(['undone'])
+    expect(touched.map((e) => e.status)).toEqual(['needs-attention'])
     expect(await snapshotTree(ws.simsFolder)).toEqual(before)
-    expect(await pathExists(lastStep.to)).toBe(true)
+    expect(await pathExists(lastStep.to)).toBe(true) // the copy in holding stays, and History says so
+  })
+
+  it('an undo whose move back stopped with the file at both places is never called undone by the next undo', async () => {
+    const ws = await backedUp()
+    const before = await snapshotTree(ws.simsFolder)
+    const moved = await runAction(ws.deps, disablePlan(ws))
+    if (moved.status !== 'done') throw new Error(moved.status)
+    ws.gate.hooks.beforeOp = async (op, _i, request) => {
+      if (request.reason !== 'undo' || op.op !== 'move' || !op.to.endsWith('lamp_b.package')) return undefined
+      await copyFile(op.from, op.to)
+      return 'the move back stopped'
+    }
+    const first = await undo(ws.deps, moved.entry.id)
+    ws.gate.hooks.beforeOp = undefined
+    expect(first).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+
+    const second = await undo(ws.deps, moved.entry.id)
+
+    expect(second).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+    expect(await pathExists(held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package'))).toBe(true)
   })
 
   it('still stops when the original is back but something else sits where the action put it', async () => {
