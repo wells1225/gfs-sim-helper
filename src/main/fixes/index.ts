@@ -140,10 +140,11 @@ function groupPlan(
 }
 
 /**
- * A set-aside that stopped part way is undone at once, so no group is left half moved. When the undo works (or
- * drops a never-ran entry with nothing-to-do) the group is fully back: 'rolled-back'. When it does not (any other
- * refusal, stopped, or threw), the entry stays needs-attention: the original outcome stands, with the undo's entry
- * and, when it has one, the undo's sentence.
+ * A set-aside that stopped part way is undone at once, so no group is left half moved. When the undo works the
+ * group is fully back: 'rolled-back'. So is a nothing-to-do answer, but only when no step of the stopped entry ran:
+ * undo also answers nothing-to-do for an entry it cannot read, and a moved file must never be called not-started.
+ * When it does not work (any other refusal, stopped, or threw), the entry stays needs-attention: the original
+ * outcome stands, with the undo's entry and, when it has one, the undo's sentence.
  */
 async function rollBackHalfDone(
   deps: FixDeps,
@@ -157,7 +158,12 @@ async function rollBackHalfDone(
     return outcome
   }
   if (undone.status === 'done') return 'rolled-back'
-  if (undone.status === 'refused' && undone.refusal.why === 'out-of-date' && undone.refusal.detail === 'nothing-to-do') {
+  if (
+    undone.status === 'refused' &&
+    undone.refusal.why === 'out-of-date' &&
+    undone.refusal.detail === 'nothing-to-do' &&
+    outcome.entry.steps.every((s) => s.state === 'pending')
+  ) {
     return 'rolled-back'
   }
   // The undo ran last, so its sentence says what is true now (its files may all be back, say).
