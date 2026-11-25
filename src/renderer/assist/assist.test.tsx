@@ -121,8 +121,12 @@ describe('AskScreen', () => {
     }
   )
 
-  it('says "It couldn\'t answer this one." when the model declines', () => {
-    expect(NO_ANSWER_WORDS.declined.title).toBe("It couldn't answer this one.")
+  it('says "It couldn\'t answer this one" when the model declines', () => {
+    expect(NO_ANSWER_WORDS.declined.title).toBe("It couldn't answer this one")
+  })
+
+  it('ends no title with a full stop', () => {
+    for (const words of Object.values(NO_ANSWER_WORDS)) expect(words.title).not.toMatch(/\.$/)
   })
 
   it('tells a rejected key apart from a missing one', () => {
@@ -319,13 +323,17 @@ describe('KeySetupScreen', () => {
 })
 
 describe('NO_ANSWER_WORDS', () => {
-  it('says the online helper was unreachable and nothing on her PC changed', () => {
-    expect(NO_ANSWER_WORDS.offline.title).toBe("Couldn't reach the online helper right now")
-    expect(NO_ANSWER_WORDS.offline.detail).toBe('Nothing on your PC changed. Check your internet and try again.')
+  it('says there is no internet connection and nothing on her PC changed', () => {
+    expect(NO_ANSWER_WORDS.offline.title).toBe('No internet connection')
+    expect(NO_ANSWER_WORDS.offline.detail).toBe(
+      'Check your internet connection and try again. Nothing on your PC was changed.'
+    )
   })
 
-  it('says an old preview is out of date without blaming a new check-up', () => {
-    expect(NO_ANSWER_WORDS['preview-expired'].title).toBe('That preview is out of date')
-    expect(NO_ANSWER_WORDS['preview-expired'].detail).toBe('Make a new one to send.')
+  it('says an old summary is out of date without blaming a new check-up', () => {
+    expect(NO_ANSWER_WORDS['preview-expired'].title).toBe('That summary is out of date')
+    expect(NO_ANSWER_WORDS['preview-expired'].detail).toBe(
+      'Make a fresh summary to send. Nothing was sent and nothing on your PC was changed.'
+    )
   })
 })
