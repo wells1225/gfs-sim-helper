@@ -214,19 +214,94 @@ describe('fixHandlers', () => {
     }
   })
 
-  it('runs safety.recover() once on the first journal:list call', async () => {
+  it('runs recovery once when the handlers are built, and journal:list only reads', async () => {
     const recoverSpy = vi.fn<Safety['recover']>(async () => [])
     const listSpy = vi.fn<Safety['listJournal']>(async () => [sampleJournalEntry()])
     const { ctx } = await makeContext({ safety: { recover: recoverSpy, listJournal: listSpy } })
     const handlers = fixHandlers(ctx)
 
+    // At start, in main, before the window asks for anything.
+    expect(recoverSpy).toHaveBeenCalledTimes(1)
+
     const first = await handlers['journal:list'](undefined)
     const second = await handlers['journal:list'](undefined)
+    fixHandlers(ctx) // built again for the same context: still only once
 
     expect(first).toHaveLength(1)
     expect(second).toHaveLength(1)
     expect(recoverSpy).toHaveBeenCalledTimes(1)
     expect(listSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('journal:list waits for startup recovery, and still answers when recovery failed', async () => {
+    let finish!: () => void
+    const order: string[] = []
+    const recoverSpy = vi.fn<Safety['recover']>(
+      () =>
+        new Promise((resolve) => {
+          finish = () => {
+            order.push('recovered')
+            resolve([])
+          }
+        })
+    )
+    const listSpy = vi.fn<Safety['listJournal']>(async () => {
+      order.push('listed')
+      return [sampleJournalEntry()]
+    })
+    const { ctx } = await makeContext({ safety: { recover: recoverSpy, listJournal: listSpy } })
+    const listed = fixHandlers(ctx)['journal:list'](undefined)
+    await new Promise((r) => setTimeout(r, 10))
+    expect(listSpy).not.toHaveBeenCalled()
+    finish()
+    expect(await listed).toHaveLength(1)
+    expect(order).toEqual(['recovered', 'listed'])
+
+    const failing = await makeContext({
+      safety: {
+        recover: async () => {
+          throw new Error('C:\\Users\\Lila\\journal locked')
+        }
+      }
+    })
+    expect(await fixHandlers(failing.ctx)['journal:list'](undefined)).toHaveLength(1)
+
+    const throwsAtOnce = await makeContext({
+      safety: {
+        recover: () => {
+          throw new Error('sync')
+        }
+      }
+    })
+    expect(() => fixHandlers(throwsAtOnce.ctx)).not.toThrow()
+  })
+
+  it('fix:apply and journal:undo wait for startup recovery before changing anything', async () => {
+    let finish!: () => void
+    const recoverSpy = vi.fn<Safety['recover']>(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve([])
+        })
+    )
+    const applySpy = vi.fn<Fixes['apply']>(async () => ({ status: 'done', entry: sampleJournalEntry() }))
+    const undoSpy = vi.fn<Safety['undo']>(async (entryId) => ({
+      status: 'done',
+      entry: sampleJournalEntry({ id: entryId, status: 'undone', undoneAt: '2026-11-24T12:15:00.000Z' })
+    }))
+    const { ctx } = await makeContext({ safety: { recover: recoverSpy, undo: undoSpy }, fixes: { apply: applySpy } })
+    ctx.session.scan = sampleScan()
+    const handlers = fixHandlers(ctx)
+
+    const applied = handlers['fix:apply']({ via: 'finding', findingId: 'mods-off', fix: 'turn-mods-on' })
+    const undone = handlers['journal:undo']({ entryId: 'e-1' })
+    await new Promise((r) => setTimeout(r, 10))
+    expect(applySpy).not.toHaveBeenCalled()
+    expect(undoSpy).not.toHaveBeenCalled()
+
+    finish()
+    expect((await applied).status).toBe('done')
+    expect((await undone).status).toBe('done')
   })
 
   it('handles backup:status, journal:undo and groups:disabled with or without an active scan', async () => {

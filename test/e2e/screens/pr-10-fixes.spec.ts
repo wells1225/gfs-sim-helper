@@ -165,7 +165,7 @@ test('branch shot: recovery-notice', async () => {
       'journal:list': [interrupted]
     })
 
-    await expect(running.page.getByText('A previous change stopped partway through')).toBeVisible()
+    await expect(running.page.getByText('A change was cut off before it finished')).toBeVisible()
     expect(running.consoleErrors).toEqual([])
     await shoot(running.page, PR_SLUG, 'recovery-notice')
   } finally {

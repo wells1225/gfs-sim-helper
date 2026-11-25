@@ -244,7 +244,7 @@ describe('FindingActions', () => {
 })
 
 describe('RecoveryNotice', () => {
-  it('shows banner when an entry needs attention and opens History on click', async () => {
+  it('says calmly that a cut-off change could not be finished, and opens History when it has an undo', async () => {
     const user = userEvent.setup()
     const api = fakeApi({
       'journal:list': [
@@ -263,9 +263,41 @@ describe('RecoveryNotice', () => {
       </Harness>
     )
 
-    expect(await screen.findByText('A previous change stopped partway through')).toBeInTheDocument()
+    expect(await screen.findByText('A change was cut off before it finished')).toBeInTheDocument()
+    expect(screen.getByText(/Your saves and households were never touched/)).toBeInTheDocument()
+    expect(screen.getByText(/Open History and press Undo/)).toBeInTheDocument()
+    expect(screen.queryByText(/Tray/)).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Open History' }))
     expect(screen.getByTestId('probe')).toHaveTextContent('route=history')
+  })
+
+  it('offers no History or undo when the cut-off change was a cache clear, which has no undo', async () => {
+    const api = fakeApi({
+      'journal:list': [
+        sampleJournalEntry({
+          id: 'e-cache',
+          action: 'clear-caches',
+          summary: 'Cleared 2 temporary cache items',
+          steps: [{ kind: 'remove-cache', path: '/sims/localthumbcache.package', state: 'pending' }],
+          status: 'needs-attention',
+          undo: 'cannot-undo'
+        })
+      ]
+    })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'about' }}>
+        <RecoveryNotice />
+      </Harness>
+    )
+
+    expect(await screen.findByText('A change was cut off before it finished')).toBeInTheDocument()
+    expect(screen.getByText(/temporary cache files/)).toBeInTheDocument()
+    expect(screen.getByText(/Your saves and households were never touched/)).toBeInTheDocument()
+    expect(screen.getByText(/nothing more to do/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open History' })).toBeNull()
+    expect(screen.queryByText(/undo/i)).toBeNull()
+    expect(screen.queryByText(/Tray/)).toBeNull()
   })
 
   it('renders nothing when mounted without ApiProvider', () => {
