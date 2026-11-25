@@ -20,6 +20,12 @@ import { Start } from './screens/Start.tsx'
 import { Welcome } from './screens/Welcome.tsx'
 import { WhatHappened } from './screens/WhatHappened.tsx'
 import { SessionProvider } from './session.tsx'
+import { SHARE_READY } from './share/feature.ts'
+import { OldSavesScreen } from './share/OldSavesScreen.tsx'
+import { SetupScreen } from './share/SetupScreen.tsx'
+import { ShareBanner } from './share/ShareBanner.tsx'
+import { ShareScreen } from './share/ShareScreen.tsx'
+import { SharingSettingsScreen } from './share/SharingSettingsScreen.tsx'
 import { UpdateBanner } from './update/UpdateBanner.tsx'
 import { UpdateRow } from './update/UpdateRow.tsx'
 
@@ -54,6 +60,14 @@ function renderScreen(route: Route) {
       return <AskScreen />
     case 'key-setup':
       return <KeySetupScreen />
+    case 'share':
+      return <ShareScreen />
+    case 'share-setup':
+      return <SetupScreen />
+    case 'share-old-saves':
+      return <OldSavesScreen />
+    case 'share-settings':
+      return <SharingSettingsScreen />
   }
 }
 
@@ -81,6 +95,7 @@ function Shell() {
           { label: 'History', screen: 'history' as const }
         ]
       : []),
+    ...(SHARE_READY ? [{ label: 'Share saves', screen: 'share' as const }] : []),
     { label: 'About', screen: 'about' }
   ]
 
@@ -114,6 +129,7 @@ function Shell() {
 
       <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 px-5 py-6">
         <UpdateBanner />
+        <ShareBanner />
         <RecoveryNotice />
         <ResumeBanner />
         <div className="flex-1">{renderScreen(route)}</div>
@@ -121,7 +137,8 @@ function Shell() {
 
       <footer className="border-t border-border bg-card/60">
         <div className="mx-auto w-full max-w-3xl px-5 py-3 text-center text-sm text-muted-foreground">
-          Saves and Tray are never touched · A backup is made before any change
+          {/* PR 14 changes this line again when Share saves lands (briefs/pr-14.md, contract request 9). */}
+          Your saves and households are never touched · A backup is made before any change
         </div>
       </footer>
 

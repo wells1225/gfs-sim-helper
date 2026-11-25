@@ -9,16 +9,25 @@ import type {
   FiftyResult,
   FiftyStopResult,
   FixCall,
+  FindAnswer,
+  FindPreview,
   FixOutcome,
   GameRunState,
   JournalEntry,
   KeySetResult,
   KeyStatus,
+  LocalSave,
   LocateView,
+  OldSave,
+  PcRole,
   Progress,
   ReportResult,
   ScanResult,
   Settings,
+  ShareReceiveResult,
+  ShareSendResult,
+  ShareView,
+  StartupRecovery,
   Symptom,
   UpdateInstall,
   UpdateState
@@ -36,7 +45,8 @@ export interface IpcInvoke {
   // PR 10 owns this block
   'backup:status': { req: void; res: BackupStatus }
   'fix:apply': { req: FixCall; res: FixOutcome }
-  'journal:list': { req: void; res: JournalEntry[] } // the first call also runs safety.recover()
+  'journal:list': { req: void; res: JournalEntry[] } // reads only; waits for the start-up recovery to finish
+  'journal:recovery': { req: void; res: StartupRecovery } // reads only: what the start-up recovery did, once it finished
   'journal:undo': { req: { entryId: string }; res: FixOutcome }
   'groups:disabled': { req: void; res: DisabledGroup[] }
   // PR 11 owns this block
@@ -57,6 +67,23 @@ export interface IpcInvoke {
   'update:check': { req: { by: 'start' | 'click' }; res: UpdateState } // 'start' checks at most once in 24 hours
   'update:download': { req: void; res: UpdateState } // only from 'available'
   'update:install': { req: void; res: UpdateInstall } // only from 'ready'; 'busy' while a change runs
+  // PR 14 owns this block
+  'share:get': { req: void; res: ShareView } // reads the folder again
+  'share:set-role': { req: { role: PcRole }; res: ShareView }
+  'share:find-folder': { req: { by: 'look' | 'pick' | 'make' }; res: ShareView } // pick: main's own dialog; make: create it in My Drive
+  'share:check': { req: void; res: ShareView } // writes our hello file, reads the other PC's
+  'share:settings': { req: { keepOld?: number; keepInDrive?: number }; res: ShareView }
+  'share:local-saves': { req: void; res: LocalSave[] }
+  'share:send': { req: { shareId: string } | { slotId: string; name: string }; res: ShareSendResult } // second form: a save's first send
+  'share:receive': { req: { shareId: string; seq: number; olderGame: 'stop' | 'go' }; res: ShareReceiveResult }
+  'share:keep': { req: { shareId: string; keep: 'mine' | 'theirs' }; res: ShareView } // answers 'which-to-keep'
+  'share:old-saves': { req: void; res: OldSave[] }
+  'share:restore': { req: { oldId: string }; res: ShareReceiveResult }
+  'share:stop': { req: { shareId: string }; res: ShareView } // forgets the link; every file stays
+  'share:mod-link': { req: { groupId: string; link: string | null }; res: 'saved' | 'refused' } // typed for a manual mod
+  'share:open-link': { req: { linkId: string }; res: 'opened' | 'refused' } // only addresses main validated itself
+  'share:find-preview': { req: { shareId: string; seq: number; key: string }; res: FindPreview | null }
+  'share:find-send': { req: { previewId: string }; res: FindAnswer }
 }
 
 export interface IpcEvents {
@@ -74,6 +101,7 @@ export const INVOKE_CHANNELS = [
   'backup:status',
   'fix:apply',
   'journal:list',
+  'journal:recovery',
   'journal:undo',
   'groups:disabled',
   'fifty:get',
@@ -90,7 +118,23 @@ export const INVOKE_CHANNELS = [
   'update:get',
   'update:check',
   'update:download',
-  'update:install'
+  'update:install',
+  'share:get',
+  'share:set-role',
+  'share:find-folder',
+  'share:check',
+  'share:settings',
+  'share:local-saves',
+  'share:send',
+  'share:receive',
+  'share:keep',
+  'share:old-saves',
+  'share:restore',
+  'share:stop',
+  'share:mod-link',
+  'share:open-link',
+  'share:find-preview',
+  'share:find-send'
 ] as const satisfies readonly (keyof IpcInvoke)[]
 
 export type Handlers<K extends keyof IpcInvoke> = {
