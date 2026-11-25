@@ -52,9 +52,9 @@ test('live: patch-day shows mods-off first and Send to Tyler writes a redacted r
     expect(entryNames).toContain('scan.json')
 
     for (const [name, bytes] of Object.entries(unzipped)) {
-      expect(name, `entry name ${name} must not contain Player`).not.toContain('Player')
+      expect(name, `entry name ${name} must not contain player`).not.toMatch(/player/i)
       const content = strFromU8(bytes)
-      expect(content, `entry content of ${name} must not contain Player`).not.toContain('Player')
+      expect(content, `entry content of ${name} must not contain player`).not.toMatch(/player/i)
     }
 
     expect(running.consoleErrors).toEqual([])
@@ -78,8 +78,27 @@ test('live: big fixture shows the first finding within twice the PR 4 baseline p
 
     const started = performance.now()
     await page.getByRole('button', { name: /just check everything/i }).click()
-    await expect(page.locator('main section').first()).toBeVisible({ timeout: Math.max(budgetMs + 5_000, 20_000) })
+
+    const finishedMarker = page
+      .locator('main section')
+      .first()
+      .or(page.getByRole('button', { name: 'Check again' }))
+      .or(page.getByRole('heading', { name: "We couldn't finish the check-up" }))
+    try {
+      await expect(finishedMarker.first()).toBeVisible({ timeout: 45_000 })
+    } catch (err) {
+      const mainText = await page.locator('main').innerText().catch(() => '<unreadable>')
+      console.error(`[pr-07-live] big timed out; consoleErrors=${JSON.stringify(running.consoleErrors)}\nmain:\n${mainText}`)
+      throw err
+    }
+
     const elapsedMs = Math.round(performance.now() - started)
+    const sectionCount = await page.locator('main section').count()
+    if (sectionCount === 0) {
+      const mainText = await page.locator('main').innerText().catch(() => '<unreadable>')
+      console.error(`[pr-07-live] big finished in ${elapsedMs}ms with 0 sections; consoleErrors=${JSON.stringify(running.consoleErrors)}\nmain:\n${mainText}`)
+    }
+    expect(sectionCount, 'expected at least one finding section on big').toBeGreaterThan(0)
 
     console.log(`[pr-07-live] big first finding elapsedMs=${elapsedMs} budgetMs=${budgetMs} baselineMs=${baselineMs}`)
     expect(elapsedMs).toBeLessThan(budgetMs)
