@@ -13,11 +13,15 @@ function canUndo(entry: JournalEntry): boolean {
   return entry.undo === 'can-undo' && entry.status !== 'undone'
 }
 
+function isFlagged(entry: JournalEntry): boolean {
+  return entry.status === 'needs-attention' || entry.status === 'in-progress'
+}
+
 export function RecoveryNotice() {
   const api = useOptionalApi()
   const { go } = useNav()
   const [recovery, setRecovery] = useState<StartupRecovery | null>(null)
-  const [flagged, setFlagged] = useState<JournalEntry[]>([])
+  const [listEntries, setListEntries] = useState<JournalEntry[] | null>(null)
   const [dismissed, setDismissed] = useState(false)
 
   useEffect(() => {
@@ -32,14 +36,14 @@ export function RecoveryNotice() {
         if (!cancelled) setRecovery(answer)
       })
       .catch(() => {
-        // Ignore when the fixes handlers are unavailable.
+        // A rejected recovery call must never look like everything went smoothly.
+        if (!cancelled) setRecovery({ status: 'failed' })
       })
 
     api
       .invoke('journal:list')
       .then((entries) => {
-        if (cancelled) return
-        setFlagged(entries.filter((entry) => entry.status === 'needs-attention' || entry.status === 'in-progress'))
+        if (!cancelled) setListEntries(entries)
       })
       .catch(() => {
         // Ignore when safety handlers are unavailable (e.g. smoke tests before PR 9 merges).
@@ -53,8 +57,12 @@ export function RecoveryNotice() {
   if (dismissed) return null
 
   const failed = recovery?.status === 'failed'
-  const putBack = recovery?.status === 'finished' ? recovery.touched.filter((entry) => entry.status === 'undone') : []
+  const touched = recovery?.status === 'finished' ? recovery.touched : []
+  const putBack = touched.filter((entry) => entry.status === 'undone')
+  const listIds = new Set((listEntries ?? []).map((entry) => entry.id))
+  const flagged = [...(listEntries ?? []), ...touched.filter((entry) => !listIds.has(entry.id))].filter(isFlagged)
   const undoable = flagged.some(canUndo)
+  const allCacheClears = flagged.length > 0 && flagged.every((entry) => entry.action === 'clear-caches')
 
   let title: string
   let description: string
@@ -71,7 +79,9 @@ export function RecoveryNotice() {
         : `${flagged.length} changes were cut off before they finished`
     description = undoable
       ? `We could not put everything back on our own. ${UNTOUCHED}. Open History and press Undo to put it back.`
-      : `It was clearing temporary cache files, which is safe: the game makes them again when it starts. ${UNTOUCHED}, and there is nothing more to do.`
+      : allCacheClears
+        ? `It was clearing temporary cache files, which is safe: the game makes them again when it starts. ${UNTOUCHED}, and there is nothing more to do.`
+        : `We could not put everything back on our own. ${UNTOUCHED}.`
   } else if (putBack.length > 0) {
     title =
       putBack.length === 1
