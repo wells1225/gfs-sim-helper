@@ -2057,27 +2057,34 @@ describe('doing the ops', () => {
     expect(await readdir(dirname(to))).toEqual([])
   })
 
-  // `failed` with opsDone 0 says the move did not run. The target path never changed, so its copy can go.
-  it('move across drives: when the source folder is swapped during the copy, nothing is left at the target', async () => {
+  // `failed` with opsDone 0 says the move did not run. The copy can go only because the source is proven
+  // still in place: its folder was moved aside and linked back, so the same file still stands at the source
+  // path. (Until the last check of 2026-11-24 this test deleted the original and still wanted the target
+  // empty, which is the loss of the only copy. That case is the "original is gone" test below.)
+  it('move across drives: when the source folder is swapped during the copy and the source is still the same file, nothing is left at the target', async () => {
     const w = await makeWorld()
     const sub = w.inFolder('Mods', 'Sub')
+    const aside = w.inFolder('Mods', 'Aside')
     await mkdir(sub, { recursive: true })
-    const from = join(sub, 'Slot_00000002.save')
-    await writeFile(from, 'decoy mod')
-    const to = w.inData('holding', 'e1', 'Mods', 'Slot_00000002.save')
-    const savesBefore = await snapshotTree(w.inFolder('saves'))
+    const from = join(sub, 'still_here.package')
+    await writeFile(from, 'a mod that stays')
+    const hash = await sha256(from)
+    const to = w.inData('holding', 'e1', 'Mods', 'still_here.package')
     disk.crossDrive = { from, hits: 0 }
     let swapped = false
     disk.atTheLastMoment = async () => {
-      await rm(sub, { recursive: true })
-      await linkFolder(w.inFolder('saves'), sub)
+      await rename(sub, aside)
+      await linkFolder(aside, sub)
       swapped = true
     }
     const result = await w.run([{ op: 'move', from, to }])
     expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
     expect(swapped, 'the folder was really swapped during the copy').toBe(true)
     expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
-    expect(await snapshotTree(w.inFolder('saves'))).toEqual(savesBefore)
+    expect((result as { detail: string }).detail).toContain('link-escape')
+    expect((result as { detail: string }).detail).not.toMatch(/left in place/)
+    expect(await sha256(join(aside, 'still_here.package')), 'the original is untouched').toBe(hash)
+    expect(await sha256(from), 'and it still stands at the source path').toBe(hash)
     expect(await readdir(dirname(to))).toEqual([])
   })
 
