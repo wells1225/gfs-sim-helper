@@ -151,7 +151,9 @@ export function HistoryScreen() {
 
         if (outcome.status === 'refused') {
           // An in-progress entry that never ran is dropped from the journal on undo: nothing changed, so nothing to say.
-          if (outcome.refusal.why === 'out-of-date' && outcome.refusal.detail === 'nothing-to-do') {
+          const neverRan =
+            entry.status === 'in-progress' && entry.steps.every((s) => s.state === 'pending')
+          if (outcome.refusal.why === 'out-of-date' && outcome.refusal.detail === 'nothing-to-do' && neverRan) {
             setEntries((prev) => prev.filter((e) => e.id !== entry.id))
             setFocusEntryId(entry.id)
             return
