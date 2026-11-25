@@ -888,6 +888,35 @@ describe('runAction', () => {
     expect(made[0]!.ops.every((op) => op.op === 'remove')).toBe(true)
   })
 
+  it('undo drops only an in-progress entry that never ran: a needs-attention entry with every step pending is undone, not dropped', async () => {
+    const ws = await backedUp()
+    // The fix is refused and its take-back fails, so the entry stays with every step pending.
+    ws.gate.hooks.beforeRequest = (request) => {
+      if (request.reason === 'fix') return { status: 'refused', refusal: { reason: 'game-running' } }
+      if (request.reason === 'journal' && request.ops.some((op) => op.op === 'remove')) {
+        return { status: 'failed', opsDone: 0, detail: 'the disk said no' }
+      }
+      return undefined
+    }
+    await runAction(ws.deps, disablePlan(ws))
+    ws.gate.hooks.beforeRequest = undefined
+    const [pending] = await listJournal(ws.deps)
+    if (pending === undefined) throw new Error('expected the entry to stay')
+    expect(pending.steps.every((s) => s.state === 'pending')).toBe(true)
+    await writeFile(
+      join(ws.paths.journalDir, `${pending.id}.json`),
+      JSON.stringify({ ...pending, status: 'needs-attention' })
+    )
+    const before = await snapshotTree(ws.simsFolder)
+
+    const outcome = await undo(ws.deps, pending.id)
+
+    expect(outcome).toMatchObject({ status: 'done', entry: { status: 'undone' } })
+    expect(await journalFiles(ws)).toHaveLength(1)
+    expect((await listJournal(ws.deps)).map((e) => e.status)).toEqual(['undone'])
+    expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+  })
+
   it.each(['failed', 'refused'] as const)(
     'undo of an entry that never ran whose drop is %s stops there: nothing put back, no backup, still in progress',
     async (answer) => {
