@@ -795,10 +795,29 @@ async function nameWithoutOverwrite(from: string, to: string): Promise<void> {
   try {
     await unlink(from)
   } catch (err) {
-    // One file with two names now. Take the new name back, but only while the old one is surely still there.
-    const still = await lstatOrNull(from).catch(() => null)
-    if (still?.isFile()) await unlink(to).catch(() => undefined)
-    throw err
+    // One file with two names now. The new name is taken back only when the old one is proven to be
+    // another name of that same file. Otherwise the new name may be the last one: it stays, and the
+    // answer says so.
+    const kept = (await twoNamesOfOneFile(from, to))
+      ? await unlink(to).then(() => null, explain)
+      : 'the source is no longer surely there'
+    if (kept === null) throw err
+    throw new OpFailure(`${explain(err)}, and the file at the target was left in place: ${kept}`)
+  }
+}
+
+/**
+ * True only when both paths are proven to be two names of one file: the same file id, and more than one
+ * name on the file, so that removing one leaves another. Two paths that reach a single name do not pass.
+ * Any error is false, and so is a disk that gives no file id.
+ */
+async function twoNamesOfOneFile(one: string, other: string): Promise<boolean> {
+  try {
+    const first = await lstat(one, { bigint: true })
+    const second = await lstat(other, { bigint: true })
+    return first.ino !== 0n && fileId(first) === fileId(second) && first.nlink > 1n
+  } catch {
+    return false
   }
 }
 
