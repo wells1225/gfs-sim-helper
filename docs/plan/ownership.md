@@ -1,4 +1,4 @@
-# Who may touch which file (PRs 4 to 13)
+# Who may touch which file (PRs 4 to 14)
 
 One rule: **a file has one owner.** A PR creates and edits only the paths in its row. Nobody edits a shared file
 after the contract commit. Where `plan.md`'s "Files it may touch" column differs, this file wins (for example,
@@ -22,6 +22,7 @@ stub belongs to the PR whose row covers it.
 | 11 | `wells/pr-11-fifty-fifty` | `wells/contracts` |
 | 12 | `wells/pr-12-assist` | `wells/contracts` |
 | 13 | `wells/pr-13-update` | `wells/contracts` |
+| 14 | `wells/pr-14-share-saves` | `main`, after merge steps 5, 9 and 10 |
 
 ## Owned paths
 
@@ -39,6 +40,7 @@ stub belongs to the PR whose row covers it.
 | 11 | `src/main/fiftyfifty/**` · `src/renderer/fiftyfifty/**` · `test/e2e/screens/pr-11-fifty-fifty.spec.ts` · `test/e2e/live/pr-11-fifty-fifty.spec.ts` |
 | 12 | `src/main/assist/**` · `src/renderer/assist/**` · `test/e2e/screens/pr-12-assist.spec.ts` |
 | 13 | `src/main/update/**` · `src/renderer/update/**` · `scripts/release/**` · `.github/workflows/release.yml` · `.github/workflows/pr-13-update.yml` · `test/e2e/screens/pr-13-update.spec.ts` · `test/e2e/live/pr-13-update.spec.ts` |
+| 14 | `src/main/share/**` · `src/renderer/share/**` · `src/main/assist/find-mod.ts` · `src/main/assist/find-mod.test.ts` · `test/e2e/screens/pr-14-share-saves.spec.ts` · `test/e2e/live/pr-14-share-saves.spec.ts` |
 
 Inside PR 12, Fable writes `src/main/assist/key-store.ts` and `src/main/assist/key-store.test.ts`. The PR 12 builder
 writes everything else in that row and does not edit those two files.
@@ -47,6 +49,18 @@ Inside PR 13, Fable writes `src/main/update/updater.ts` and `src/main/update/upd
 loads `electron-updater`, decides whether updates are allowed and starts the installer. The PR 13 builder writes
 everything else in that row. The allow-list entry `ALLOWED_PACKAGES['electron-updater'] = ['main/update/updater.ts']`
 goes in `gate-lint.test.ts`, which is PR 8's file.
+
+Inside PR 14, Fable writes `src/main/share/decide.ts`, `links.ts`, `receive.ts` and their tests: the only code
+that decides whether a save may be replaced and plans a write into `saves/`. PR 14 also changes files that other
+PRs own, each by the writer named here and nobody else:
+
+- `src/main/safety/gate.ts`, `gate.test.ts`, `gate-lint.test.ts` (PR 8's): Fable. Two new zones, save slot and share.
+- `src/main/assist/key-store.ts`, `key-store.test.ts` (PR 12's): Fable. One new function, `findWithKey`.
+- `src/main/safety/actions.ts`, `journal.ts`, `index.ts` and their tests (PR 9's): an Opus builder, from
+  `briefs/pr-14.md`, unit E. Four small changes.
+
+The PR 14 builders (Opus for folder, state, send and "Find where to get it"; Neon for the mods list and the
+screens) write everything else in that row. PR 14 adds no npm package and no workflow file.
 
 ## Shared files: the contract commit only
 
@@ -76,7 +90,7 @@ A needed change to any of these goes to the lead as a "Contract request". The le
 `windows-latest` for each PR, and uploads the screenshots as the artifact `screens`. So:
 
 - PRs 5, 6, 8: no workflow file. Their Windows proof is their unit tests in `ci.yml`.
-- PRs 7, 10, 11, 12: no workflow file. Their screenshots come from their own `test/e2e/screens/<pr-slug>.spec.ts`,
+- PRs 7, 10, 11, 12, 14: no workflow file. Their screenshots come from their own `test/e2e/screens/<pr-slug>.spec.ts`,
   which `ci.yml` runs and uploads.
 - PR 13 adds `.github/workflows/pr-13-update.yml` (installer A updates itself to B on `windows-latest`) and
   `.github/workflows/release.yml` (a `v*` tag builds a draft release; only Tyler publishes). See `briefs/pr-13.md`.

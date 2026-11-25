@@ -1,4 +1,4 @@
-# Merge order for PRs 1 to 13
+# Merge order for PRs 1 to 14
 
 Where things stand on 2026-11-24: PRs 1, 2 and 3 are open and stacked (`main` ← #1 `wells/electron-installer-scaffold`
 ← #2 `wells/sims-fixture-generator` ← #3 `wells/locate-sims-folders`). A dry-run merge of `main` with #1 and with #3
@@ -22,6 +22,7 @@ shows no conflict. The contract branch and the ten PR branches are in [`ownershi
 | 10 | PR 12 AI help | step 8 | may merge before G1: with no key stored, the button never shows |
 | 11 | PR 10 fixes | steps 8, 9 and **G1** | first PR that lets her change files; **Tyler approves** |
 | 12 | PR 11 50/50 | step 11 | **Tyler approves** |
+| 13 | PR 14 share saves | steps 5, 6, 8b, 9, 10, 11 and **G1** | after G1 by default (Tyler, 2026-11-24): it reaches her through the Update button. First PR that writes into `saves/`: the lead rewords the `AGENTS.md` rule in the same merge. The live checks in `briefs/pr-14.md` come before its build. May merge before or after step 12; **Tyler approves the screens** |
 
 The plan said nothing that writes files is built before G1. Tyler has since asked for PRs 8 to 12 to be *built* in
 parallel, so G1 is now a gate on **merging PR 10**, not on building. Until PR 10 merges, `FIXES_READY` is `false`
@@ -68,6 +69,7 @@ git push --force-with-lease=wells/pr-04-inventory origin wells/pr-04-inventory  
 | 2 | PR 6, PR 9, PR 10, PR 11 | start each as a wave 1 slot frees up, in this order; 6 completes the G1 build |
 | 3 | PR 12 (Fable writes `key-store.ts` first), and each PR's "after main" tests as its neighbors land | optional, so last |
 | 4 | PR 13 (Fable writes `updater.ts`) | asked for on 2026-11-24; must merge before G1 |
+| 5 | PR 14 (Fable writes the gate change, `decide.ts`, `links.ts`, `receive.ts` and the key store search) | asked for on 2026-11-24; built after G1, on a branch from `main`, in the units of `briefs/pr-14.md`, at most 3 builders at once |
 
 Run it as a queue, not as fixed batches: when one builder finishes, the next in the order 8, 7, 4, 5, 6, 9, 10, 11,
 12, 13 starts. The installer for G1 needs 4, 5, 6, 7, 8 and 13.
@@ -96,6 +98,10 @@ or CI, never by nine builders at once.
 - **Workflow minutes.** After step 12, `main` runs `ci.yml` and the two probe workflows on each push. The repo is
   public, so this costs nothing.
 
+- **PR 14 edits files of merged PRs.** `gate.ts`, PR 9's journal files and `key-store.ts` change after their PRs
+  merged, so PR 14 branches from `main` and each of those files has one named writer (`ownership.md`). Its
+  contract requests widen `ActionKind` and `JournalOrigin`: PR 10's History must still build with them.
+
 - **Releases after PR 13.** Only Tyler publishes: `release.yml` leaves a draft and his Publish click ships it.
   Before the first release, turn on immutable releases and a `v*` tag ruleset. Never rename, transfer or delete the
   repo: every installed copy reads its updates from `wells1225/gfs-sim-helper`.
@@ -113,3 +119,7 @@ or CI, never by nine builders at once.
 | Do the registry, OneDrive paths and process detection work on a real PC? | PR 3 | fix in `src/main/locate/` |
 | Which model answers her real logs well, Haiku or Sonnet? | `ASSIST_MODEL` in PR 12 | one constant |
 | Is Smart App Control on? Did the first install warn? Did the first real update raise a warning? | whether unsigned updates reach her | code signing, or the Releases page link as plan B (`docs/research/fable-auto-update.md`, section 6) |
+| Does `AddonGameInstance.json` hold `addonID` and `installedFile.id` for her Sims 4 mods? | PR 14's mod list and its CurseForge page links | CurseForge mods are listed by name only, like manual mods |
+| Is Google Drive for desktop on her PC, in stream or mirror mode? How does a folder Tyler owns appear there, and can the app read and write it? | PR 14's setup guide, `findShareRoot` and the gate's share zone | change the guide step and the places the app looks; a bad answer on the gate's checks changes the brief before the build |
+| What does a half-synced file look like in the Drive folder, and how long does a save take to arrive? | PR 14's "still arriving" check and its 30 minute limit | the size-and-hash check on the app's own copy already covers it; only the wait and the words change |
+| How are her slot files named, how big are they, and which is the autosave? Does the game load a save placed under another slot number? | PR 14's slot pattern and `pickFreeSlot` | fix the pattern; if a moved save does not load, PR 14 stops before any build |
