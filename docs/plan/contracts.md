@@ -426,7 +426,7 @@ export interface AppContext {
   pickFolder(): Promise<string | null> // Electron's folder dialog on the app window; null when she cancels (tests: always null)
   openWeb(url: string): Promise<'opened' | 'refused'> // only the url safeWebLink gives back reaches shell.openExternal; a refusal or a throw is 'refused'
   startupRecovery(): Promise<StartupRecovery> // lazy, runs safety.recover() once, never rejects; index.ts calls it before the window opens. busy() is true from the call on (safety.recover is counted)
-  busy(): boolean // true while any gate.run or any changing IPC call (CHANGING_CHANNELS in src/main/ipc.ts) is in flight; update:install refuses 'busy'. update:check's one write (the time of the last check) is counted by its gate.run
+  busy(): boolean // true while any gate.run, safety call, fixes call or changing IPC call (CHANGING_CHANNELS in src/main/ipc.ts) is in flight; update:install refuses 'busy'. update:check's one write (the time of the last check) is counted by its gate.run
   holdBusy?(): () => void // optional; registerIpc holds busy for the whole of every changing call
   session: { scan: Scan | null } // the last finished scan
   emit(progress: Progress): void // sends the 'progress' event to the window
