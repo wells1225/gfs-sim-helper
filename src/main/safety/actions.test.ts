@@ -1017,6 +1017,36 @@ describe('undo', () => {
     })
     expect(ws.gate.requests.length).toBe(requests)
   })
+  it('keeps both copies when the folder in Mods became a link into the backup, so the only bytes left are never the backup\'s', async () => {
+    const ws = await backedUp()
+    const moved = await runAction(ws.deps, disablePlan(ws))
+    if (moved.status !== 'done') throw new Error(moved.status)
+    // After the set-aside, Mods/BuildBuy is replaced by a folder link into the backup's copy of it.
+    const status = await backupStatus(ws.deps, ws.simsFolder)
+    if (status.state !== 'verified') throw new Error(`expected a verified backup, got ${status.state}`)
+    const inBackup = join(ws.paths.backupsDir, status.backupId, 'files', 'Mods', 'BuildBuy')
+    expect(await pathExists(join(inBackup, 'lamp_a.package'))).toBe(true)
+    await rm(join(ws.mods, 'BuildBuy'), { recursive: true })
+    await symlink(inBackup, join(ws.mods, 'BuildBuy'), 'junction')
+    const heldA = held(ws, 'hold-1', 'BuildBuy', 'lamp_a.package')
+    const heldB = held(ws, 'hold-1', 'BuildBuy', 'lamp_b.package')
+    const [hashA, hashB] = [await sha256File(heldA), await sha256File(heldB)]
+
+    const undone = await undo(ws.deps, moved.entry.id)
+
+    expect(undone.status).not.toBe('refused') // it reached the clean-up
+    expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    if (undone.status === 'stopped-part-way') {
+      expect(undone.detail).toMatch(/lamp_[ab]\.package/)
+      expect(undone.detail).not.toContain(ws.root)
+      expect(undone.detail).not.toContain('holding')
+    }
+    expect(await sha256File(heldA)).toBe(hashA)
+    expect(await sha256File(heldB)).toBe(hashB)
+    expect(ws.gate.requests.some((r) => r.ops.some((op) => op.op === 'remove'))).toBe(false)
+    expect((await listJournal(ws.deps))[0]!.status).toBe('needs-attention')
+  })
+
   it('an undo that put every file back but could not save History says the files are back, with no raw error or path', async () => {
     const ws = await backedUp()
     const before = await snapshotTree(ws.simsFolder)
