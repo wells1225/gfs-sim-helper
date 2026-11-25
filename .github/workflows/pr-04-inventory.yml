@@ -1,0 +1,18 @@
+name: pr-04-inventory
+on:
+  pull_request:
+    paths: ['src/main/inventory/**', '.github/workflows/pr-04-inventory.yml']
+  push:
+    branches: [main]
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run fixtures -- big
+      - run: npm run inventory -- test/fixtures/big --time
