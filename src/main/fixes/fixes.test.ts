@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type {
   FixOutcome,
+  FixRefusal,
   JournalEntry,
   ModFile,
   ModGroup,
@@ -984,4 +985,100 @@ describe('lead decision: a set-aside that stops part way is put back at once', (
     expect(await putBack(makeDeps(safety), folderPath, ['dir:a'])).toEqual({ status: 'done', entries: [] })
     expect(safety.undoneIds).toEqual([])
   })
+})
+
+describe('a part-way stop after a refusal says why in plain words', () => {
+  const folderPath = '/sims/The Sims 4'
+  const groups: ModGroup[] = [
+    { id: 'dir:a', label: 'Mod A', source: 'folder', files: ['A/a.package'], bytes: 100, hasScript: false, curseForge: null },
+    { id: 'dir:b', label: 'Mod B', source: 'folder', files: ['B/b.package'], bytes: 200, hasScript: false, curseForge: null }
+  ]
+  const secretPath = 'C:\\Users\\her\\Documents\\Electronic Arts\\The Sims 4\\Saves\\Slot_00000001.save'
+  const EVERY_REFUSAL: FixRefusal[] = [
+    { why: 'gate', refusal: { reason: 'saves-or-tray', path: secretPath } },
+    { why: 'gate', refusal: { reason: 'outside-allowed-area', path: secretPath } },
+    { why: 'gate', refusal: { reason: 'link-escape', path: secretPath } },
+    { why: 'gate', refusal: { reason: 'not-a-sims-folder', path: secretPath } },
+    { why: 'gate', refusal: { reason: 'game-running' } },
+    { why: 'gate', refusal: { reason: 'game-state-unknown' } },
+    { why: 'gate', refusal: { reason: 'no-verified-backup', backup: 'none' } },
+    { why: 'gate', refusal: { reason: 'no-verified-backup', backup: 'stale' } },
+    { why: 'gate', refusal: { reason: 'no-verified-backup', backup: 'unknown' } },
+    { why: 'gate', refusal: { reason: 'check-failed', path: secretPath } },
+    ...(
+      [
+        'game-running',
+        'game-state-unknown',
+        'backup-folder-in-onedrive',
+        'not-enough-space',
+        'sims-folder-missing',
+        'backup-already-running',
+        'backup-folder-in-sims-folder',
+        'backup-failed'
+      ] as const
+    ).map((reason): FixRefusal => ({ why: 'backup', reason })),
+    ...(['no-scan', 'unknown-finding', 'unknown-group', 'file-changed', 'nothing-to-do'] as const).map(
+      (detail): FixRefusal => ({ why: 'out-of-date', detail })
+    ),
+    { why: 'fifty-fifty-running' },
+    { why: 'not-started' }
+  ]
+  const CODE_WORDS = [
+    'saves-or-tray', 'outside-allowed-area', 'link-escape', 'not-a-sims-folder', 'game-running', 'game-state-unknown',
+    'no-verified-backup', 'check-failed', 'backup-folder-in-onedrive', 'not-enough-space', 'sims-folder-missing',
+    'backup-already-running', 'backup-folder-in-sims-folder', 'backup-failed', 'no-scan', 'unknown-finding',
+    'unknown-group', 'file-changed', 'nothing-to-do', 'fifty-fifty', 'not-started', 'gate'
+  ]
+
+  function expectPlain(detail: string, refusal: FixRefusal): void {
+    const where = JSON.stringify(refusal)
+    expect(detail.length, where).toBeGreaterThan(0)
+    for (const word of CODE_WORDS) expect(detail.toLowerCase(), where).not.toContain(word)
+    expect(detail.replaceAll('50/50', ''), where).not.toMatch(/[()\\/:]/)
+    expect(detail, where).not.toContain('Slot_')
+    expect(detail, where).toMatch(/^[A-Z].*\.$/)
+  }
+
+  for (const refusal of EVERY_REFUSAL) {
+    it(`setAside: ${JSON.stringify(refusal)} on a later group`, async () => {
+      let call = 0
+      const base = makeFakeSafety()
+      const safety = makeFakeSafety({
+        async runAction(plan, onProgress) {
+          call += 1
+          if (call === 1) return base.runAction(plan, onProgress)
+          return { status: 'refused', refusal }
+        }
+      })
+      const result = await setAside(makeDeps(safety), folderPath, groups, { by: 'fix' })
+      expect(result.status).toBe('stopped-part-way')
+      if (result.status !== 'stopped-part-way') return
+      expectPlain(result.detail, refusal)
+      expect(result.detail).toContain('set aside')
+    })
+
+    it(`putBack: ${JSON.stringify(refusal)} on a later group`, async () => {
+      const entries = groups.map((g) =>
+        sampleJournalEntry({ id: `e-${g.id}`, action: 'disable-group', folderPath, groupId: g.id, status: 'done' })
+      )
+      let call = 0
+      const safety = makeFakeSafety({
+        async listJournal() {
+          return entries
+        },
+        async undo(entryId) {
+          call += 1
+          if (call === 1) {
+            return { status: 'done', entry: sampleJournalEntry({ id: entryId, status: 'undone' }) }
+          }
+          return { status: 'refused', refusal }
+        }
+      })
+      const result = await putBack(makeDeps(safety), folderPath, groups.map((g) => g.id))
+      expect(result.status).toBe('stopped-part-way')
+      if (result.status !== 'stopped-part-way') return
+      expectPlain(result.detail, refusal)
+      expect(result.detail).toContain('put back')
+    })
+  }
 })
