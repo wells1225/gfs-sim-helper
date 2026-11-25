@@ -486,6 +486,20 @@ describe('backupStatus', () => {
     }
   })
 
+  it('is unknown with a plain detail, never the raw error or a path, when History cannot be read', async () => {
+    const ws = await makeWorkspace(TOOLS)
+    const made = await createBackup(ws.deps, ws.simsFolder)
+    if (made.status !== 'verified') throw new Error(made.status)
+    // A file where the History folder should be: reading it fails the same way on every platform.
+    await rm(ws.paths.journalDir, { recursive: true, force: true })
+    await mkdir(dirname(ws.paths.journalDir), { recursive: true })
+    await writeFile(ws.paths.journalDir, 'not a folder')
+
+    const status = await backupStatus(ws.deps, ws.simsFolder)
+
+    expect(status).toEqual({ state: 'unknown', detail: 'We could not check your safety copy right now.' })
+  })
+
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('is unknown when Mods cannot be read', async () => {
     const ws = await makeWorkspace(TOOLS)
     await createBackup(ws.deps, ws.simsFolder)

@@ -1017,6 +1017,26 @@ describe('undo', () => {
     })
     expect(ws.gate.requests.length).toBe(requests)
   })
+  it('an undo that put every file back but could not save History says the files are back, with no raw error or path', async () => {
+    const ws = await backedUp()
+    const before = await snapshotTree(ws.simsFolder)
+    const moved = await runAction(ws.deps, disablePlan(ws))
+    if (moved.status !== 'done') throw new Error(moved.status)
+    // The first journal mark goes through; the save after the undo request fails.
+    ws.gate.hooks.beforeRequest = (request) =>
+      request.reason === 'journal' && ws.gate.count('undo') >= 1
+        ? { status: 'failed', opsDone: 0, detail: `write ${join(ws.paths.journalDir, 'hold-1.json')}: the disk said ENOSPC` }
+        : undefined
+
+    const outcome = await undo(ws.deps, moved.entry.id)
+
+    expect(outcome.status).toBe('stopped-part-way')
+    if (outcome.status !== 'stopped-part-way') return
+    expect(outcome.detail).toBe('Your files are back as they were, but the app could not save this to History.')
+    expect(outcome.detail).not.toContain('ENOSPC')
+    expect(outcome.detail).not.toContain(ws.root)
+    expect(await snapshotTree(ws.simsFolder)).toEqual(before)
+  })
 })
 
 describe('recover', () => {
