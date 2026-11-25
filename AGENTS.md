@@ -17,7 +17,7 @@ herself, so every screen is for a non-technical player.
 - Run one test file: `npx vitest run <path/to/file.test.ts>`
 - Build the fake Sims 4 folders: `npm run fixtures` (plain `node` runs the `.ts` file, so Node 22.18 or newer)
 - Full local check: `npm run typecheck && npm test && npm run build`
-- Build the Windows NSIS installer: `npm run dist:win` (runs `electron-vite build` then `electron-builder --win nsis --x64`)
+- Build the Windows NSIS installer: `npm run dist:win` (runs `electron-vite build` then `electron-builder --win nsis --x64 --publish never`)
 - Installed-app Playwright smoke test (Windows CI): `npm run test:e2e`
 - Stubbed screen screenshots (Playwright): `npm run test:screens`
 - Live fixture end-to-end tests (Windows CI): `npm run test:live`

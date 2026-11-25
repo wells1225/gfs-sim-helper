@@ -13,6 +13,10 @@ export type Route =
   | { screen: 'fifty-fifty' }
   | { screen: 'ask-for-help' }
   | { screen: 'key-setup' }
+  | { screen: 'share' }
+  | { screen: 'share-setup' }
+  | { screen: 'share-old-saves' }
+  | { screen: 'share-settings' }
 
 export interface NavContextValue {
   route: Route

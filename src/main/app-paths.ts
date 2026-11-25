@@ -50,6 +50,8 @@ export function appPaths({ localAppData, appData, desktopDir, env = {} }: AppPat
     journalDir: join(dataDir, 'journal'),
     stateDir: join(dataDir, 'state'),
     keyFile: join(dataDir, 'assist', 'key.bin'),
+    oldSavesDir: join(dataDir, 'old-saves'),
+    shareDir: join(dataDir, 'share'),
     desktopDir,
     oneDriveRoots,
     curseForgeInstanceFile
