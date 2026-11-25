@@ -65,7 +65,7 @@ describe('UpdateBanner', () => {
   })
 
   it.each([
-    ['off', { state: 'off', why: 'switched-off' } as UpdateState],
+    ['off', { state: 'off', why: 'switched-off', current: '0.2.0' } as UpdateState],
     ['idle', IDLE],
     ['checking', { state: 'checking', current: '0.2.0' } as UpdateState],
     ['a failed check', FAILED_CHECK]
@@ -175,6 +175,80 @@ describe('UpdateBanner', () => {
     expect(screen.queryByText("The update didn't download. Nothing changed.")).toBeNull()
   })
 
+  it('a transient update:get failure during a download keeps the progress banner and keeps polling', async () => {
+    vi.useFakeTimers()
+    const download = deferred<UpdateState>()
+    let polls = 0
+    const { api } = show({
+      'update:check': AVAILABLE,
+      'update:download': () => download.promise,
+      'update:get': () => {
+        polls += 1
+        return polls === 1 ? reject() : downloading(55)
+      }
+    })
+    await settle()
+    act(() => screen.getByRole('button', { name: 'Update now' }).click())
+    await settle()
+    expect(screen.getByText('Getting the update… 0%')).toBeInTheDocument()
+
+    await act(() => vi.advanceTimersByTimeAsync(1000))
+    expect(screen.getByText('Getting the update… 0%')).toBeInTheDocument()
+    await act(() => vi.advanceTimersByTimeAsync(1000))
+    expect(screen.getByText('Getting the update… 55%')).toBeInTheDocument()
+    expect(callsTo(api, 'update:get')).toHaveLength(2)
+
+    download.resolve(READY)
+    await settle()
+    expect(screen.getByText('The update is ready. Sims Helper will close and open again to finish.')).toBeInTheDocument()
+  })
+
+  it('a late hourly start check never overwrites an active download back to available', async () => {
+    vi.useFakeTimers()
+    const hourly = deferred<UpdateState>()
+    const download = deferred<UpdateState>()
+    let checks = 0
+    show({
+      'update:check': () => {
+        checks += 1
+        return checks === 1 ? AVAILABLE : hourly.promise
+      },
+      'update:download': () => download.promise,
+      'update:get': downloading(15)
+    })
+    await settle()
+    expect(screen.getByText('A new version of Sims Helper is ready.')).toBeInTheDocument()
+
+    await act(() => vi.advanceTimersByTimeAsync(60 * 60 * 1000))
+    act(() => screen.getByRole('button', { name: 'Update now' }).click())
+    await settle()
+    expect(screen.getByText('Getting the update… 0%')).toBeInTheDocument()
+
+    hourly.resolve(AVAILABLE)
+    await settle()
+    expect(screen.getByText('Getting the update… 0%')).toBeInTheDocument()
+
+    download.resolve(READY)
+    await settle()
+    expect(screen.getByText('The update is ready. Sims Helper will close and open again to finish.')).toBeInTheDocument()
+  })
+
+  it('Try again disables while checking so a second click does not send a second check', async () => {
+    const user = userEvent.setup()
+    const retryCheck = deferred<UpdateState>()
+    const { api } = show({
+      'update:check': ({ by }) => (by === 'start' ? FAILED_DOWNLOAD : retryCheck.promise),
+      'update:download': READY
+    })
+    const button = await screen.findByRole('button', { name: 'Try again' })
+    await user.click(button)
+    expect(screen.getByRole('button', { name: 'Checking…' })).toBeDisabled()
+    expect(callsTo(api, 'update:check')).toHaveLength(2)
+
+    retryCheck.resolve(AVAILABLE)
+    expect(await screen.findByText('The update is ready. Sims Helper will close and open again to finish.')).toBeInTheDocument()
+  })
+
   it('Restart now installs, and says Sims Helper is closing', async () => {
     const user = userEvent.setup()
     const { api } = show({ 'update:check': READY, 'update:install': { status: 'restarting' } })
@@ -243,10 +317,33 @@ describe('UpdateRow', () => {
       'unsafe-install-folder',
       'Updates are off because Sims Helper is installed in your Documents or OneDrive folder. Reinstall it in the folder Setup suggests to get updates.'
     ]
-  ] as const)('with updates off (%s), says why and offers no check', async (why, note) => {
+  ] as const)('with updates off (%s), shows the version, says why and offers no check', async (why, note) => {
     show({ 'update:get': { state: 'off', why, current: '0.2.0' } }, 'row')
     expect(await screen.findByText(note)).toBeInTheDocument()
+    expect(screen.getByText('Version 0.2.0')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Check for updates' })).toBeNull()
+  })
+
+  it('shows Checking… and never says it failed when a check is already running', async () => {
+    const user = userEvent.setup()
+    const startCheck = deferred<UpdateState>()
+    const checking: UpdateState = { state: 'checking', current: '0.2.0' }
+    show(
+      {
+        'update:get': IDLE,
+        'update:check': ({ by }) => (by === 'start' ? startCheck.promise : checking)
+      },
+      'both'
+    )
+    const button = await screen.findByRole('button', { name: 'Check for updates' })
+    const clicking = user.click(button)
+    expect(await screen.findByRole('button', { name: 'Checking…' })).toBeDisabled()
+    expect(screen.queryByText("Couldn't check right now. Try again later.")).toBeNull()
+
+    startCheck.resolve(IDLE)
+    await clicking
+    expect(await screen.findByText('You have the newest version.')).toBeInTheDocument()
+    expect(screen.queryByText("Couldn't check right now. Try again later.")).toBeNull()
   })
 
   it('a check from About that finds a version shows the banner, even after Later', async () => {
