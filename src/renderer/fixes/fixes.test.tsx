@@ -1120,3 +1120,94 @@ describe('contract round 3 on Your mods', () => {
     expect(screen.getByRole('switch', { name: 'Set Hair aside' })).toHaveAttribute('aria-checked', 'true')
   })
 })
+
+describe('undo of an entry that never ran (nothing-to-do)', () => {
+  it('History drops the row with no error and no toast when Undo answers nothing-to-do', async () => {
+    const user = userEvent.setup()
+    const neverRan = sampleJournalEntry({
+      id: 'e-never-ran',
+      at: '2026-11-24T12:25:00.000Z',
+      action: 'disable-group',
+      summary: 'Set aside Hair',
+      groupId: 'dir:hair',
+      groupLabel: 'Hair',
+      status: 'in-progress',
+      undo: 'can-undo'
+    })
+    const kept = sampleJournalEntry({
+      id: 'e-kept',
+      at: '2026-11-24T12:20:00.000Z',
+      action: 'turn-mods-on',
+      summary: 'Turned mods and script mods back on',
+      status: 'done',
+      undo: 'can-undo'
+    })
+    const api = fakeApi({
+      'journal:list': [neverRan, kept],
+      'journal:undo': () => ({
+        status: 'refused',
+        refusal: { why: 'out-of-date', detail: 'nothing-to-do' }
+      })
+    })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'history' }}>
+        <HistoryScreen />
+      </Harness>
+    )
+
+    expect(await screen.findByText('Set aside Hair')).toBeInTheDocument()
+    expect(screen.getByText('Turned mods and script mods back on')).toBeInTheDocument()
+
+    const undoButtons = screen.getAllByRole('button', { name: 'Undo' })
+    await user.click(undoButtons[0]!)
+
+    await waitFor(() => {
+      expect(screen.queryByText('Set aside Hair')).not.toBeInTheDocument()
+    })
+    expect(screen.getByText('Turned mods and script mods back on')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByText('Already taken care of')).not.toBeInTheDocument()
+    expect(document.querySelector('[data-sonner-toast]')).toBeNull()
+    expect(document.activeElement).not.toBe(document.body)
+  })
+
+  it('FindingActions returns to its fix button with no error and no toast when Undo answers nothing-to-do', async () => {
+    const user = userEvent.setup()
+    const stoppedEntry = sampleJournalEntry({
+      id: 'e-never-ran',
+      action: 'turn-mods-on',
+      summary: 'Turned mods and script mods back on',
+      status: 'needs-attention',
+      undo: 'can-undo'
+    })
+    const api = fakeApi({
+      'fix:apply': () => ({
+        status: 'stopped-part-way',
+        entry: stoppedEntry,
+        detail: 'This change stopped part way through. You can undo what already moved from History.'
+      }),
+      'journal:undo': () => ({
+        status: 'refused',
+        refusal: { why: 'out-of-date', detail: 'nothing-to-do' }
+      })
+    })
+
+    render(
+      <Harness api={api}>
+        <FindingActions finding={sampleFinding()} />
+      </Harness>
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Turn mods back on' }))
+    const undoButton = await screen.findByRole('button', { name: 'Undo' })
+
+    await user.click(undoButton)
+
+    expect(await screen.findByRole('button', { name: 'Turn mods back on' })).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByText('Already taken care of')).not.toBeInTheDocument()
+    expect(document.querySelector('[data-sonner-toast]')).toBeNull()
+    expect(document.activeElement).not.toBe(document.body)
+  })
+})
