@@ -105,6 +105,7 @@ function makeFakeSafety(overrides: Partial<Safety> = {}): Safety & {
     async recover() {
       return []
     },
+    async closeUndo() {},
     ...overrides
   }
 }

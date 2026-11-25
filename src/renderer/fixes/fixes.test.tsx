@@ -121,6 +121,9 @@ describe('FIXES_READY and words', () => {
     // Also said after a half-done set-aside was put back, so it promises only what holds then too.
     expect(refusalMessage({ why: 'not-started' })).toMatchObject({ canRetry: true })
     expect(refusalMessage({ why: 'not-started' }).detail).toContain('just as they were')
+    expect(
+      refusalMessage({ why: 'gate', refusal: { reason: 'saves-or-tray', path: '/saves' } }).detail
+    ).toBe('Your saves and households are never touched, so nothing was changed.')
   })
 })
 
@@ -298,6 +301,86 @@ describe('RecoveryNotice', () => {
     expect(screen.queryByRole('button', { name: 'Open History' })).toBeNull()
     expect(screen.queryByText(/undo/i)).toBeNull()
     expect(screen.queryByText(/Tray/)).toBeNull()
+  })
+
+  it('says a cut-off change was put back as it was, with no undo, since it is already undone', async () => {
+    const putBack = sampleJournalEntry({
+      id: 'e-put-back',
+      summary: 'Set aside Hair',
+      status: 'undone',
+      undo: 'can-undo',
+      undoneAt: '2026-11-24T12:20:00.000Z'
+    })
+    const api = fakeApi({
+      'journal:recovery': { status: 'finished', touched: [putBack] },
+      'journal:list': [putBack]
+    })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'about' }}>
+        <RecoveryNotice />
+      </Harness>
+    )
+
+    expect(await screen.findByText('A change was cut off, so we put things back as they were.')).toBeInTheDocument()
+    expect(screen.getByText(/Your saves and households were never touched/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open History' })).toBeNull()
+    expect(screen.queryByText(/undo/i)).toBeNull()
+    expect(screen.queryByText(/Tray/)).toBeNull()
+  })
+
+  it('still says a change was put back when reading the journal fails', async () => {
+    const putBack = sampleJournalEntry({ id: 'e-put-back', status: 'undone', undoneAt: '2026-11-24T12:20:00.000Z' })
+    const api = fakeApi({
+      'journal:recovery': { status: 'finished', touched: [putBack] },
+      'journal:list': () => Promise.reject(new Error('not implemented: listJournal'))
+    })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'about' }}>
+        <RecoveryNotice />
+      </Harness>
+    )
+
+    expect(await screen.findByText('A change was cut off, so we put things back as they were.')).toBeInTheDocument()
+  })
+
+  it('says plainly when the start-up recovery failed, with no paths or error text', async () => {
+    const api = fakeApi({
+      'journal:recovery': { status: 'failed' },
+      'journal:list': []
+    })
+
+    const { container } = render(
+      <Harness api={api} initialRoute={{ screen: 'about' }}>
+        <RecoveryNotice />
+      </Harness>
+    )
+
+    expect(await screen.findByText('We could not check for a cut-off change')).toBeInTheDocument()
+    expect(screen.getByText(/Your saves and households were never touched/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Open History' })).toBeNull()
+    expect(container.textContent).not.toMatch(/[A-Z]:\\|\/|error|Tray/i)
+  })
+
+  it('after a failed recovery, offers History only for a left-over change that can be undone', async () => {
+    const user = userEvent.setup()
+    const api = fakeApi({
+      'journal:recovery': { status: 'failed' },
+      'journal:list': [sampleJournalEntry({ id: 'e-left', status: 'in-progress', undo: 'can-undo' })]
+    })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'about' }}>
+        <RecoveryNotice />
+        <NavAndScanProbe />
+      </Harness>
+    )
+
+    expect(await screen.findByText('We could not check for a cut-off change')).toBeInTheDocument()
+    expect(screen.getByText(/Open History and press Undo/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Open History' }))
+    expect(screen.getByTestId('probe')).toHaveTextContent('route=history')
   })
 
   it('renders nothing when mounted without ApiProvider', () => {

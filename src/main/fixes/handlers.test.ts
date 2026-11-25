@@ -8,7 +8,7 @@ import { sampleJournalEntry, sampleScan } from '../../shared/testing/sample.ts'
 import { appPaths } from '../app-paths.ts'
 import type { Host } from '../locate/host.ts'
 import type { AppContext, Fixes, Safety } from '../ports.ts'
-import { createContext } from '../services.ts'
+import { createContext, onceRecovery } from '../services.ts'
 import { fixHandlers } from './handlers.ts'
 import { applyFix } from './index.ts'
 
@@ -102,6 +102,7 @@ async function makeContext(overrides: {
     async recover() {
       return []
     },
+    async closeUndo() {},
     ...overrides.safety
   }
 
@@ -131,7 +132,9 @@ async function makeContext(overrides: {
     ctx: {
       ...base,
       safety,
-      fixes
+      fixes,
+      // As services.ts builds it, but over this fake safety: once, lazy, never rejects.
+      startupRecovery: onceRecovery(() => safety.recover())
     }
   }
 }
@@ -214,23 +217,67 @@ describe('fixHandlers', () => {
     }
   })
 
-  it('runs recovery once when the handlers are built, and journal:list only reads', async () => {
+  it('runs recovery once when index.ts and the handlers both ask for it', async () => {
     const recoverSpy = vi.fn<Safety['recover']>(async () => [])
     const listSpy = vi.fn<Safety['listJournal']>(async () => [sampleJournalEntry()])
     const { ctx } = await makeContext({ safety: { recover: recoverSpy, listJournal: listSpy } })
-    const handlers = fixHandlers(ctx)
 
-    // At start, in main, before the window asks for anything.
-    expect(recoverSpy).toHaveBeenCalledTimes(1)
+    // index.ts: after registerIpc, before the window opens.
+    const handlers = fixHandlers(ctx)
+    void ctx.startupRecovery()
+    fixHandlers(ctx) // built again for the same context: still no second run
 
     const first = await handlers['journal:list'](undefined)
     const second = await handlers['journal:list'](undefined)
-    fixHandlers(ctx) // built again for the same context: still only once
+    ctx.session.scan = sampleScan()
+    await handlers['fix:apply']({ via: 'finding', findingId: 'mods-off', fix: 'turn-mods-on' })
+    await handlers['journal:undo']({ entryId: 'e-1' })
+    await handlers['groups:disabled'](undefined)
 
     expect(first).toHaveLength(1)
     expect(second).toHaveLength(1)
     expect(recoverSpy).toHaveBeenCalledTimes(1)
     expect(listSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('building the handlers does not start recovery; the first call that needs it does, once', async () => {
+    const recoverSpy = vi.fn<Safety['recover']>(async () => [])
+    const { ctx } = await makeContext({ safety: { recover: recoverSpy } })
+    const handlers = fixHandlers(ctx)
+    expect(recoverSpy).not.toHaveBeenCalled()
+
+    await handlers['journal:list'](undefined)
+    await handlers['journal:list'](undefined)
+    expect(recoverSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('journal:recovery answers what the one start-up run did, and never starts a second', async () => {
+    const put = sampleJournalEntry({ id: 'e-cut', status: 'undone', undoneAt: '2026-11-24T12:20:00.000Z' })
+    const recoverSpy = vi.fn<Safety['recover']>(async () => [put])
+    const { ctx } = await makeContext({ safety: { recover: recoverSpy } })
+    void ctx.startupRecovery()
+    const handlers = fixHandlers(ctx)
+
+    expect(await handlers['journal:recovery'](undefined)).toEqual({ status: 'finished', touched: [put] })
+    expect(await handlers['journal:recovery'](undefined)).toEqual({ status: 'finished', touched: [put] })
+    expect(recoverSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('journal:recovery answers failed, with no error text, when recover throws or rejects', async () => {
+    for (const recover of [
+      async () => {
+        throw new Error('C:\\Users\\Lila\\journal locked')
+      },
+      () => {
+        throw new Error('C:\\Users\\Lila\\sync')
+      }
+    ] as Safety['recover'][]) {
+      const { ctx } = await makeContext({ safety: { recover } })
+      expect(() => fixHandlers(ctx)).not.toThrow()
+      const answer = await fixHandlers(ctx)['journal:recovery'](undefined)
+      expect(answer).toEqual({ status: 'failed' })
+      expect(JSON.stringify(answer)).not.toContain('Lila')
+    }
   })
 
   it('journal:list waits for startup recovery, and still answers when recovery failed', async () => {
@@ -265,15 +312,6 @@ describe('fixHandlers', () => {
       }
     })
     expect(await fixHandlers(failing.ctx)['journal:list'](undefined)).toHaveLength(1)
-
-    const throwsAtOnce = await makeContext({
-      safety: {
-        recover: () => {
-          throw new Error('sync')
-        }
-      }
-    })
-    expect(() => fixHandlers(throwsAtOnce.ctx)).not.toThrow()
   })
 
   it('fix:apply and journal:undo wait for startup recovery before changing anything', async () => {
