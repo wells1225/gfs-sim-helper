@@ -1520,6 +1520,37 @@ describe('undo', () => {
     })
     expect(ws.gate.requests.length).toBe(requests)
   })
+
+  it('never calls an entry it cannot read gone: not-started, no gate request, and the file stays as it was', async () => {
+    const ws = await backedUp()
+    await mkdir(ws.paths.journalDir, { recursive: true })
+    await writeFile(join(ws.paths.journalDir, 'torn-1.json'), '{"id":"torn-1","steps":[')
+    await writeFile(join(ws.paths.journalDir, 'odd-1.json'), JSON.stringify({ id: 'someone-else', steps: [], status: 'done' }))
+    await mkdir(join(ws.paths.journalDir, 'locked-1.json')) // reading it fails with EISDIR, as a read error would
+    const before = await snapshotTree(ws.root)
+    const requests = ws.gate.requests.length
+
+    for (const id of ['torn-1', 'odd-1', 'locked-1']) {
+      expect(await undo(ws.deps, id)).toEqual({ status: 'refused', refusal: { why: 'not-started' } })
+    }
+    expect(ws.gate.requests.length).toBe(requests)
+    expect(await snapshotTree(ws.root)).toEqual(before)
+
+    // The next start and History pass over what they cannot read, and leave it as it is.
+    expect(await recover(ws.deps)).toEqual([])
+    expect(await listJournal(ws.deps)).toEqual([])
+    expect(ws.gate.requests.length).toBe(requests)
+    expect(await snapshotTree(ws.root)).toEqual(before)
+  })
+
+  it('still has nothing to do when the journal folder is missing or is not a folder', async () => {
+    const ws = await backedUp()
+    await rm(ws.paths.journalDir, { recursive: true, force: true })
+    const nothingToDo = { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+    expect(await undo(ws.deps, 'gone-1')).toEqual(nothingToDo) // ENOENT
+    await writeFile(ws.paths.journalDir, 'not a folder')
+    expect(await undo(ws.deps, 'gone-1')).toEqual(nothingToDo) // ENOTDIR
+  })
   it('keeps both copies when the folder in Mods became a link into the backup, so the only bytes left are never the backup\'s', async () => {
     const ws = await backedUp()
     const moved = await runAction(ws.deps, disablePlan(ws))
