@@ -39,7 +39,7 @@ const disk = vi.hoisted(() => ({
   readdirFails: null as null | { under: string; code: string; hits: number },
   foldersRead: [] as string[],
   unlinkFails: null as null | { file: string; hits: number; meanwhile?: () => Promise<void> },
-  noFileIds: null as null | { file: string; hits: number },
+  noFileIds: null as null | { files: string[]; hits: number },
   writeFileQuotesItsData: null as null | { hits: number },
   whenTempOpens: null as null | (() => Promise<void>),
   noHardLinks: null as null | { code: string; hits: number },
@@ -110,7 +110,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     lstat: (async (target: string, options?: { bigint?: boolean }) => {
       const info = await real.lstat(target, options)
       // A disk that gives no file ids answers 0 for every file.
-      if (disk.noFileIds && options?.bigint && String(target) === disk.noFileIds.file) {
+      if (disk.noFileIds && options?.bigint && disk.noFileIds.files.includes(String(target))) {
         disk.noFileIds.hits += 1
         return Object.assign(info, { ino: 0n })
       }
@@ -1780,7 +1780,9 @@ describe('doing the ops', () => {
       file: from,
       hits: 0,
       meanwhile: async () => {
+        // The other file has two names of its own, so only its id tells it from the source.
         await writeFile(join(other, 'only_copy.package'), 'the only copy of this mod')
+        await link(join(other, 'only_copy.package'), join(other, 'second_name.package'))
         await rm(sub, { recursive: true })
         await linkFolder(other, sub)
         replaced = true
@@ -1793,6 +1795,20 @@ describe('doing the ops', () => {
     expect(await exists(to), 'the last name of the mod is still at the target').toBe(true)
     expect(await sha256(to)).toBe(hash)
     expect((result as { detail: string }).detail).toMatch(/the file at the target was left in place/)
+  })
+
+  // Held before and after this fix: a source that is gone cannot be asked for its id, and that is not proof.
+  it('a move on one drive: when the source cannot be removed and is then gone, the new name is kept', async () => {
+    const w = await makeWorld()
+    const from = w.inFolder(...MOD)
+    const to = w.inData('holding', 'e1', 'Mods', 'cozy_rug.package')
+    const hash = await sha256(from)
+    disk.unlinkFails = { file: from, hits: 0, meanwhile: async () => await rm(from) }
+    const result = await w.run([{ op: 'move', from, to }])
+    expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
+    expect(await exists(from), 'the source is really gone').toBe(false)
+    expect(result).toMatchObject({ status: 'failed', opsDone: 0 })
+    expect(await sha256(to), 'the last name of the mod is still at the target').toBe(hash)
   })
 
   // Here the old path now leads to the new name itself: one name, reached by two paths. The ids match, and
@@ -1824,14 +1840,15 @@ describe('doing the ops', () => {
     expect((result as { detail: string }).detail).toMatch(/the file at the target was left in place/)
   })
 
-  // With no file id there is no way to tell that both names are one file. In doubt the new name stays.
+  // With no file id there is no way to tell that both names are one file: every file answers 0, so the
+  // ids match for any two. In doubt the new name stays.
   it('a move on one drive: when the source cannot be removed on a disk that gives no file ids, the new name is kept', async () => {
     const w = await makeWorld()
     const from = w.inFolder(...MOD)
     const to = w.inData('holding', 'e1', 'Mods', 'cozy_rug.package')
     const hash = await sha256(from)
     disk.unlinkFails = { file: from, hits: 0 }
-    disk.noFileIds = { file: from, hits: 0 }
+    disk.noFileIds = { files: [from, to], hits: 0 }
     const result = await w.run([{ op: 'move', from, to }])
     expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
     expect(disk.noFileIds.hits, 'the source was really asked for its id').toBeGreaterThan(0)
@@ -2373,7 +2390,7 @@ describe('doing the ops', () => {
     const hash = await sha256(from)
     disk.crossDrive = { from, hits: 0 }
     disk.unlinkFails = { file: from, hits: 0 }
-    disk.noFileIds = { file: from, hits: 0 }
+    disk.noFileIds = { files: [from], hits: 0 }
     const result = await w.run([{ op: 'move', from, to }])
     expect(disk.crossDrive.hits, 'the cross-drive error was really hit').toBe(1)
     expect(disk.unlinkFails.hits, 'the removal error was really hit').toBe(1)
