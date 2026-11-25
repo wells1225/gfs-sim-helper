@@ -187,7 +187,7 @@ export type FixRefusal =
   | { why: 'not-started' } // the action failed before anything changed (for example the journal could not be written)
 export type FixOutcome =
   | { status: 'done'; entry: JournalEntry } | { status: 'refused'; refusal: FixRefusal } // refused: nothing changed
-  | { status: 'stopped-part-way'; entry: JournalEntry; detail: string } // History shows it and can undo it
+  | { status: 'stopped-part-way'; entry: JournalEntry; detail: string } // History shows it; it can be undone unless it was a cache clear
 export interface DisabledGroup {
   groupId: string; label: string; entryId: string; at: IsoTime
   origin: JournalOrigin['by'] // 'fix' or 'fifty-fifty': who set the group aside
