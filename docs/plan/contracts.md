@@ -171,7 +171,7 @@ export interface JournalEntry {
   id: string; at: IsoTime; action: ActionKind; summary: string; origin: JournalOrigin
   folderPath: string; groupId: string | null
   groupLabel: string | null; hasScript: boolean // copied from ActionPlan; null and false when groupId is null
-  backupId: string; steps: JournalStep[]
+  backupId: string | null; steps: JournalStep[] // backupId null: the entry made no backup, which is every save swap (share-receive, share-restore)
   status: 'in-progress' | 'done' | 'undone' | 'needs-attention'; undo: 'can-undo' | 'cannot-undo'; undoneAt: IsoTime | null
 }
 /** What the start-up recovery did (journal:recovery): the entries it settled, or that it could not run at all. */
@@ -425,7 +425,7 @@ export interface AppContext {
   share: Share // PR 14
   pickFolder(): Promise<string | null> // Electron's folder dialog on the app window; null when she cancels (tests: always null)
   openWeb(url: string): Promise<'opened' | 'refused'> // only the url safeWebLink gives back reaches shell.openExternal; a refusal or a throw is 'refused'
-  startupRecovery(): Promise<StartupRecovery> // lazy, runs safety.recover() once, never rejects; index.ts calls it before the window opens
+  startupRecovery(): Promise<StartupRecovery> // lazy, runs safety.recover() once, never rejects; index.ts calls it before the window opens. busy() is true from the call on (safety.recover is counted)
   busy(): boolean // true while any gate.run or any changing IPC call (CHANGING_CHANNELS in src/main/ipc.ts) is in flight; update:install refuses 'busy'. update:check's one write (the time of the last check) is counted by its gate.run
   holdBusy?(): () => void // optional; registerIpc holds busy for the whole of every changing call
   session: { scan: Scan | null } // the last finished scan
@@ -484,6 +484,7 @@ createUpdater(input: UpdaterInput, seams?: UpdaterSeams): Updater // seams: { en
 // the stub takes (input, seams?: { busy?: () => boolean }) and is always { state: 'off', why: 'switched-off', current: input.version }
 // services.ts: updaterKeepOutOf(documentsDirs, paths) = Documents dirs + paths.oneDriveRoots + paths.dataDir, deduped
 // services.ts (contract): onceRecovery(recover) gives ctx.startupRecovery; makeOpenWeb(safeWebLink, openExternal) gives ctx.openWeb
+// (src/main/open-web-wiring.test.ts mocks links.ts and pins that wiring: the exact text goes to safeWebLink, only its url opens)
 // PR 14  src/main/share/index.ts, handlers.ts (unit F); decide.ts, links.ts, receive.ts (unit C, Fable)
 type ShareDeps = Pick<AppContext, 'gate' | 'safety' | 'paths' | 'clock' | 'newId' | 'host' | 'gameState' | 'redact' | 'pickFolder'> // unit F may widen it
 createShare(deps: ShareDeps): Share
@@ -579,7 +580,7 @@ export interface IpcInvoke { // renderer asks, main answers
   'update:check': { req: { by: 'start' | 'click' }; res: UpdateState } // 'start' checks at most once in 24 hours
   'update:download': { req: void; res: UpdateState } // only from 'available'
   'update:install': { req: void; res: UpdateInstall } // only from 'ready'; 'busy' while ctx.busy()
-  'share:get': { req: void; res: ShareView } // PR 14 owns this block. Reads the folder again
+  'share:get': { req: void; res: ShareView } // PR 14 owns this block. Reads the folder again; may put back a link after an undone Get and close a played slot's Undo
   'share:set-role': { req: { role: PcRole }; res: ShareView }
   'share:find-folder': { req: { by: 'look' | 'pick' | 'make' }; res: ShareView } // pick: main's own dialog; make: create it in My Drive
   'share:check': { req: void; res: ShareView } // writes our hello file, reads the other PC's
@@ -615,14 +616,22 @@ trusts a path or a list of files from the renderer.
 `settings:update`, `report:build`, `fix:apply`, `journal:undo`, the five changing `fifty:*` calls, `assist:set-key`,
 `assist:clear-key`, and `share:set-role`, `find-folder`, `check`, `settings`, `send`, `receive`, `keep`, `restore`,
 `stop` and `mod-link`, so an update cannot restart the app in the middle of a Get. `journal:list` and
-`journal:recovery` only read; the start-up recovery holds `busy()` through `safety.recover`. No `update:*` channel is
-`true`: `update:check` writes only the time of the last check, through the gate, which counts it.
+`journal:recovery` only read; the start-up recovery holds `busy()` through `safety.recover`, from the moment
+`ctx.startupRecovery()` is called (a contract test checks `busy()` right after the call, so a recovery built from an
+uncounted `recover` fails it and **Restart now** cannot restart mid-put-back). No `update:*` channel is `true`:
+`update:check` writes only the time of the last check, through the gate, which counts it. `share:get` is `false` on
+purpose: its two small housekeeping writes (a link put back after an undone Get, one `gate.run`, and
+`safety.closeUndo` for a slot she has played since) are each busy-counted on their own and each is done again on the
+next look if the app stops between them, so a look every 60 s never makes **Restart now** answer `busy`.
 
 **Start-up recovery (Tyler, 2026-11-24).** When a change was cut off by a crash, main puts things back when it next
 opens: `index.ts` calls `ctx.startupRecovery()` once, after `registerIpc` and before the window opens. It runs
-`safety.recover()` (which checks the backup first) a single time and never rejects. `journal:recovery` tells the
-renderer what it did; `journal:list`, `journal:undo`, `fix:apply` and `groups:disabled` wait for it. PR 10 awaits
-`ctx.startupRecovery()` instead of starting its own run.
+`safety.recover()` a single time and never rejects. `recover` checks the backup first for a fix or 50/50 entry; for a
+save swap (`share-receive`, `share-restore`) it skips that step, as `runAction` and `undo` do (PR 14 unit E: Old
+saves is the swap's protection, and its `backupId` is `null`). `journal:recovery` tells the renderer what it did;
+`journal:list`, `journal:undo`, `fix:apply`, `groups:disabled` and every `share:*` handler except `share:open-link` and
+the two `share:find-*` wait for it. A `failed` recovery does not stop a share call: the checks in `receive.ts` and the
+gate still decide. PR 10 awaits `ctx.startupRecovery()` instead of starting its own run.
 
 ## 8. The AI key store (PR 12; Fable writes `key-store.ts`)
 
@@ -719,6 +728,10 @@ broken CC, 50/50, last exception, patch day (`docs/research/grok-ui-x.md`).
   Every `launchApp` sets `SIMS_HELPER_UPDATES=off` unless the caller's `env` overrides it, so no test reaches GitHub.
   `launchApp({ shareDir })` sets `SIMS_HELPER_SHARE_DIR`, a local folder that stands in for Google Drive; PR 14's
   `findShareRoot` reads it from `host.env` as one more place to look (test seam, like `SIMS_HELPER_DOCUMENTS_DIR`).
+- **Wiring tests** (contract): `src/main/open-web-wiring.test.ts` mocks `share/links.ts` and proves `ctx.openWeb` runs
+  the exact text through `safeWebLink` and opens only the `url` it returns; a `null` or a throw opens nothing. It holds
+  when unit C replaces the stub, and `makeOpenWeb`'s allow or refuse logic stays unit C's (Fable). PR 14 unit D adds
+  `src/main/assist/find-wiring.test.ts` the same way for `keyStore.find`.
 - **CI.** `ci.yml` runs `smoke` and `screens` for every PR and uploads the artifact `screens`. After the silent
   install it checks `dist/latest.yml` and the installed `resources\app-update.yml` (provider `github`, this repo). It runs `live` only
   on pushes to `main` and on PRs whose base is `main` (details in `ownership.md`).

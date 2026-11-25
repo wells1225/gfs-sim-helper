@@ -55,9 +55,14 @@ that decides whether a save may be replaced and plans a write into `saves/`. PR 
 PRs own, each by the writer named here and nobody else:
 
 - `src/main/safety/gate.ts`, `gate.test.ts`, `gate-lint.test.ts` (PR 8's): Fable. Two new zones, save slot and share.
-- `src/main/assist/key-store.ts`, `key-store.test.ts` (PR 12's): Fable. One new function, `findWithKey`.
+- `src/main/assist/key-store.ts`, `key-store.test.ts` (PR 12's): Fable, unit D. One new function, `findWithKey`.
+  Unit D also changes the one `find` line in `src/main/services.ts` to `findWithKey(keyStoreDeps, message)` and adds
+  `src/main/assist/find-wiring.test.ts` (new, its own file because it mocks `key-store.ts`).
 - `src/main/safety/actions.ts`, `journal.ts`, `index.ts` and their tests (PR 9's): an Opus builder, from
-  `briefs/pr-14.md`, unit E. Four small changes.
+  `briefs/pr-14.md`, unit E. Five small changes there: a `move` may carry `expect`, `reason: 'share-save'` for the
+  share kinds, `closeUndo`, `undo` of a save swap checks every hash first, and the fifth, no backup first for the
+  share kinds in `runAction`, `undo` and `recover`. Unit E also changes the one `closeUndo` line in
+  `src/main/services.ts` and that stub's `closeUndo` line in `src/main/contract.test.ts`.
 
 The PR 14 builders (Opus for folder, state, send and "Find where to get it"; Neon for the mods list and the
 screens) write everything else in that row. PR 14 adds no npm package and no workflow file.
@@ -80,6 +85,9 @@ screens) write everything else in that row. PR 14 adds no npm package and no wor
 - **End-to-end support:** `test/e2e/support/**`, `test/e2e/contract.spec.ts`.
 - **PR 3's code:** `src/main/locate/**`. Nobody adds or edits a file there.
 - **Docs:** `docs/**` belongs to the lead. Builders report in the PR body, not in a doc.
+
+PR 14's units D and E are the only exceptions: the `find` and `closeUndo` lines in `services.ts`, the `closeUndo`
+line in `contract.test.ts`, and the new `src/main/assist/find-wiring.test.ts`, as listed under PR 14 above.
 
 A needed change to any of these goes to the lead as a "Contract request". The lead lands it on `wells/contracts`
 (before the merge to `main`) or on `main` (after), and every open branch merges it in.
