@@ -293,7 +293,7 @@ export interface JournalEntry {
   groupId: string | null
   groupLabel: string | null // the group's label when the entry is about one group, copied from ActionPlan
   hasScript: boolean // the group has a .ts4script; false when groupId is null
-  backupId: string
+  backupId: string | null // null: the entry made no backup, which is every save swap (share-receive, share-restore)
   steps: JournalStep[]
   status: 'in-progress' | 'done' | 'undone' | 'needs-attention'
   undo: 'can-undo' | 'cannot-undo'
