@@ -959,6 +959,19 @@ describe('lead decision: a set-aside that stops part way is put back at once', (
     })
   }
 
+  it("shows the undo's sentence, not the action's, when the undo of a half-moved group stops part way", async () => {
+    const fromYourMods = await applyFix(makeDeps(halfDoneSafety({ stopOnCall: 1, undo: 'stopped-part-way' })), sampleScan(), {
+      fix: 'disable-group',
+      groupId: 'dir:hair'
+    })
+    expect(fromYourMods).toMatchObject({ status: 'stopped-part-way', detail: 'a.package changed' })
+
+    const fromSetAside = await setAside(makeDeps(halfDoneSafety({ stopOnCall: 1, undo: 'stopped-part-way' })), folderPath, groups, {
+      by: 'fix'
+    })
+    expect(fromSetAside).toMatchObject({ status: 'stopped-part-way', detail: 'a.package changed' })
+  })
+
   it('disable from Your mods: stops part way and the undo works, so nothing was set aside', async () => {
     const safety = halfDoneSafety({ stopOnCall: 1, undo: 'done' })
     const result = await applyFix(makeDeps(safety), sampleScan(), { fix: 'disable-group', groupId: 'dir:hair' })
