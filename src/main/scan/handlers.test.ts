@@ -257,4 +257,45 @@ describe('scanHandlers', () => {
     expect(result.status).toBe('done')
     expect(events).toEqual(['recovery:start', 'recovery:done', 'scan:inventory'])
   })
+
+  it('report:build waits for unresolved startupRecovery before building a report', async () => {
+    const { simsDir, ctx } = await makeFixtureEnv()
+    ctx.session.scan = sampleScan({
+      folder: { path: simsDir, inOneDrive: false, newestFileAt: new Date('2026-11-23T22:15:00.000Z') }
+    })
+
+    const events: string[] = []
+    let finishRecovery!: () => void
+    ctx.startupRecovery = () =>
+      new Promise((resolve) => {
+        events.push('recovery:start')
+        finishRecovery = () => {
+          events.push('recovery:done')
+          resolve({ status: 'finished', touched: [] })
+        }
+      })
+
+    const origGateRun = ctx.gate.run
+    ctx.gate = {
+      async run(req) {
+        events.push('report:write')
+        return origGateRun(req)
+      }
+    }
+
+    const handlers = scanHandlers(ctx)
+    let settled = false
+    const pending = handlers['report:build']().then((res) => {
+      settled = true
+      return res
+    })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(settled).toBe(false)
+    expect(events).toEqual(['recovery:start'])
+
+    finishRecovery()
+    const built = await pending
+    expect(built.status).toBe('saved')
+    expect(events).toEqual(['recovery:start', 'recovery:done', 'report:write'])
+  })
 })

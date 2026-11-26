@@ -173,6 +173,7 @@ export function scanHandlers(ctx: AppContext): Handlers<ScanChannel> {
     },
 
     async 'report:build'() {
+      await ctx.startupRecovery()
       if (!ctx.session.scan) {
         return {
           status: 'failed',

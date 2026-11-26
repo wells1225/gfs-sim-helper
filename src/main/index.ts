@@ -119,7 +119,7 @@ if (!gotSingleInstanceLock) {
     mainWindow.focus()
   })
 
-  app.whenReady().then(async () => {
+  app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
 
     const paths = appPaths({
@@ -171,9 +171,8 @@ if (!gotSingleInstanceLock) {
 
     registerIpc(ipcMain, ctx, isAppWindowEvent)
 
-    // A change a crash cut off is put back before the window opens (AGENTS.md: the one thing done without a click).
-    // This is the only start; it runs once, never rejects, and journal:recovery tells her what it did.
-    await ctx.startupRecovery()
+    // Start recovery once before the window opens without blocking first paint; IPC handlers and Shell wait on journal:recovery.
+    void ctx.startupRecovery()
 
     nativeTheme.on('updated', () => {
       if (mainWindow && !mainWindow.isDestroyed()) {

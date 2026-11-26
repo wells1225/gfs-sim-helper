@@ -33,7 +33,7 @@ import { assistHandlers } from './assist/handlers.ts'
 import { fiftyHandlers } from './fiftyfifty/handlers.ts'
 import { fixHandlers } from './fixes/handlers.ts'
 import type { IpcMainInvokeEvent } from 'electron'
-import { CHANGING_CHANNELS, collectHandlers, registerIpc } from './ipc.ts'
+import { CHANGING_CHANNELS, collectHandlers, registerIpc, sanitizeIpcError } from './ipc.ts'
 import type { Host } from './locate/host.ts'
 import type { ActionPlan, AssistReply, KeyStore, PlanFixAt, PlannedStep, Updater } from './ports.ts'
 import type { GameRunState as LocateGameRunState } from './locate/process.ts'
@@ -775,13 +775,15 @@ describe('share saves contract (PR 14)', () => {
 })
 
 describe('stage review integration invariants', () => {
-  it('main/index.ts awaits startupRecovery before creating the window', async () => {
+  it('main/index.ts starts startupRecovery after registerIpc and before creating the window', async () => {
     const src = await readFile(join(REPO_ROOT, 'src/main/index.ts'), 'utf8')
-    expect(src).not.toMatch(/void\s+ctx\.startupRecovery\(\)/)
-    const awaitAt = src.indexOf('await ctx.startupRecovery()')
+    expect(src).not.toMatch(/await\s+ctx\.startupRecovery\(\)/)
+    const registerAt = src.indexOf('registerIpc(')
+    const startAt = src.indexOf('void ctx.startupRecovery()')
     const createAt = src.indexOf('mainWindow = createWindow()')
-    expect(awaitAt).toBeGreaterThan(-1)
-    expect(createAt).toBeGreaterThan(awaitAt)
+    expect(registerAt).toBeGreaterThan(-1)
+    expect(startAt).toBeGreaterThan(registerAt)
+    expect(createAt).toBeGreaterThan(startAt)
   })
 
   it('registerIpc never leaks raw OS paths or usernames when a handler rejects', async () => {
@@ -812,7 +814,16 @@ describe('stage review integration invariants', () => {
         )
       },
       'settings:get': async () => {
-        throw new Error('Could not read C:\\Users\\Lila\\Documents\\file.txt')
+        throw new Error('Could not read C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4\\Options.ini.')
+      },
+      'locate:run': async () => {
+        throw Object.assign(new Error('EXDEV: cross-device link not permitted'), {
+          code: 'EXDEV',
+          dest: 'D:\\Holding\\entry-1\\a.package'
+        })
+      },
+      'game:check': async () => {
+        throw new Error("EACCES: permission denied, open '/Users/Lila/Documents/Electronic Arts/The Sims 4/Options.ini'")
       }
     }
     registerIpc(
@@ -827,19 +838,151 @@ describe('stage review integration invariants', () => {
     )
 
     const ev = {} as IpcMainInvokeEvent
-    const journalMsg = await registered.get('journal:list')!(ev, undefined).then(
-      () => null,
-      (err: unknown) => (err instanceof Error ? err.message : String(err))
-    )
-    expect(journalMsg).not.toBeNull()
-    expect(journalMsg!).not.toMatch(/Lila|AppData|EACCES|[A-Z]:\\/i)
+    const rejectMsg = (channel: keyof IpcInvoke) =>
+      registered.get(channel)!(ev, undefined).then(
+        () => null,
+        (err: unknown) => (err instanceof Error ? err.message : String(err))
+      )
 
-    const settingsMsg = await registered.get('settings:get')!(ev, undefined).then(
-      () => null,
-      (err: unknown) => (err instanceof Error ? err.message : String(err))
-    )
-    expect(settingsMsg).not.toBeNull()
-    expect(settingsMsg!).not.toContain('Lila')
+    expect(await rejectMsg('journal:list')).toBe('A file operation failed')
+    expect(await rejectMsg('locate:run')).toBe('A file operation failed')
+    expect(await rejectMsg('game:check')).toBe('A file operation failed')
+    expect(await rejectMsg('settings:get')).toBe('Could not read <path>.')
+  })
+
+  it('sanitizeIpcError redacts fs errors and embedded paths while preserving plain handler errors', () => {
+    const ctx = createContext({
+      host: makeFakeHost(),
+      paths: appPaths({
+        localAppData: '/fake/LocalAppData',
+        appData: '/fake/Roaming',
+        desktopDir: '/fake/Desktop',
+        env: {}
+      }),
+      safeStorage: {
+        isEncryptionAvailable: () => false,
+        encryptString: (text) => Buffer.from(text, 'utf8'),
+        decryptString: (data) => Buffer.from(data).toString('utf8')
+      },
+      emit: () => {},
+      reveal: () => {}
+    })
+
+    const fsObjects: unknown[] = [
+      Object.assign(new Error('open failed'), { path: 'C:\\Users\\Lila\\file.txt' }),
+      Object.assign(new Error('open buffer failed'), { path: Buffer.from('/Users/Lila/file.txt') }),
+      Object.assign(new Error('open url failed'), { path: new URL('file:///Users/Lila/file.txt') }),
+      Object.assign(new Error('rename dest failed'), { dest: 'D:\\Backups\\b1\\file.package' }),
+      Object.assign(new Error('rename dest uint8 failed'), { dest: new Uint8Array([1, 2, 3]) }),
+      Object.assign(new Error('stat failed'), { syscall: 'stat' }),
+      new Error("EACCES: permission denied, scandir 'C:\\Users\\Lila\\AppData'"),
+      new Error("ENOENT: no such file or directory, open '/private/var/folders/ab/cd/T/sims/Options.ini'"),
+      'ERR_FS_EISDIR: illegal operation on a directory'
+    ]
+    for (const err of fsObjects) {
+      expect(sanitizeIpcError(err, ctx.redact).message).toBe('A file operation failed')
+    }
+
+    expect(sanitizeIpcError(null, ctx.redact).message).toBe('Something went wrong')
+    expect(sanitizeIpcError({ code: 42 }, ctx.redact).message).toBe('Something went wrong')
+
+    const redactedCases: [string, string][] = [
+      [
+        'Could not read C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4\\Options.ini',
+        'Could not read <path>'
+      ],
+      [
+        'Could not open C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4 because it is locked.',
+        'Could not open <path> because it is locked.'
+      ],
+      [
+        'Failed on D:/Games/The Sims 4/Mods/Wicked Wardrobe/mod.package!',
+        'Failed on <path>!'
+      ],
+      [
+        'Locked \\\\?\\C:\\Users\\Lila\\AppData\\Local\\SimsHelper\\journal\\e1.json',
+        'Locked <path>'
+      ],
+      [
+        'Device \\\\.\\C:\\Users\\Lila\\AppData\\file.dat failed',
+        'Device <path> failed'
+      ],
+      [
+        'JSON payload {"file":"C:\\\\Users\\\\Lila\\\\Documents\\\\Electronic Arts\\\\Options.ini"}',
+        'JSON payload {"file":"<path>"}'
+      ],
+      [
+        'Unquoted escaped C:\\\\Users\\\\Lila\\\\Documents\\\\The Sims 4\\\\Options.ini.',
+        'Unquoted escaped <path>.'
+      ],
+      [
+        'Share error at \\\\NAS\\Shared Saves\\The Sims 4\\Slot_00000002.save, retry later',
+        'Share error at <path>, retry later'
+      ],
+      [
+        'Share error at //nas/shared/The Sims 4/Slot_00000002.save.',
+        'Share error at <path>.'
+      ],
+      [
+        'Cannot open file:///C:/Users/Lila/Documents/Electronic%20Arts/Options.ini.',
+        'Cannot open <path>.'
+      ],
+      [
+        'Unreadable ~/Documents/Electronic Arts/The Sims 4/Options.ini',
+        'Unreadable <path>'
+      ],
+      [
+        'Unreadable %LOCALAPPDATA%\\SimsHelper\\journal\\entry.json',
+        'Unreadable <path>'
+      ],
+      [
+        'Unreadable $HOME/.config/sims-helper/settings.json',
+        'Unreadable <path>'
+      ],
+      [
+        'Unix home /Users/Lila/Documents/Electronic Arts/The Sims 4/Options.ini failed',
+        'Unix home <path> failed'
+      ],
+      [
+        'Folder /Users/Lila/Documents/Electronic Arts/The Sims 4 in 50/50 test and/or 11/25/2026',
+        'Folder <path> in 50/50 test and/or 11/25/2026'
+      ],
+      [
+        'Temp path (/private/var/folders/xy/z123/T/sims-helper/Mods/a.package) missing',
+        'Temp path (<path>) missing'
+      ],
+      [
+        "That didn't work at 'C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4' or \"/Users/Lila/Mods\"",
+        "That didn't work at '<path>' or \"<path>\""
+      ]
+    ]
+    for (const [input, expected] of redactedCases) {
+      expect(sanitizeIpcError(new Error(input), ctx.redact).message, input).toBe(expected)
+      expect(sanitizeIpcError(new Error(input)).message, `without redact: ${input}`).toBe(expected)
+    }
+
+    const preserved = [
+      'Settings update must be an object',
+      'Unknown welcome value',
+      'folderPath must be text or null',
+      'Selected folder was not found among your Sims 4 folders',
+      'Could not save settings: check-failed',
+      'fifty:answer needs a known answer',
+      'fifty:answer needs the round it answers',
+      'fifty:finish needs keep',
+      'Could not read history',
+      'Could not read set-aside mods',
+      '50/50 test stopped on 11/25/2026 and/or needs https://www.curseforge.com/sims4/mods/mccc'
+    ]
+    for (const msg of preserved) {
+      expect(sanitizeIpcError(new Error(msg), ctx.redact).message, msg).toBe(msg)
+    }
+
+    // Linear-time guard against catastrophic backtracking on long inputs
+    const longText = `Could not parse ${'word '.repeat(10_000)}C:\\Users\\Lila\\Options.ini`
+    const t0 = performance.now()
+    expect(sanitizeIpcError(new Error(longText), ctx.redact).message.endsWith('<path>')).toBe(true)
+    expect(performance.now() - t0).toBeLessThan(250)
   })
 
   it('fix:apply and fifty:start never overlap: fifty:start sees a group whose disable just finished, and a fix after fifty:start is refused', async () => {
