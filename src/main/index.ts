@@ -7,7 +7,7 @@ import { createAppHost, desktopDir } from './app-host.ts'
 import { appIconPath } from './app-icon.ts'
 import { appPaths } from './app-paths.ts'
 import { registerIpc } from './ipc.ts'
-import { createContext, updaterKeepOutOf } from './services.ts'
+import { createContext, createRecoveryQuitGuard, updaterKeepOutOf, type RecoveryQuitGuard } from './services.ts'
 import { createUpdater } from './update/updater.ts'
 
 const LIGHT_BG = '#FAF9F6'
@@ -113,13 +113,10 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) {
   app.quit()
 } else {
-  app.on('second-instance', () => {
-    if (!mainWindow) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
-  })
+  let quitGuard: RecoveryQuitGuard | null = null
+  let hasReadyStarted = false
 
-  app.whenReady().then(async () => {
+  app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
 
     const paths = appPaths({
@@ -171,9 +168,14 @@ if (!gotSingleInstanceLock) {
 
     registerIpc(ipcMain, ctx, isAppWindowEvent)
 
-    // A change a crash cut off is put back before the window opens (AGENTS.md: the one thing done without a click).
-    // This is the only start; it runs once, never rejects, and journal:recovery tells her what it did.
-    await ctx.startupRecovery()
+    // Start recovery once before the window opens without blocking first paint; IPC handlers and Shell wait on journal:recovery.
+    const recoveryDone = ctx.startupRecovery()
+    quitGuard = createRecoveryQuitGuard(recoveryDone, {
+      platform: process.platform,
+      quit: () => app.quit(),
+      openWindowCount: () => BrowserWindow.getAllWindows().length
+    })
+    hasReadyStarted = true
 
     nativeTheme.on('updated', () => {
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -190,8 +192,25 @@ if (!gotSingleInstanceLock) {
     })
   })
 
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      if (hasReadyStarted && app.isReady()) {
+        mainWindow = createWindow()
+      }
+      return
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
+  })
+
+  app.on('before-quit', (event) => {
+    quitGuard?.onBeforeQuit(event)
+  })
+
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') {
+    if (quitGuard) {
+      quitGuard.onWindowAllClosed()
+    } else if (process.platform !== 'darwin') {
       app.quit()
     }
   })

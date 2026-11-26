@@ -17,29 +17,39 @@ function isFlagged(entry: JournalEntry): boolean {
   return entry.status === 'needs-attention' || entry.status === 'in-progress'
 }
 
-export function RecoveryNotice() {
+export function RecoveryNotice({ recovery: givenRecovery }: { recovery?: StartupRecovery | null } = {}) {
   const api = useOptionalApi()
   const { go } = useNav()
-  const [recovery, setRecovery] = useState<StartupRecovery | null>(null)
+  const [fetchedRecovery, setFetchedRecovery] = useState<StartupRecovery | null>(null)
   const [listEntries, setListEntries] = useState<JournalEntry[] | null>(null)
   const [listSettled, setListSettled] = useState(false)
   const [dismissed, setDismissed] = useState(false)
 
+  const hasGivenRecovery = givenRecovery !== undefined
+  const recovery = hasGivenRecovery ? givenRecovery : fetchedRecovery
+
   useEffect(() => {
-    if (!api) return
+    if (!api || hasGivenRecovery) return
     let cancelled = false
-    // Main put back any cut-off change at start, once. Both calls only read: what that run did, and what is left.
-    // They are asked apart, so a journal that cannot be read never hides what the recovery did.
 
     api
       .invoke('journal:recovery')
       .then((answer) => {
-        if (!cancelled) setRecovery(answer)
+        if (!cancelled) setFetchedRecovery(answer)
       })
       .catch(() => {
         // A rejected recovery call must never look like everything went smoothly.
-        if (!cancelled) setRecovery({ status: 'failed' })
+        if (!cancelled) setFetchedRecovery({ status: 'failed' })
       })
+
+    return () => {
+      cancelled = true
+    }
+  }, [api, hasGivenRecovery])
+
+  useEffect(() => {
+    if (!api) return
+    let cancelled = false
 
     api
       .invoke('journal:list')

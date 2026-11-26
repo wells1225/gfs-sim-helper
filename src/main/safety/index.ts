@@ -27,6 +27,6 @@ export async function listJournal(deps: SafetyDeps): Promise<JournalEntry[]> {
   return await listEntries(deps.paths.journalDir)
 }
 
-export async function recover(deps: SafetyDeps): Promise<JournalEntry[]> {
-  return await oneAtATime(deps, async () => await recoverNow(deps, await listEntries(deps.paths.journalDir)))
+export async function recover(deps: SafetyDeps, onProgress?: OnProgress): Promise<JournalEntry[]> {
+  return await oneAtATime(deps, async () => await recoverNow(deps, await listEntries(deps.paths.journalDir), onProgress))
 }

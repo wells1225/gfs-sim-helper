@@ -1,12 +1,12 @@
 // @vitest-environment node
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { Page } from '@playwright/test'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { INVOKE_CHANNELS, type Handlers, type IpcInvoke } from '../shared/ipc.ts'
 import type {
   ActionKind,
@@ -33,12 +33,20 @@ import { assistHandlers } from './assist/handlers.ts'
 import { fiftyHandlers } from './fiftyfifty/handlers.ts'
 import { fixHandlers } from './fixes/handlers.ts'
 import type { IpcMainInvokeEvent } from 'electron'
-import { CHANGING_CHANNELS, collectHandlers, registerIpc } from './ipc.ts'
+import { CHANGING_CHANNELS, collectHandlers, registerIpc, sanitizeIpcError } from './ipc.ts'
 import type { Host } from './locate/host.ts'
 import type { ActionPlan, AssistReply, KeyStore, PlanFixAt, PlannedStep, Updater } from './ports.ts'
 import type { GameRunState as LocateGameRunState } from './locate/process.ts'
 import { scanHandlers } from './scan/handlers.ts'
-import { createContext, makeOpenWeb, onceRecovery, updaterKeepOutOf, type CreateContextInput } from './services.ts'
+import { sha256File } from './fs-read.ts'
+import {
+  createContext,
+  createRecoveryQuitGuard,
+  makeOpenWeb,
+  onceRecovery,
+  updaterKeepOutOf,
+  type CreateContextInput
+} from './services.ts'
 import { shareHandlers } from './share/handlers.ts'
 import { updateHandlers } from './update/handlers.ts'
 import { createUpdater } from './update/updater.ts'
@@ -620,6 +628,75 @@ describe('start-up recovery (PR 10)', () => {
     expect(['failed', 'finished']).toContain((await run).status)
     expect(ctx.busy()).toBe(false)
   })
+
+  it('forwards backup and fix progress events from startupRecovery() to emit', async () => {
+    const tempRoot = await realpath(await mkdtemp(join(tmpdir(), 'sims-recovery-progress-')))
+    try {
+      const simsFolder = join(tempRoot, 'Users', 'Lila', 'Documents', 'Electronic Arts', 'The Sims 4')
+      const modsDir = join(simsFolder, 'Mods', 'BuildBuy')
+      const localAppData = join(tempRoot, 'LocalAppData')
+      const desktopDir = join(tempRoot, 'Desktop')
+      await mkdir(modsDir, { recursive: true })
+      await mkdir(localAppData, { recursive: true })
+      await mkdir(desktopDir, { recursive: true })
+      await writeFile(join(simsFolder, 'Options.ini'), '[options]\nmodsdisabled = 0\nscriptmodsenabled = 1\n')
+
+      const paths = appPaths({ localAppData, appData: join(tempRoot, 'Roaming'), desktopDir, env: {} })
+      const heldFile = join(paths.holdingDir, 'hold-1', 'Mods', 'BuildBuy', 'lamp_a.package')
+      await mkdir(dirname(heldFile), { recursive: true })
+      await writeFile(heldFile, 'package-bytes')
+      const sha = await sha256File(heldFile)
+
+      await mkdir(paths.journalDir, { recursive: true })
+      await writeFile(
+        join(paths.journalDir, 'hold-1.json'),
+        JSON.stringify(
+          sampleJournalEntry({
+            id: 'hold-1',
+            folderPath: simsFolder,
+            status: 'in-progress',
+            undo: 'can-undo',
+            steps: [
+              {
+                kind: 'move',
+                from: join(modsDir, 'lamp_a.package'),
+                to: heldFile,
+                bytes: Buffer.byteLength('package-bytes'),
+                sha256: sha,
+                state: 'applied'
+              }
+            ]
+          })
+        )
+      )
+
+      const emitted: Progress[] = []
+      const ctx = createContext({
+        host: { ...makeFakeHost(), documentsDir: join(tempRoot, 'Users', 'Lila', 'Documents') },
+        paths,
+        safeStorage: {
+          isEncryptionAvailable: () => false,
+          encryptString: (text) => Buffer.from(text, 'utf8'),
+          decryptString: (data) => Buffer.from(data).toString('utf8')
+        },
+        emit: (p) => emitted.push(p),
+        reveal: () => {}
+      })
+
+      const res = await ctx.startupRecovery()
+      expect(res.status).toBe('finished')
+      if (res.status === 'finished') {
+        expect(res.touched.map((e) => [e.id, e.status])).toEqual([['hold-1', 'undone']])
+      }
+      expect(emitted.some((p) => p.task === 'backup')).toBe(true)
+      expect(emitted.filter((p) => p.task === 'fix')).toEqual([
+        { task: 'fix', stage: 'moving', done: 0, total: 1 },
+        { task: 'fix', stage: 'moving', done: 1, total: 1 }
+      ])
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('share saves contract (PR 14)', () => {
@@ -775,13 +852,142 @@ describe('share saves contract (PR 14)', () => {
 })
 
 describe('stage review integration invariants', () => {
-  it('main/index.ts awaits startupRecovery before creating the window', async () => {
+  function makeContext() {
+    return createContext({
+      host: makeFakeHost(),
+      paths: appPaths({
+        localAppData: '/fake/LocalAppData',
+        appData: '/fake/Roaming',
+        desktopDir: '/fake/Desktop',
+        env: {}
+      }),
+      safeStorage: {
+        isEncryptionAvailable: () => false,
+        encryptString: (text) => Buffer.from(text, 'utf8'),
+        decryptString: (data) => Buffer.from(data).toString('utf8')
+      },
+      emit: () => {},
+      reveal: () => {}
+    })
+  }
+
+  it('main/index.ts starts startupRecovery after registerIpc, guards quit until settled, and creates the window', async () => {
     const src = await readFile(join(REPO_ROOT, 'src/main/index.ts'), 'utf8')
-    expect(src).not.toMatch(/void\s+ctx\.startupRecovery\(\)/)
-    const awaitAt = src.indexOf('await ctx.startupRecovery()')
+    expect(src).not.toMatch(/await\s+ctx\.startupRecovery\(\)/)
+    const registerAt = src.indexOf('registerIpc(')
+    const startAt = src.indexOf('const recoveryDone = ctx.startupRecovery()')
+    const guardAt = src.indexOf('createRecoveryQuitGuard(recoveryDone')
     const createAt = src.indexOf('mainWindow = createWindow()')
-    expect(awaitAt).toBeGreaterThan(-1)
-    expect(createAt).toBeGreaterThan(awaitAt)
+    expect(registerAt).toBeGreaterThan(-1)
+    expect(startAt).toBeGreaterThan(registerAt)
+    expect(guardAt).toBeGreaterThan(startAt)
+    expect(createAt).toBeGreaterThan(guardAt)
+    expect(src).toMatch(/app\.on\('before-quit'/)
+    expect(src).toMatch(/quitGuard\?\.onBeforeQuit/)
+    expect(src).toMatch(/quitGuard\.onWindowAllClosed/)
+  })
+
+  it('createRecoveryQuitGuard defers window-all-closed and before-quit while recovery is pending, skips quit if a window reopens, and quits immediately once settled', async () => {
+    // 1. window-all-closed on Windows while recovery is unresolved -> defers quit until settled
+    let resolve1!: () => void
+    const recovery1 = new Promise<void>((resolve) => {
+      resolve1 = resolve
+    })
+    let quitCalls1 = 0
+    let windows1 = 0
+    const guard1 = createRecoveryQuitGuard(recovery1, {
+      platform: 'win32',
+      quit: () => {
+        quitCalls1 += 1
+      },
+      openWindowCount: () => windows1
+    })
+    guard1.onWindowAllClosed()
+    expect(quitCalls1).toBe(0)
+    resolve1()
+    await recovery1
+    await Promise.resolve()
+    expect(quitCalls1).toBe(1)
+
+    // 2. window-all-closed while unresolved, then a window reopens before recovery finishes -> does not quit; closing later quits immediately
+    let resolve2!: () => void
+    const recovery2 = new Promise<void>((resolve) => {
+      resolve2 = resolve
+    })
+    let quitCalls2 = 0
+    let windows2 = 0
+    const guard2 = createRecoveryQuitGuard(recovery2, {
+      platform: 'win32',
+      quit: () => {
+        quitCalls2 += 1
+      },
+      openWindowCount: () => windows2
+    })
+    guard2.onWindowAllClosed()
+    windows2 = 1
+    resolve2()
+    await recovery2
+    await Promise.resolve()
+    expect(quitCalls2).toBe(0)
+    windows2 = 0
+    guard2.onWindowAllClosed()
+    expect(quitCalls2).toBe(1)
+
+    // 3. darwin never quits on window-all-closed, but still defers explicit before-quit
+    let resolve3!: () => void
+    const recovery3 = new Promise<void>((resolve) => {
+      resolve3 = resolve
+    })
+    let quitCalls3 = 0
+    const guard3 = createRecoveryQuitGuard(recovery3, {
+      platform: 'darwin',
+      quit: () => {
+        quitCalls3 += 1
+      },
+      openWindowCount: () => 0
+    })
+    guard3.onWindowAllClosed()
+    resolve3()
+    await recovery3
+    await Promise.resolve()
+    expect(quitCalls3).toBe(0)
+    guard3.onWindowAllClosed()
+    expect(quitCalls3).toBe(0)
+
+    // 4. before-quit while unresolved prevents default, coalesces repeated events + window-all-closed into one quit, and lets nested before-quit pass once settled
+    let resolve4!: () => void
+    const recovery4 = new Promise<void>((resolve) => {
+      resolve4 = resolve
+    })
+    let quitCalls4 = 0
+    let nestedPrevented = false
+    const guard4 = createRecoveryQuitGuard(recovery4, {
+      platform: 'win32',
+      quit: () => {
+        quitCalls4 += 1
+        guard4.onBeforeQuit({
+          preventDefault: () => {
+            nestedPrevented = true
+          }
+        })
+      },
+      openWindowCount: () => 1
+    })
+    let preventedA = false
+    let preventedB = false
+    guard4.onBeforeQuit({ preventDefault: () => void (preventedA = true) })
+    guard4.onBeforeQuit({ preventDefault: () => void (preventedB = true) })
+    guard4.onWindowAllClosed()
+    expect([preventedA, preventedB, quitCalls4]).toEqual([true, true, 0])
+    resolve4()
+    await recovery4
+    await Promise.resolve()
+    expect([quitCalls4, nestedPrevented]).toEqual([1, false])
+
+    // 5. Once already settled, before-quit does not prevent default and window-all-closed quits synchronously
+    let settledPrevented = false
+    guard4.onBeforeQuit({ preventDefault: () => void (settledPrevented = true) })
+    expect(settledPrevented).toBe(false)
   })
 
   it('registerIpc never leaks raw OS paths or usernames when a handler rejects', async () => {
@@ -812,7 +1018,16 @@ describe('stage review integration invariants', () => {
         )
       },
       'settings:get': async () => {
-        throw new Error('Could not read C:\\Users\\Lila\\Documents\\file.txt')
+        throw new Error('Could not read C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4\\Options.ini.')
+      },
+      'locate:run': async () => {
+        throw Object.assign(new Error('EXDEV: cross-device link not permitted'), {
+          code: 'EXDEV',
+          dest: 'D:\\Holding\\entry-1\\a.package'
+        })
+      },
+      'game:check': async () => {
+        throw new Error("EACCES: permission denied, open '/Users/Lila/Documents/Electronic Arts/The Sims 4/Options.ini'")
       }
     }
     registerIpc(
@@ -827,19 +1042,588 @@ describe('stage review integration invariants', () => {
     )
 
     const ev = {} as IpcMainInvokeEvent
-    const journalMsg = await registered.get('journal:list')!(ev, undefined).then(
-      () => null,
-      (err: unknown) => (err instanceof Error ? err.message : String(err))
-    )
-    expect(journalMsg).not.toBeNull()
-    expect(journalMsg!).not.toMatch(/Lila|AppData|EACCES|[A-Z]:\\/i)
+    const rejectMsg = (channel: keyof IpcInvoke) =>
+      registered.get(channel)!(ev, undefined).then(
+        () => null,
+        (err: unknown) => (err instanceof Error ? err.message : String(err))
+      )
 
-    const settingsMsg = await registered.get('settings:get')!(ev, undefined).then(
-      () => null,
-      (err: unknown) => (err instanceof Error ? err.message : String(err))
+    expect(await rejectMsg('journal:list')).toBe('A file operation failed')
+    expect(await rejectMsg('locate:run')).toBe('A file operation failed')
+    expect(await rejectMsg('game:check')).toBe('A file operation failed')
+    expect(await rejectMsg('settings:get')).toBe('A file operation failed')
+  })
+
+  it('sanitizeIpcError collapses fs errors and any path-bearing error fail-closed while preserving plain handler errors', () => {
+    const ctx = createContext({
+      host: makeFakeHost(),
+      paths: appPaths({
+        localAppData: '/fake/LocalAppData',
+        appData: '/fake/Roaming',
+        desktopDir: '/fake/Desktop',
+        env: {}
+      }),
+      safeStorage: {
+        isEncryptionAvailable: () => false,
+        encryptString: (text) => Buffer.from(text, 'utf8'),
+        decryptString: (data) => Buffer.from(data).toString('utf8')
+      },
+      emit: () => {},
+      reveal: () => {}
+    })
+
+    const fsObjects: unknown[] = [
+      Object.assign(new Error('open failed'), { path: 'C:\\Users\\Lila\\file.txt' }),
+      Object.assign(new Error('open buffer failed'), { path: Buffer.from('/Users/Lila/file.txt') }),
+      Object.assign(new Error('open url failed'), { path: new URL('file:///Users/Lila/file.txt') }),
+      Object.assign(new Error('rename dest failed'), { dest: 'D:\\Backups\\b1\\file.package' }),
+      Object.assign(new Error('rename dest uint8 failed'), { dest: new Uint8Array([1, 2, 3]) }),
+      Object.assign(new Error('stat failed'), { syscall: 'stat' }),
+      Object.assign(new Error('copyfile failed'), { syscall: 'copyfile' }),
+      new Error("EACCES: permission denied, scandir 'C:\\Users\\Lila\\AppData'"),
+      new Error("ENOENT: no such file or directory, open '/private/var/folders/ab/cd/T/sims/Options.ini'"),
+      'ERR_FS_EISDIR: illegal operation on a directory'
+    ]
+    for (const err of fsObjects) {
+      expect(sanitizeIpcError(err, ctx.redact).message).toBe('A file operation failed')
+    }
+    for (const syscall of [
+      'open',
+      'read',
+      'write',
+      'stat',
+      'lstat',
+      'fstat',
+      'statfs',
+      'scandir',
+      'readdir',
+      'mkdir',
+      'rmdir',
+      'unlink',
+      'rename',
+      'copyfile',
+      'realpath',
+      'readlink',
+      'chmod',
+      'chown',
+      'access',
+      'rm',
+      'link',
+      'symlink',
+      'mkdtemp',
+      'truncate',
+      'utime',
+      'futime',
+      'close',
+      'fsync'
+    ]) {
+      expect(sanitizeIpcError(Object.assign(new Error(`${syscall} failed`), { syscall }), ctx.redact).message, syscall).toBe(
+        'A file operation failed'
+      )
+    }
+    for (const code of [
+      'ENOENT',
+      'EACCES',
+      'EPERM',
+      'EBUSY',
+      'EEXIST',
+      'EISDIR',
+      'ENOTDIR',
+      'ENOTEMPTY',
+      'ENOSPC',
+      'EMFILE',
+      'ENFILE',
+      'EROFS',
+      'EXDEV',
+      'ENAMETOOLONG',
+      'ELOOP',
+      'EIO',
+      'EBADF',
+      'EFBIG'
+    ]) {
+      expect(sanitizeIpcError(new Error(`${code}: fs failure`), ctx.redact).message, code).toBe('A file operation failed')
+    }
+
+    // Non-filesystem syscalls and errno codes without paths pass through; any embedded path still collapses fail-closed
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:443'), { code: 'ECONNREFUSED', syscall: 'connect' }),
+        ctx.redact
+      ).message
+    ).toBe('connect ECONNREFUSED 127.0.0.1:443')
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('getaddrinfo ENOTFOUND api.anthropic.com'), {
+          code: 'ENOTFOUND',
+          syscall: 'getaddrinfo'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('getaddrinfo ENOTFOUND api.anthropic.com')
+    expect(sanitizeIpcError(new Error('ECONNREFUSED: connection refused'), ctx.redact).message).toBe(
+      'ECONNREFUSED: connection refused'
     )
-    expect(settingsMsg).not.toBeNull()
-    expect(settingsMsg!).not.toContain('Lila')
+    expect(sanitizeIpcError(new Error('ETIMEDOUT: request timed out'), ctx.redact).message).toBe(
+      'ETIMEDOUT: request timed out'
+    )
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('connect ECONNREFUSED C:\\Users\\Lila\\AppData\\Local\\pipe.sock'), {
+          code: 'ECONNREFUSED',
+          syscall: 'connect'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('A file operation failed')
+
+    expect(sanitizeIpcError(null, ctx.redact).message).toBe('Something went wrong')
+    expect(sanitizeIpcError({ code: 42 }, ctx.redact).message).toBe('Something went wrong')
+
+    const pathBearingMessages = [
+      'Could not read C:\\Games\\Save and Restore, Options.ini',
+      'Could not read C:\\Games\\Save.v2 and Restore Options.ini',
+      'Could not read C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4\\Options.ini',
+      'Could not read C:\\Games\\Private  Profile\\Options.ini',
+      'Failed on /Users/Lila/Private  Profile/The  Sims  4/Options.ini.',
+      'Locked \\\\?\\C:\\Users\\Lila\\AppData\\Local\\SimsHelper\\journal\\e1.json',
+      'Device \\\\.\\C:\\Users\\Lila\\AppData\\file.dat failed',
+      'JSON payload {"file":"C:\\\\Users\\\\Lila\\\\Documents\\\\Options.ini"}',
+      'Unquoted escaped C:\\\\Users\\\\Lila\\\\Documents\\\\The Sims 4\\\\Options.ini.',
+      'Share error at \\\\NAS\\Shared Saves\\The Sims 4\\Slot_00000002.save, retry later',
+      'Share error at \\\\Lila\\Shared Saves\\The Sims 4\\Slot_00000002.save',
+      'Share error at //nas/shared/The Sims 4/Slot_00000002.save.',
+      'Cannot open file:///C:/Users/Lila/Documents/Options.ini.',
+      'Read %LOCALAPPDATA%\\SimsHelper\\settings.json failed',
+      'Read ~/Documents/The Sims 4/Options.ini failed',
+      'Read $HOME/Documents/file.txt failed',
+      'Read ${HOME}/.config/sims-helper/settings.json failed',
+      'Read $env:LOCALAPPDATA\\SimsHelper\\settings.json failed',
+      'Relative ./Mods/Wicked Wardrobe.package failed',
+      'Relative ../Saves/Slot_00000002.save failed',
+      'connect ECONNREFUSED C:\\Users\\Lila\\AppData\\Local\\pipe.sock',
+      'Failed on D:/Games/The Sims 4/Mods/Wicked Wardrobe/mod.package!',
+      'Folder /Users/Lila/Documents/Electronic Arts/The Sims 4 in 50/50 test and/or 11/25/2026',
+      'Temp path (/private/var/folders/xy/z123/T/sims-helper/Mods/a.package) missing',
+      'Single root file /Options.ini missing',
+      'Single versioned root file /Save.v2.ini missing',
+      'Single dotfile /.env.local missing',
+      'Fake root /fake/LocalAppData/SimsHelper failed',
+      'Sims root /sims/Mods/a.package failed',
+      "That didn't work at 'C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4' or \"/Users/Lila/Mods\"",
+      'Failed at C:\\Games\\Mods, please check Secret_Save_Name.ini',
+      'Failed at C:\\Games\\Mods — please check Options.ini later'
+    ]
+    for (const input of pathBearingMessages) {
+      expect(sanitizeIpcError(new Error(input), ctx.redact).message, input).toBe('A file operation failed')
+      expect(sanitizeIpcError(new Error(input)).message, `without redact: ${input}`).toBe('A file operation failed')
+    }
+
+    const preserved = [
+      'Settings update must be an object',
+      'Unknown welcome value',
+      'folderPath must be text or null',
+      'Selected folder was not found among your Sims 4 folders',
+      'Could not save settings: check-failed',
+      'fifty:answer needs a known answer',
+      'fifty:answer needs the round it answers',
+      'fifty:finish needs keep',
+      'Could not read history',
+      'Could not read set-aside mods',
+      '/.hidden',
+      '50/50 test stopped on 11/25/2026 and/or needs https://www.curseforge.com/sims4/mods/mccc'
+    ]
+    for (const msg of preserved) {
+      expect(sanitizeIpcError(new Error(msg), ctx.redact).message, msg).toBe(msg)
+    }
+
+    // Username redaction still runs on plain non-path errors
+    expect(sanitizeIpcError(new Error('Lila cannot use that setting'), ctx.redact).message).toBe(
+      '<user> cannot use that setting'
+    )
+
+    // Linear-time guard against catastrophic backtracking on long inputs
+    const longText = `Could not parse ${'word '.repeat(10_000)}C:\\Users\\Lila\\Options.ini`
+    const t0 = performance.now()
+    expect(sanitizeIpcError(new Error(longText), ctx.redact).message).toBe('A file operation failed')
+    expect(performance.now() - t0).toBeLessThan(100)
+  })
+
+  it('sanitizeIpcError handles 50k parens and 50k dots in linear time (< 100 ms) without leaking path fragments', () => {
+    const ctx = makeContext()
+
+    const closingParens = ')'.repeat(50_000)
+    const balancedInput = `Could not read C:\\Users\\Lila\\Mods${'('.repeat(50_000)} ${closingParens}a`
+    const t0 = performance.now()
+    const balancedMsg = sanitizeIpcError(new Error(balancedInput), ctx.redact).message
+    const elapsedBalanced = performance.now() - t0
+    expect(elapsedBalanced).toBeLessThan(100)
+    expect(balancedMsg).toBe('A file operation failed')
+
+    const unbalancedInput = `Could not read C:\\Users\\Lila\\Mods ${closingParens}a`
+    const t1 = performance.now()
+    const unbalancedMsg = sanitizeIpcError(new Error(unbalancedInput), ctx.redact).message
+    const elapsedUnbalanced = performance.now() - t1
+    expect(elapsedUnbalanced).toBeLessThan(100)
+    expect(unbalancedMsg).toBe('A file operation failed')
+
+    const trailingDotsInput = `/${'.'.repeat(50_000)}`
+    const t2 = performance.now()
+    expect(sanitizeIpcError(new Error(trailingDotsInput), ctx.redact).message).toBe(trailingDotsInput)
+    expect(performance.now() - t2).toBeLessThan(100)
+  })
+
+  it('sanitizeIpcError collapses ambiguous multi-word filenames with commas, dots, spaces, and words fail-closed', () => {
+    const ctx = makeContext()
+
+    for (const input of [
+      'Could not read C:\\Games\\Save and Restore, Options.ini',
+      'Could not read C:\\Games\\Save.v2 and Restore Options.ini',
+      'Could not read C:\\Games\\Save and Restore Options.ini',
+      'Could not read C:\\Games\\save and restore options.ini',
+      'Could not read C:\\Users\\Lila\\Mods\\Check Mail and Make Tea.package',
+      'Could not read C:\\Users\\Lila\\Mods\\MCCC (check, save, and restore).package',
+      'Could not read C:\\Users\\Lila\\Mods\\[LittleMsSam Mods] Check Mail, v2.package',
+      'Failed at C:\\Games\\Mods, please check Options.ini',
+      'Failed at C:\\Games\\Mods; restart Options.ini',
+      'Failed at C:\\Games\\Mods: contact support',
+      'Failed at C:\\Games\\Mods and then read Options.ini',
+      'Failed at C:\\Games\\Mods please check Options.ini'
+    ]) {
+      expect(sanitizeIpcError(new Error(input), ctx.redact).message, input).toBe('A file operation failed')
+      expect(sanitizeIpcError(new Error(input)).message, `without redact: ${input}`).toBe('A file operation failed')
+    }
+  })
+
+  it('sanitizeIpcError does not misclassify network read/write errors without path or dest as file errors', () => {
+    const ctx = makeContext()
+
+    expect(
+      sanitizeIpcError({ message: 'read ECONNRESET', code: 'ECONNRESET', syscall: 'read' }, ctx.redact).message
+    ).toBe('read ECONNRESET')
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET', syscall: 'read' }),
+        ctx.redact
+      ).message
+    ).toBe('read ECONNRESET')
+
+    for (const code of [
+      'ECONNRESET',
+      'ECONNREFUSED',
+      'ECONNABORTED',
+      'EPIPE',
+      'ETIMEDOUT',
+      'EHOSTUNREACH',
+      'ENETUNREACH',
+      'ENOTFOUND',
+      'EAI_AGAIN',
+      'ERR_SOCKET_CLOSED'
+    ]) {
+      const err = Object.assign(new Error(`write ${code}`), { code, syscall: 'write' })
+      expect(sanitizeIpcError(err, ctx.redact).message, code).toBe(`write ${code}`)
+    }
+
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('read ECONNRESET at C:\\Users\\Lila\\AppData\\Local\\pipe'), {
+          code: 'ECONNRESET',
+          syscall: 'read'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('A file operation failed')
+
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('write EPIPE'), {
+          code: 'EPIPE',
+          syscall: 'write',
+          path: 'C:\\Users\\Lila\\pipe'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('A file operation failed')
+  })
+
+  it('sanitizeIpcError preserves http(s) URLs with slash query values while still failing closed on leaked paths', () => {
+    const ctx = makeContext()
+
+    for (const preservedUrl of [
+      'https://example.com/?next=/api/status',
+      'https://example.com/a;next=/api/status',
+      'https://example.com:8443/v1/check?next=/api/status',
+      'https://www.curseforge.com/sims4/mods/mccc',
+      'Request failed at https://example.com/?next=/api/status',
+      'Request failed at https://example.com:8443/v1/check?next=/api/status',
+      'Redirect http://localhost:3000/callback?returnTo=/settings/profile&tab=/mods',
+      'Request failed at HTTPS://example.com/?next=/Users/status'
+    ]) {
+      expect(sanitizeIpcError(new Error(preservedUrl), ctx.redact).message, preservedUrl).toBe(preservedUrl)
+    }
+    expect(
+      sanitizeIpcError(new Error('Request failed at https://Lila.example.com/?next=/api/status'), ctx.redact).message
+    ).toBe('Request failed at https://<user>.example.com/?next=/api/status')
+
+    for (const leaked of [
+      'https://example.com/?next=/api/status;/Users/Lila/Options.ini',
+      'https://example.com/?next=/api/status,/Users/Lila/Options.ini',
+      'https://example.com/?next=/api/status:/Users/Lila/Options.ini',
+      'https://example.com/a[/Users/Lila/Options.ini]',
+      'https://example.com/a{/Users/Lila/Options.ini}',
+      'https://example.com/a]/Users/Lila/Options.ini',
+      'https://example.com/a}/Users/Lila/Options.ini',
+      'https://example.com/a)/Users/Lila/Options.ini',
+      'https://example.com/a)C:\\Users\\Lila\\Options.ini',
+      'Request failed at https://example.com/?path=C:\\Users\\Lila\\Options.ini',
+      'Request failed at https://example.com/?file=file:///Users/Lila/Options.ini',
+      'See https://example.com/?next=/api/status and /Users/Lila/Options.ini'
+    ]) {
+      expect(sanitizeIpcError(new Error(leaked), ctx.redact).message, leaked).toBe('A file operation failed')
+      expect(sanitizeIpcError(new Error(leaked)).message, `without redact: ${leaked}`).toBe('A file operation failed')
+    }
+
+    const longUrlLeak = `https://example.com:8443/${'a'.repeat(50_000)};/Users/Lila/Options.ini`
+    const t0 = performance.now()
+    expect(sanitizeIpcError(new Error(longUrlLeak), ctx.redact).message).toBe('A file operation failed')
+    expect(performance.now() - t0).toBeLessThan(100)
+
+    const longSingleSegment = `/${'a'.repeat(50_000)}`
+    const tSingle = performance.now()
+    expect(sanitizeIpcError(new Error(longSingleSegment), ctx.redact).message).toBe(longSingleSegment)
+    expect(performance.now() - tSingle).toBeLessThan(50)
+  })
+
+  it('sanitizeIpcError does not misclassify non-filesystem syscalls with EACCES/EPERM as file errors without a path', () => {
+    const ctx = makeContext()
+
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('listen EACCES: permission denied 127.0.0.1:80'), {
+          code: 'EACCES',
+          syscall: 'listen'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('listen EACCES: permission denied 127.0.0.1:80')
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('EACCES: bind permission denied 0.0.0.0:443'), {
+          code: 'EACCES',
+          syscall: 'bind'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('EACCES: bind permission denied 0.0.0.0:443')
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('listen EPERM: operation not permitted 0.0.0.0:80'), {
+          code: 'EPERM',
+          syscall: 'listen'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('listen EPERM: operation not permitted 0.0.0.0:80')
+
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('listen EACCES: permission denied /Users/Lila/app.sock'), {
+          code: 'EACCES',
+          syscall: 'listen'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('A file operation failed')
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('listen EACCES'), {
+          code: 'EACCES',
+          syscall: 'listen',
+          path: '/tmp/app.sock'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('A file operation failed')
+  })
+
+  it('main/index.ts reopens the window on second-instance when closed while startup recovery is still running', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'sims-second-instance-'))
+    try {
+      vi.resetModules()
+
+      let ready = true
+      let resolveWhenReady!: () => void
+      const whenReadyPromise = new Promise<void>((resolve) => {
+        resolveWhenReady = resolve
+      })
+      let resolveRecovery!: (res: StartupRecovery) => void
+      const recoveryPromise = new Promise<StartupRecovery>((resolve) => {
+        resolveRecovery = resolve
+      })
+
+      const appListeners = new Map<string, ((...args: unknown[]) => void)[]>()
+      const emitApp = (event: string, ...args: unknown[]): void => {
+        for (const fn of appListeners.get(event) ?? []) {
+          fn(...args)
+        }
+      }
+
+      let quitCalls = 0
+      const createdWindows: FakeWindow[] = []
+      const openWindows: FakeWindow[] = []
+
+      class FakeWindow {
+        destroyed = false
+        minimized = false
+        restored = false
+        focused = false
+        closedListeners: (() => void)[] = []
+        webContents = {
+          mainFrame: { url: 'file:///fake/index.html' },
+          send: () => {},
+          setWindowOpenHandler: () => {},
+          on: () => {}
+        }
+
+        constructor() {
+          createdWindows.push(this)
+          openWindows.push(this)
+        }
+
+        static getAllWindows(): FakeWindow[] {
+          return [...openWindows]
+        }
+
+        once(_event: string, _fn: () => void): void {}
+
+        on(event: string, fn: () => void): void {
+          if (event === 'closed') {
+            this.closedListeners.push(fn)
+          }
+        }
+
+        async loadURL(): Promise<void> {}
+        async loadFile(): Promise<void> {}
+        show(): void {}
+        setBackgroundColor(): void {}
+
+        isDestroyed(): boolean {
+          return this.destroyed
+        }
+
+        isMinimized(): boolean {
+          return this.minimized
+        }
+
+        restore(): void {
+          this.minimized = false
+          this.restored = true
+        }
+
+        focus(): void {
+          this.focused = true
+        }
+
+        close(): void {
+          this.destroyed = true
+          const idx = openWindows.indexOf(this)
+          if (idx !== -1) openWindows.splice(idx, 1)
+          for (const fn of this.closedListeners) fn()
+        }
+      }
+
+      vi.doMock('electron', () => ({
+        app: {
+          isPackaged: false,
+          requestSingleInstanceLock: () => true,
+          isReady: () => ready,
+          whenReady: () => whenReadyPromise,
+          getPath: (name: string) => join(tempRoot, name),
+          getVersion: () => '0.1.0',
+          on: (event: string, fn: (...args: unknown[]) => void) => {
+            const list = appListeners.get(event) ?? []
+            list.push(fn)
+            appListeners.set(event, list)
+          },
+          quit: () => {
+            let prevented = false
+            emitApp('before-quit', {
+              preventDefault: () => {
+                prevented = true
+              }
+            })
+            if (!prevented) quitCalls += 1
+          }
+        },
+        BrowserWindow: FakeWindow,
+        Menu: { setApplicationMenu: () => {} },
+        nativeTheme: { shouldUseDarkColors: false, on: () => {} },
+        screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1280, height: 800 } }) },
+        ipcMain: { handle: () => {} },
+        safeStorage: {
+          isEncryptionAvailable: () => false,
+          encryptString: (t: string) => Buffer.from(t, 'utf8'),
+          decryptString: (b: Buffer) => b.toString('utf8')
+        },
+        dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
+        shell: { showItemInFolder: () => {}, openExternal: async () => {} }
+      }))
+
+      vi.doMock('./app-host.ts', () => ({
+        createAppHost: () => makeFakeHost(),
+        desktopDir: () => join(tempRoot, 'Desktop')
+      }))
+
+      const actualServices = await vi.importActual<typeof import('./services.ts')>('./services.ts')
+      vi.doMock('./services.ts', () => ({
+        ...actualServices,
+        createContext: (input: CreateContextInput) => ({
+          ...actualServices.createContext(input),
+          startupRecovery: () => recoveryPromise
+        })
+      }))
+
+      await import('./index.ts')
+
+      emitApp('second-instance')
+      expect(createdWindows).toHaveLength(0)
+
+      resolveWhenReady()
+      await whenReadyPromise
+      await Promise.resolve()
+      expect(createdWindows).toHaveLength(1)
+      expect(openWindows).toHaveLength(1)
+
+      createdWindows[0]!.close()
+      emitApp('window-all-closed')
+      expect(openWindows).toHaveLength(0)
+      expect(quitCalls).toBe(0)
+
+      ready = false
+      emitApp('second-instance')
+      expect(openWindows).toHaveLength(0)
+
+      ready = true
+      emitApp('second-instance')
+      expect(openWindows).toHaveLength(1)
+      expect(createdWindows).toHaveLength(2)
+
+      createdWindows[1]!.minimized = true
+      emitApp('second-instance')
+      expect(createdWindows).toHaveLength(2)
+      expect(createdWindows[1]!.restored).toBe(true)
+      expect(createdWindows[1]!.focused).toBe(true)
+
+      resolveRecovery({ status: 'finished', touched: [] })
+      await recoveryPromise
+      await Promise.resolve()
+      expect(quitCalls).toBe(0)
+    } finally {
+      vi.doUnmock('electron')
+      vi.doUnmock('./app-host.ts')
+      vi.doUnmock('./services.ts')
+      vi.resetModules()
+      await rm(tempRoot, { recursive: true, force: true })
+    }
   })
 
   it('fix:apply and fifty:start never overlap: fifty:start sees a group whose disable just finished, and a fix after fifty:start is refused', async () => {

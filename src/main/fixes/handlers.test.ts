@@ -342,6 +342,41 @@ describe('fixHandlers', () => {
     expect((await undone).status).toBe('done')
   })
 
+  it('backup:status waits for unresolved startup recovery before checking backups', async () => {
+    let finish!: () => void
+    const order: string[] = []
+    const recoverSpy = vi.fn<Safety['recover']>(
+      () =>
+        new Promise((resolve) => {
+          finish = () => {
+            order.push('recovered')
+            resolve([])
+          }
+        })
+    )
+    const backupStatusSpy = vi.fn<Safety['backupStatus']>(async () => {
+      order.push('backupStatus')
+      return { state: 'verified', backupId: 'b1', at: '2026-11-24T12:00:00.000Z' }
+    })
+    const { ctx } = await makeContext({
+      safety: { recover: recoverSpy, backupStatus: backupStatusSpy }
+    })
+    ctx.session.scan = sampleScan()
+    const handlers = fixHandlers(ctx)
+
+    const pending = handlers['backup:status'](undefined)
+    await new Promise((r) => setTimeout(r, 15))
+    expect(backupStatusSpy).not.toHaveBeenCalled()
+
+    finish()
+    expect(await pending).toEqual({
+      state: 'verified',
+      backupId: 'b1',
+      at: '2026-11-24T12:00:00.000Z'
+    })
+    expect(order).toEqual(['recovered', 'backupStatus'])
+  })
+
   it('handles backup:status, journal:undo and groups:disabled with or without an active scan', async () => {
     const { ctx } = await makeContext({
       fixes: {

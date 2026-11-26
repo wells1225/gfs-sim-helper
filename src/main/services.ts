@@ -88,6 +88,51 @@ export function onceRecovery(recover: () => Promise<JournalEntry[]>): () => Prom
   }
 }
 
+export interface RecoveryQuitGuardDeps {
+  platform: NodeJS.Platform
+  quit(): void
+  openWindowCount(): number
+}
+
+export interface RecoveryQuitGuard {
+  onWindowAllClosed(): void
+  onBeforeQuit(event: { preventDefault(): void }): void
+}
+
+export function createRecoveryQuitGuard(
+  recoveryDone: Promise<unknown>,
+  deps: RecoveryQuitGuardDeps
+): RecoveryQuitGuard {
+  let recoverySettled = false
+  let quitAfterRecovery = false
+  let checkWindowsAfterRecovery = false
+
+  const onSettled = (): void => {
+    recoverySettled = true
+    if (quitAfterRecovery || (checkWindowsAfterRecovery && deps.openWindowCount() === 0)) {
+      deps.quit()
+    }
+  }
+  void recoveryDone.then(onSettled, onSettled)
+
+  return {
+    onWindowAllClosed(): void {
+      if (deps.platform === 'darwin') return
+      if (!recoverySettled) {
+        checkWindowsAfterRecovery = true
+        return
+      }
+      deps.quit()
+    },
+    onBeforeQuit(event: { preventDefault(): void }): void {
+      if (!recoverySettled) {
+        event.preventDefault()
+        quitAfterRecovery = true
+      }
+    }
+  }
+}
+
 /**
  * openWeb for the context: only the url that safeWebLink gives back reaches the opener. A refused address, a check
  * that throws, no opener, or an opener that fails all answer 'refused'.
@@ -209,14 +254,14 @@ export function createContext(input: CreateContextInput): AppContext {
     runAction: counted((plan: ActionPlan, onProgress?: OnProgress) => runAction(safetyDeps, plan, onProgress)),
     undo: counted((entryId: string, onProgress?: OnProgress) => undo(safetyDeps, entryId, onProgress)),
     listJournal: counted(() => listJournal(safetyDeps)),
-    recover: counted(() => recover(safetyDeps)),
+    recover: counted((onProgress?: OnProgress) => recover(safetyDeps, onProgress)),
     // PR 14, unit E: becomes closeUndo(safetyDeps, entryId) from ./safety/index.ts
     closeUndo: counted(async (_entryId: string): Promise<void> => {
       throw new Error('not implemented: closeUndo')
     })
   }
 
-  const startupRecovery = onceRecovery(() => safety.recover())
+  const startupRecovery = onceRecovery(() => safety.recover(emit))
 
   const fixDeps: FixDeps = {
     safety,

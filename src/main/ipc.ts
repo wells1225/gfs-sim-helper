@@ -103,12 +103,161 @@ export const CHANGING_CHANNELS = {
   'share:find-send': false
 } as const satisfies Record<keyof IpcInvoke, boolean>
 
-function sanitizeIpcError(err: unknown, redact?: (text: string) => string): Error {
-  if (err && typeof err === 'object' && 'path' in err && typeof (err as { path?: unknown }).path === 'string') {
+const ERRNO_PREFIX = /^([A-Z][A-Z0-9_]{1,30}):(?:\s|$)/
+
+const FS_SYSCALLS = new Set(
+  (
+    'open read write stat lstat fstat statfs scandir readdir mkdir rmdir unlink rename copyfile ' +
+    'realpath readlink chmod chown access rm link symlink mkdtemp truncate utime futime close fsync'
+  ).split(' ')
+)
+
+const FS_ERRNO_CODES = new Set(
+  (
+    'ENOENT EACCES EPERM EBUSY EEXIST EISDIR ENOTDIR ENOTEMPTY ENOSPC ' +
+    'EMFILE ENFILE EROFS EXDEV ENAMETOOLONG ELOOP EIO EBADF EFBIG'
+  ).split(' ')
+)
+
+const NETWORK_ERRNO_CODES = new Set(
+  (
+    'ECONNRESET ECONNREFUSED ECONNABORTED EPIPE ETIMEDOUT ' +
+    'EHOSTUNREACH ENETUNREACH ENOTFOUND EAI_AGAIN ERR_SOCKET_CLOSED'
+  ).split(' ')
+)
+
+const WIN_DRIVE_OR_DEVICE_PATH = /(?:^|[\s'"`()[\]{}=,:;])(?:\\{2,}[?.][\\/]|(?:\\+[?.]\\+)?[A-Za-z]:[\\/])/
+const WIN_UNC_PATH = /(?:^|[\s'"`()[\]{}=,:;])\\{2,}(?:<user>|[^\s\\/:*?"'`<>|])+\\+(?:<user>|[^\s\\/:*?"'`<>|])/
+const POSIX_UNC_PATH = /(?:^|[\s'"`()[\]{}=,;])\/\/(?:<user>|[^\s\\/:*?"'`<>|])+\/(?:<user>|[^\s\\/:*?"'`<>|])/
+const FILE_URL_PATH = /(?:^|[\s'"`()[\]{}=,:;])file:\//i
+const ENV_OR_HOME_PATH =
+  /(?:^|[\s'"`()[\]{}=,:;])(?:(?:~|%[A-Za-z_][A-Za-z0-9_()]*%|\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|(?:env:)?[A-Za-z_][A-Za-z0-9_]*))[\\/]|\.\.?[\\/](?:<user>|[A-Za-z0-9_.-]))/i
+const WEB_URL =
+  /https?:\/\/(?:<user>|[^\s'"`()<>[\]{},;:/])+(?::\d{1,5})?(?:\/(?:<user>|;(?![\\/])|[^\s'"`()<>[\]{},;:])*)?/gi
+
+const UNIX_START_BOUNDARY = /[\s'"`()[\]{}=,:;]/
+const UNIX_SEG_STOP = /[\s\\/:*?"'`<>|()[\]{},;!]/
+const UNIX_EXT = /^[A-Za-z][A-Za-z0-9]{0,11}$/
+const KNOWN_UNIX_ROOTS = new Set(
+  (
+    'Users Volumes Applications Library System private home root etc var tmp opt usr bin sbin ' +
+    'dev proc sys run mnt media srv nix snap fake sims'
+  ).split(' ')
+)
+
+function isTrailingPunct(ch: string): boolean {
+  return ch === '.' || ch === ',' || ch === ';' || ch === ':' || ch === '!' || ch === '?'
+}
+
+function hasUnixAbsPath(text: string): boolean {
+  let i = 0
+  while (i < text.length) {
+    if (text[i] === '/' && text[i + 1] !== '/' && (i === 0 || UNIX_START_BOUNDARY.test(text[i - 1]!))) {
+      let j = i + 1
+      while (j < text.length) {
+        if (text.startsWith('<user>', j)) {
+          j += 6
+          continue
+        }
+        if (UNIX_SEG_STOP.test(text[j]!)) break
+        j += 1
+      }
+      if (j === i + 1) {
+        i = j
+        continue
+      }
+      if (
+        text[j] === '/' &&
+        j + 1 < text.length &&
+        text[j + 1] !== '/' &&
+        (text.startsWith('<user>', j + 1) || !UNIX_SEG_STOP.test(text[j + 1]!))
+      ) {
+        return true
+      }
+      let end = j
+      while (end > i + 1 && isTrailingPunct(text[end - 1]!)) {
+        end -= 1
+      }
+      if (end > i + 1) {
+        const cleanSeg1 = text.slice(i + 1, end)
+        if (KNOWN_UNIX_ROOTS.has(cleanSeg1) || cleanSeg1 === '<user>') {
+          return true
+        }
+        const lastDot = cleanSeg1.lastIndexOf('.')
+        const minDot = cleanSeg1.startsWith('.') ? 2 : 1
+        const extLen = cleanSeg1.length - lastDot - 1
+        if (lastDot >= minDot && extLen >= 1 && extLen <= 12 && UNIX_EXT.test(cleanSeg1.slice(lastDot + 1))) {
+          return true
+        }
+      }
+      i = j
+      continue
+    }
+    i += 1
+  }
+  return false
+}
+
+function containsFilePath(text: string): boolean {
+  if (
+    WIN_DRIVE_OR_DEVICE_PATH.test(text) ||
+    WIN_UNC_PATH.test(text) ||
+    POSIX_UNC_PATH.test(text) ||
+    FILE_URL_PATH.test(text) ||
+    ENV_OR_HOME_PATH.test(text)
+  ) {
+    return true
+  }
+  const withoutWebUrls = text.replace(WEB_URL, ' ')
+  return hasUnixAbsPath(withoutWebUrls)
+}
+
+function isPathValue(value: unknown): boolean {
+  return typeof value === 'string' || value instanceof Uint8Array || Buffer.isBuffer(value) || value instanceof URL
+}
+
+function isFsErrnoCode(code: string): boolean {
+  return FS_ERRNO_CODES.has(code) || code.startsWith('ERR_FS_')
+}
+
+function errorText(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (typeof err === 'string') return err
+  if (err && typeof err === 'object') {
+    const message = (err as { message?: unknown }).message
+    if (typeof message === 'string') return message
+  }
+  return 'Something went wrong'
+}
+
+function isFileSystemError(err: unknown, raw: string): boolean {
+  if (err && typeof err === 'object') {
+    const candidate = err as { path?: unknown; dest?: unknown; syscall?: unknown; code?: unknown }
+    if (isPathValue(candidate.path) || isPathValue(candidate.dest)) return true
+    const code = typeof candidate.code === 'string' ? candidate.code.toUpperCase() : undefined
+    if (typeof candidate.syscall === 'string') {
+      if (!FS_SYSCALLS.has(candidate.syscall.toLowerCase())) return false
+      return code === undefined || !NETWORK_ERRNO_CODES.has(code)
+    }
+    if (code !== undefined) {
+      if (NETWORK_ERRNO_CODES.has(code)) return false
+      if (isFsErrnoCode(code)) return true
+    }
+  }
+  const match = ERRNO_PREFIX.exec(raw)
+  return match !== null && isFsErrnoCode(match[1]!)
+}
+
+export function sanitizeIpcError(err: unknown, redact?: (text: string) => string): Error {
+  const raw = errorText(err)
+  if (isFileSystemError(err, raw)) {
     return new Error('A file operation failed')
   }
-  const raw = err instanceof Error ? err.message : String(err)
-  return new Error(redact ? redact(raw) : raw)
+  const redacted = redact ? redact(raw) : raw
+  if (containsFilePath(raw) || (redacted !== raw && containsFilePath(redacted))) {
+    return new Error('A file operation failed')
+  }
+  return new Error(redacted)
 }
 
 /** `handlers` is for tests; the app registers collectHandlers(ctx). */

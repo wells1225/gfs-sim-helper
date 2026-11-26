@@ -127,7 +127,7 @@ export interface Safety {
   runAction(plan: ActionPlan, onProgress?: OnProgress): Promise<FixOutcome>
   undo(entryId: string, onProgress?: OnProgress): Promise<FixOutcome>
   listJournal(): Promise<JournalEntry[]> // newest first
-  recover(): Promise<JournalEntry[]> // finishes or undoes interrupted entries; returns the ones it touched
+  recover(onProgress?: OnProgress): Promise<JournalEntry[]> // finishes or undoes interrupted entries; returns the ones it touched
   closeUndo(entryId: string): Promise<void> // PR 14: a done entry becomes 'cannot-undo'; an unknown id or a second call does nothing
 }
 

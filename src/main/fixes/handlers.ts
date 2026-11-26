@@ -95,6 +95,7 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
 
   return {
     async 'backup:status'() {
+      await recovery()
       const folderPath = ctx.session.scan?.folder.path ?? (await readSavedFolderPath(ctx.paths.stateDir))
       if (!folderPath) {
         return { state: 'none' }
