@@ -84,12 +84,19 @@ async function undoAllInHistory(page: Page, expectedCount: number): Promise<void
 }
 
 async function waitForDummyProcessInTasklist(proc: ChildProcess, timeoutMs = 5_000): Promise<void> {
+  if (proc.pid === undefined) {
+    throw new Error('Dummy TS4_x64.exe spawned without a PID')
+  }
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     if (proc.exitCode !== null) {
       throw new Error(`Dummy TS4_x64.exe exited early with code ${proc.exitCode}`)
     }
-    const { stdout } = await execFileAsync('tasklist', ['/fo', 'csv', '/nh'], { windowsHide: true })
+    const { stdout } = await execFileAsync(
+      'tasklist',
+      ['/fi', `PID eq ${proc.pid}`, '/fo', 'csv', '/nh'],
+      { windowsHide: true }
+    )
     if (stdout.toLowerCase().includes('"ts4_x64.exe"')) {
       return
     }
@@ -169,12 +176,22 @@ test.describe('live fixes with undo on Windows', () => {
       await runCheckUp(running.page)
 
       const setAsideButtons = running.page.locator('main').getByRole('button', { name: 'Set aside' })
+      const doneUndoButtons = running.page.locator('main').getByRole('button', { name: 'Undo' })
       await expect(setAsideButtons).toHaveCount(3)
 
-      for (let remaining = 3; remaining > 0; remaining -= 1) {
+      for (let completed = 1; completed <= 3; completed += 1) {
         await setAsideButtons.first().click()
-        await expect(setAsideButtons).toHaveCount(remaining - 1, { timeout: 30_000 })
+        await expect(doneUndoButtons).toHaveCount(completed, { timeout: 30_000 })
       }
+      await expect(
+        running.page.locator('main').getByText('Set aside 2 zipped files from Mods', { exact: true })
+      ).toBeVisible()
+      await expect(
+        running.page.locator('main').getByText('Set aside 3 broken files from Mods', { exact: true })
+      ).toBeVisible()
+      await expect(
+        running.page.locator('main').getByText('Set aside 1 wrong-game package from Mods', { exact: true })
+      ).toBeVisible()
 
       const afterFix = await snapshotTree(simsDir)
       const relPaths = afterFix.files.map((f) => f.relPath)
@@ -236,7 +253,7 @@ test.describe('live fixes with undo on Windows', () => {
 
     try {
       await copyFile(join(systemRoot, 'System32', 'cmd.exe'), fakeExe)
-      proc = spawn(fakeExe, ['/c', 'ping', '-n', '60', '127.0.0.1'], {
+      proc = spawn(fakeExe, ['/c', 'ping', '-n', '300', '127.0.0.1'], {
         windowsHide: true,
         stdio: 'ignore'
       })
