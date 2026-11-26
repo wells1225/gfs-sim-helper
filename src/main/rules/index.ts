@@ -1,12 +1,9 @@
-import type { Finding, FolderFacts, GameInstall, Scan } from '../../shared/model.ts'
+import type { Finding, Scan } from '../../shared/model.ts'
+import { runAllRules } from './rules.ts'
 
-export async function readFolderFacts(_input: {
-  folderPath: string
-  game: GameInstall | null
-}): Promise<FolderFacts> {
-  throw new Error('not implemented: readFolderFacts')
-}
+export { readFolderFacts } from './facts.ts'
 
-export function runRules(_scan: Omit<Scan, 'findings'>): Finding[] {
-  throw new Error('not implemented: runRules')
+/** Pure: the findings for a scan, sorted stop, warn, info, then rule order. */
+export function runRules(scan: Omit<Scan, 'findings'>): Finding[] {
+  return runAllRules(scan)
 }
