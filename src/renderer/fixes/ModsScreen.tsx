@@ -1,7 +1,7 @@
-import { AlertTriangle, Code2, Info, Package, Search, ShieldAlert, Sparkles } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronRight, Code2, Info, Package, Search, ShieldAlert, Sparkles } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import type { DisabledGroup, FixRefusal, JournalEntry, ModGroup, Progress } from '../../shared/model.ts'
+import type { DisabledGroup, FixRefusal, IsoTime, JournalEntry, ModFile, ModGroup, Progress } from '../../shared/model.ts'
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert.tsx'
 import { Badge } from '../components/ui/badge.tsx'
 import { Button } from '../components/ui/button.tsx'
@@ -11,6 +11,7 @@ import { Progress as ProgressBar } from '../components/ui/progress.tsx'
 import { Switch } from '../components/ui/switch.tsx'
 import { useNav } from '../nav.tsx'
 import { useSession } from '../session.tsx'
+import { FILE_LIST_CAP, applyModsView, summarizeMods, type ModsFilter, type ModsSort } from './mods-filter.ts'
 import { useOptionalApi } from './optional-api.ts'
 import {
   LOAD_FAILED_COPY,
@@ -33,11 +34,41 @@ interface ModListItem {
   disabledEntry: DisabledGroup | null
   /** A set-aside or put-back of this mod stopped partway: History sorts it out, so there is no switch. */
   needsAttention: boolean
+  /** The group's files from the check-up. Empty for a row known only from History. */
+  files: ModFile[]
 }
 
 function sameFolder(a: string, b: string): boolean {
   const norm = (p: string) => p.replaceAll('\\', '/').replace(/\/+$/, '').toLowerCase()
   return norm(a) === norm(b)
+}
+
+const FILTER_LABELS: Record<ModsFilter, string> = {
+  all: 'All',
+  scripts: 'Script mods',
+  'older-than-update': 'Older than game update',
+  'set-aside': 'Set aside'
+}
+
+const SORT_LABELS: Record<ModsSort, string> = {
+  name: 'Name (A-Z)',
+  largest: 'Largest first',
+  oldest: 'Oldest first'
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${count.toLocaleString()} ${count === 1 ? one : many}`
+}
+
+function formatFileDate(iso: IsoTime): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date)
+}
+
+/** A safe piece of an element id: group ids hold colons, slashes and spaces. */
+function idPart(groupId: string): string {
+  return groupId.replace(/[^a-zA-Z0-9_-]/g, '_')
 }
 
 export function ModsScreen() {
@@ -51,6 +82,9 @@ export function ModsScreen() {
   const [loading, setLoading] = useState(true)
   const [loadFailed, setLoadFailed] = useState(false)
   const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<ModsFilter>('all')
+  const [sort, setSort] = useState<ModsSort>('name')
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set())
   const [busyGroupId, setBusyGroupId] = useState<string | null>(null)
   const [progress, setProgress] = useState<Progress | null>(null)
   const [refusalState, setRefusalState] = useState<{
@@ -142,6 +176,12 @@ export function ModsScreen() {
     const seen = new Set<string>()
 
     if (scan) {
+      const filesByGroup = new Map<string, ModFile[]>()
+      for (const file of scan.inventory.files) {
+        const list = filesByGroup.get(file.groupId)
+        if (list) list.push(file)
+        else filesByGroup.set(file.groupId, [file])
+      }
       for (const group of scan.inventory.groups) {
         seen.add(group.id)
         const disabledEntry = disabledById.get(group.id) ?? null
@@ -154,7 +194,8 @@ export function ModsScreen() {
           fileCount: group.files.length,
           bytes: group.bytes,
           disabledEntry,
-          needsAttention: stuckById.has(group.id)
+          needsAttention: stuckById.has(group.id),
+          files: filesByGroup.get(group.id) ?? []
         })
       }
     }
@@ -170,7 +211,8 @@ export function ModsScreen() {
         fileCount: null,
         bytes: null,
         disabledEntry: entry,
-        needsAttention: stuckById.has(entry.groupId)
+        needsAttention: stuckById.has(entry.groupId),
+        files: []
       })
       seen.add(entry.groupId)
     }
@@ -186,21 +228,34 @@ export function ModsScreen() {
         fileCount: null,
         bytes: null,
         disabledEntry: null,
-        needsAttention: true
+        needsAttention: true,
+        files: []
       })
     }
 
-    return combined.sort((a, b) => {
-      if (a.hasScript !== b.hasScript) return a.hasScript ? -1 : 1
-      return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
-    })
+    return combined
   }, [disabled, scan, groupEntries])
 
-  const filtered = useMemo(() => {
-    const trimmed = query.trim().toLowerCase()
-    if (!trimmed) return items
-    return items.filter((item) => item.label.toLowerCase().includes(trimmed))
-  }, [items, query])
+  const gameUpdatedAt = scan?.facts.gameUpdatedAt ?? null
+  // The update filter is only offered when the update date is known; a filter that went away falls back to All.
+  const activeFilter: ModsFilter = filter === 'older-than-update' && gameUpdatedAt === null ? 'all' : filter
+  const filterChoices: ModsFilter[] =
+    gameUpdatedAt === null ? ['all', 'scripts', 'set-aside'] : ['all', 'scripts', 'older-than-update', 'set-aside']
+
+  const rows = useMemo(
+    () => applyModsView(items, { query, filter: activeFilter, sort, gameUpdatedAt }),
+    [items, query, activeFilter, sort, gameUpdatedAt]
+  )
+  const summary = useMemo(() => summarizeMods(items), [items])
+
+  const toggleFiles = useCallback((groupId: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(groupId)) next.delete(groupId)
+      else next.add(groupId)
+      return next
+    })
+  }, [])
 
   const activeCount = items.filter((i) => i.enabled).length
   const setAsideCount = items.filter((i) => !i.enabled).length
@@ -459,19 +514,61 @@ export function ModsScreen() {
       )}
 
       {items.length > 0 && (
-        <div className="relative">
-          <Search
-            className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
-            aria-hidden="true"
-          />
-          <Input
-            type="search"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search your mods…"
-            aria-label="Search your mods"
-            className="pl-9"
-          />
+        <div className="flex flex-col gap-3">
+          <p className="text-sm text-muted-foreground tabular-nums">
+            {[
+              plural(summary.groups, 'mod', 'mods'),
+              plural(summary.scripts, 'script mod', 'script mods'),
+              ...(scan ? [formatBytes(summary.bytes)] : []),
+              `${summary.setAside.toLocaleString()} set aside`
+            ].join(' · ')}
+          </p>
+
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <Input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search your mods or paste a file name…"
+              aria-label="Search your mods"
+              className="pl-9"
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div role="group" aria-label="Show" className="flex flex-wrap items-center gap-1.5">
+              {filterChoices.map((choice) => (
+                <Button
+                  key={choice}
+                  variant={activeFilter === choice ? 'secondary' : 'ghost'}
+                  size="sm"
+                  aria-pressed={activeFilter === choice}
+                  onClick={() => setFilter(choice)}
+                >
+                  {FILTER_LABELS[choice]}
+                </Button>
+              ))}
+            </div>
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              <span>Sort by</span>
+              <select
+                aria-label="Sort your mods"
+                value={sort}
+                onChange={(e) => setSort(e.target.value as ModsSort)}
+                className="h-8 rounded-md border border-border bg-card px-2 text-sm text-foreground shadow-xs"
+              >
+                {(Object.keys(SORT_LABELS) as ModsSort[]).map((choice) => (
+                  <option key={choice} value={choice}>
+                    {SORT_LABELS[choice]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
       )}
 
@@ -493,7 +590,7 @@ export function ModsScreen() {
         <p className="text-sm text-muted-foreground">No mods are currently set aside.</p>
       )}
 
-      {filtered.length > 0 && (
+      {rows.length > 0 && (
         <section
           aria-label={!scan ? 'Mods currently set aside' : 'Installed and set-aside mods'}
           className="flex flex-col gap-2.5"
@@ -504,8 +601,10 @@ export function ModsScreen() {
             </h2>
           )}
 
-          {filtered.map((item) => {
+          {rows.map(({ item, matchedFile }) => {
             const isBusy = busyGroupId === item.groupId
+            const isOpen = expanded.has(item.groupId)
+            const listId = `mods-files-${idPart(item.groupId)}`
             return (
               <Card key={item.groupId} className="gap-0 px-4 py-3.5">
                 <div className="flex items-center justify-between gap-4">
@@ -545,6 +644,10 @@ export function ModsScreen() {
                         )
                       )}
                     </div>
+
+                    {matchedFile !== null && (
+                      <p className="text-sm text-muted-foreground">Matched file: {matchedFile}</p>
+                    )}
                   </div>
 
                   {item.needsAttention ? (
@@ -575,15 +678,56 @@ export function ModsScreen() {
                     />
                   )}
                 </div>
+
+                {item.files.length > 0 && (
+                  <div className="mt-2 flex flex-col gap-1.5">
+                    <div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="-ml-2 text-muted-foreground"
+                        aria-expanded={isOpen}
+                        aria-controls={listId}
+                        aria-label={`Files (${item.files.length.toLocaleString()}) in ${item.label}`}
+                        onClick={() => toggleFiles(item.groupId)}
+                      >
+                        {isOpen ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+                        Files ({item.files.length.toLocaleString()})
+                      </Button>
+                    </div>
+                    {isOpen && (
+                      <div id={listId} className="flex flex-col gap-1 pl-6">
+                        <ul aria-label={`Files in ${item.label}`} className="flex flex-col gap-1">
+                          {item.files.slice(0, FILE_LIST_CAP).map((file) => (
+                            <li
+                              key={file.relPath}
+                              className="flex flex-wrap items-baseline justify-between gap-x-3 text-sm"
+                            >
+                              <span className="min-w-0 break-all text-foreground">{file.relPath}</span>
+                              <span className="shrink-0 text-muted-foreground tabular-nums">
+                                {`${formatBytes(file.bytes)} · ${formatFileDate(file.modifiedAt)}`}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                        {item.files.length > FILE_LIST_CAP && (
+                          <p className="text-sm text-muted-foreground">
+                            and {(item.files.length - FILE_LIST_CAP).toLocaleString()} more
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </Card>
             )
           })}
         </section>
       )}
 
-      {items.length > 0 && filtered.length === 0 && (
+      {items.length > 0 && rows.length === 0 && (
         <p className="py-4 text-center text-sm text-muted-foreground">
-          No mods match “{query.trim()}”.
+          {query.trim() ? `No mods match “${query.trim()}”.` : 'No mods match this filter.'}
         </p>
       )}
     </main>
