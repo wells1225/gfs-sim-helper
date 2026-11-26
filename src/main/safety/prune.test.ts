@@ -6,12 +6,14 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { generateFixture, loadSpec } from '../../../scripts/fixtures/make-fixture.ts'
 import { sampleJournalEntry } from '../../shared/testing/sample.ts'
-import { sha256File } from '../fs-read.ts'
+import { openForRead, sha256File } from '../fs-read.ts'
+import type { ReadOnlyFile } from '../fs-read.ts'
 import { tracked } from './backup.ts'
 import { backupStatus, backupSummary, createBackup, pruneBackups, runAction, undo } from './index.ts'
 import { oneAtATime } from './lock.ts'
 import { manifestFile, manifestJson, newestVerified, readManifest } from './manifest.ts'
 import type { Manifest } from './manifest.ts'
+import { canReadFilePayload, pruneBackupsNow, readBackupSummary, storedCopiesHashIntact } from './prune.ts'
 import { makeWorkspace, pathExists } from './testing/harness.ts'
 import type { Workspace, WorkspaceTools } from './testing/harness.ts'
 import { makeTestGate } from './testing/test-gate.ts'
@@ -436,81 +438,101 @@ describe('backupSummary and pruneBackups', () => {
     expect(await pathExists(join(ws.paths.holdingDir, 'orphan-empty'))).toBe(true)
   })
 
-  it('fails closed (canPrune: false, refused unsafe-state, 0 gate ops) on corrupt files, temp files, or symlinks', async () => {
-    const cases: { name: string; plant: (ws: Workspace, b1Id: string) => Promise<void> }[] = [
-      {
-        name: 'unreadable/corrupt journal .json',
-        plant: async (ws) => {
-          await mkdir(ws.paths.journalDir, { recursive: true })
-          await writeFile(join(ws.paths.journalDir, '20261124-120099-badj.json'), '{not-valid-json')
-        }
-      },
-      {
-        name: 'non-.json file in journalDir',
-        plant: async (ws) => {
-          await mkdir(ws.paths.journalDir, { recursive: true })
-          await writeFile(join(ws.paths.journalDir, 'notes.txt'), 'unexpected')
-        }
-      },
-      {
-        name: '.sims-helper-tmp file in journalDir',
-        plant: async (ws) => {
-          await mkdir(ws.paths.journalDir, { recursive: true })
-          await writeFile(join(ws.paths.journalDir, 'e1.json.a1b2c3.sims-helper-tmp'), '{}')
-        }
-      },
-      {
-        name: '.sims-helper-tmp file in backupsDir',
-        plant: async (ws, b1Id) => {
-          await writeFile(join(ws.paths.backupsDir, b1Id, 'manifest.json.a1b2c3.sims-helper-tmp'), '{}')
-        }
-      },
-      {
-        name: 'corrupt manifest.json in backupsDir',
-        plant: async (ws, b1Id) => {
-          await writeFile(manifestFile(ws.paths.backupsDir, b1Id), '{corrupt-manifest')
-        }
+  const unsafeStateCases: { name: string; plant: (ws: Workspace, b1Id: string) => Promise<void> }[] = [
+    {
+      name: 'unreadable/corrupt journal .json',
+      plant: async (ws) => {
+        await mkdir(ws.paths.journalDir, { recursive: true })
+        await writeFile(join(ws.paths.journalDir, '20261124-120099-badj.json'), '{not-valid-json')
       }
-    ]
-
-    if (process.platform !== 'win32') {
-      cases.push(
-        {
-          name: 'symlink inside backupsDir',
-          plant: async (ws) => {
-            await symlink(ws.mods, join(ws.paths.backupsDir, '20261124-000001-link'))
-          }
-        },
-        {
-          name: 'symlink inside Donor/files/',
-          plant: async (ws, b1Id) => {
-            await symlink(
-              join(ws.mods, 'Options.ini'),
-              join(ws.paths.backupsDir, b1Id, 'files', 'Mods', 'sneaky-link.package')
-            )
-          }
-        }
-      )
+    },
+    {
+      name: 'non-.json file in journalDir',
+      plant: async (ws) => {
+        await mkdir(ws.paths.journalDir, { recursive: true })
+        await writeFile(join(ws.paths.journalDir, 'notes.txt'), 'unexpected')
+      }
+    },
+    {
+      name: '.sims-helper-tmp file in journalDir',
+      plant: async (ws) => {
+        await mkdir(ws.paths.journalDir, { recursive: true })
+        await writeFile(join(ws.paths.journalDir, 'e1.json.a1b2c3.sims-helper-tmp'), '{}')
+      }
+    },
+    {
+      name: '.sims-helper-tmp file in backupsDir',
+      plant: async (ws, b1Id) => {
+        await writeFile(join(ws.paths.backupsDir, b1Id, 'manifest.json.a1b2c3.sims-helper-tmp'), '{}')
+      }
+    },
+    {
+      name: 'corrupt manifest.json in backupsDir',
+      plant: async (ws, b1Id) => {
+        await writeFile(manifestFile(ws.paths.backupsDir, b1Id), '{corrupt-manifest')
+      }
     }
+  ]
 
-    for (const c of cases) {
+  it.each(unsafeStateCases)(
+    'fails closed (canPrune: false, refused unsafe-state, 0 gate ops) on $name',
+    async ({ plant }) => {
       const ws = await makeWorkspace(TOOLS)
       const b1 = await makeVerifiedBackup(ws, 'p.package', '1')
       await makeVerifiedBackup(ws, 'p.package', '2')
       await makeVerifiedBackup(ws, 'p.package', '3')
 
-      await c.plant(ws, b1.id)
+      await plant(ws, b1.id)
       const mark = ws.gate.requests.length
 
       const summary = await backupSummary(ws.deps, ws.simsFolder)
-      expect(summary.canPrune, c.name).toBe(false)
-      expect(ws.gate.requests.length, `${c.name} summary gate ops`).toBe(mark)
+      expect(summary.canPrune).toBe(false)
+      expect(ws.gate.requests.length).toBe(mark)
 
       const res = await pruneBackups(ws.deps, ws.simsFolder)
-      expect(res, c.name).toEqual({ status: 'refused', why: 'unsafe-state' })
-      expect(ws.gate.requests.length, `${c.name} prune gate ops`).toBe(mark)
+      expect(res).toEqual({ status: 'refused', why: 'unsafe-state' })
+      expect(ws.gate.requests.length).toBe(mark)
     }
-  })
+  )
+
+  const unsafeSymlinkCases: { name: string; plant: (ws: Workspace, b1Id: string) => Promise<void> }[] = [
+    {
+      name: 'symlink inside backupsDir',
+      plant: async (ws) => {
+        await symlink(ws.mods, join(ws.paths.backupsDir, '20261124-000001-link'))
+      }
+    },
+    {
+      name: 'symlink inside Donor/files/',
+      plant: async (ws, b1Id) => {
+        await symlink(
+          join(ws.simsFolder, 'Options.ini'),
+          join(ws.paths.backupsDir, b1Id, 'files', 'Mods', 'sneaky-link.package')
+        )
+      }
+    }
+  ]
+
+  it.skipIf(process.platform === 'win32').each(unsafeSymlinkCases)(
+    'fails closed (canPrune: false, refused unsafe-state, 0 gate ops) on $name',
+    async ({ plant }) => {
+      const ws = await makeWorkspace(TOOLS)
+      const b1 = await makeVerifiedBackup(ws, 'p.package', '1')
+      await makeVerifiedBackup(ws, 'p.package', '2')
+      await makeVerifiedBackup(ws, 'p.package', '3')
+
+      await plant(ws, b1.id)
+      const mark = ws.gate.requests.length
+
+      const summary = await backupSummary(ws.deps, ws.simsFolder)
+      expect(summary.canPrune).toBe(false)
+      expect(ws.gate.requests.length).toBe(mark)
+
+      const res = await pruneBackups(ws.deps, ws.simsFolder)
+      expect(res).toEqual({ status: 'refused', why: 'unsafe-state' })
+      expect(ws.gate.requests.length).toBe(mark)
+    }
+  )
 
   it('enforces strict Phase-1-before-Phase-2 ordering so a failed Phase 1 never touches files and a failed Phase 2 leaves zero half-pruned verified manifests', async () => {
     // 1. Fail Phase 1 -> Phase 2 never runs at all
@@ -731,109 +753,332 @@ describe('backupSummary and pruneBackups', () => {
     expect(await pruneBackups(ws.deps, ws.simsFolder)).toEqual({ status: 'refused', why: 'unsafe-state' })
   })
 
-  it('rejects backslash, drive-letter, invalid record.at, and count/byte mismatches in manifests, plus malformed journal entries (preserving backup counts)', async () => {
-    const manifestMutations: { name: string; mutate: (m: Manifest) => unknown }[] = [
-      {
-        name: 'backslash in manifest file path',
-        mutate: (m) => ({
-          ...m,
-          files: m.files.map((f, i) => (i === 0 ? { ...f, path: 'Mods\\evil.package' } : f))
-        })
-      },
-      {
-        name: 'drive-letter colon in manifest file path',
-        mutate: (m) => ({
-          ...m,
-          files: m.files.map((f, i) => (i === 0 ? { ...f, path: 'C:/Windows/win.ini' } : f))
-        })
-      },
-      {
-        name: 'non-ISO or OS path in record.at',
-        mutate: (m) => ({
-          ...m,
-          record: { ...m.record, at: 'C:\\Users\\Lila\\secret' }
-        })
-      },
-      {
-        name: 'verified manifest files count mismatch',
-        mutate: (m) => ({
-          ...m,
-          record: { ...m.record, files: m.files.length + 1 }
-        })
-      },
-      {
-        name: 'verified manifest bytes total mismatch',
-        mutate: (m) => ({
-          ...m,
-          record: { ...m.record, bytes: m.record.bytes + 10 }
-        })
-      }
-    ]
-
-    for (const c of manifestMutations) {
-      const ws = await makeWorkspace(TOOLS)
-      const b1 = await makeVerifiedBackup(ws, 'm.package', '1')
-      await makeVerifiedBackup(ws, 'm.package', '2')
-      await makeVerifiedBackup(ws, 'm.package', '3')
-
-      const orig = await readManifest(ws.paths.backupsDir, b1.id)
-      if (!orig) throw new Error('missing orig')
-      await writeFile(manifestFile(ws.paths.backupsDir, b1.id), JSON.stringify(c.mutate(orig)))
-
-      const mark = ws.gate.requests.length
-      expect((await backupSummary(ws.deps, ws.simsFolder)).canPrune, c.name).toBe(false)
-      expect(await pruneBackups(ws.deps, ws.simsFolder), c.name).toEqual({ status: 'refused', why: 'unsafe-state' })
-      expect(ws.gate.requests.length, c.name).toBe(mark)
+  const manifestMutations: { name: string; mutate: (m: Manifest) => unknown }[] = [
+    {
+      name: 'backslash in manifest file path',
+      mutate: (m) => ({
+        ...m,
+        files: m.files.map((f, i) => (i === 0 ? { ...f, path: 'Mods\\evil.package' } : f))
+      })
+    },
+    {
+      name: 'drive-letter colon in manifest file path',
+      mutate: (m) => ({
+        ...m,
+        files: m.files.map((f, i) => (i === 0 ? { ...f, path: 'C:/Windows/win.ini' } : f))
+      })
+    },
+    {
+      name: 'non-ISO or OS path in record.at',
+      mutate: (m) => ({
+        ...m,
+        record: { ...m.record, at: 'C:\\Users\\Lila\\secret' }
+      })
+    },
+    {
+      name: 'verified manifest files count mismatch',
+      mutate: (m) => ({
+        ...m,
+        record: { ...m.record, files: m.files.length + 1 }
+      })
+    },
+    {
+      name: 'verified manifest bytes total mismatch',
+      mutate: (m) => ({
+        ...m,
+        record: { ...m.record, bytes: m.record.bytes + 10 }
+      })
     }
+  ]
 
-    const journalMutations: { name: string; entry: Record<string, unknown> }[] = [
-      { name: 'invalid status', entry: { ...sampleJournalEntry({ id: 'e-bad' }), status: 'bogus' } },
-      { name: 'invalid undo', entry: { ...sampleJournalEntry({ id: 'e-bad' }), undo: 'maybe' } },
-      { name: 'empty string backupId', entry: { ...sampleJournalEntry({ id: 'e-bad' }), backupId: '' } },
-      { name: 'non-object step', entry: { ...sampleJournalEntry({ id: 'e-bad' }), steps: [null] } },
-      {
-        name: 'relative move path',
-        entry: {
-          ...sampleJournalEntry({ id: 'e-bad' }),
-          steps: [{ kind: 'move', from: 'Mods/rel.package', to: '/abs/to', bytes: 5, sha256: 'a'.repeat(64), state: 'applied' }]
-        }
-      },
-      {
-        name: 'negative move bytes',
-        entry: {
-          ...sampleJournalEntry({ id: 'e-bad' }),
-          steps: [{ kind: 'move', from: '/abs/from', to: '/abs/to', bytes: -1, sha256: 'a'.repeat(64), state: 'applied' }]
-        }
-      },
-      {
-        name: 'invalid step state',
-        entry: {
-          ...sampleJournalEntry({ id: 'e-bad' }),
-          steps: [{ kind: 'remove-cache', path: '/abs/cache', state: 'halfway' }]
-        }
-      }
-    ]
+  it.each(manifestMutations)('rejects malformed manifest: $name', async ({ mutate }) => {
+    const ws = await makeWorkspace(TOOLS)
+    const b1 = await makeVerifiedBackup(ws, 'm.package', '1')
+    await makeVerifiedBackup(ws, 'm.package', '2')
+    await makeVerifiedBackup(ws, 'm.package', '3')
 
-    for (const jm of journalMutations) {
+    const orig = await readManifest(ws.paths.backupsDir, b1.id)
+    if (!orig) throw new Error('missing orig')
+    await writeFile(manifestFile(ws.paths.backupsDir, b1.id), JSON.stringify(mutate(orig)))
+
+    const mark = ws.gate.requests.length
+    expect((await backupSummary(ws.deps, ws.simsFolder)).canPrune).toBe(false)
+    expect(await pruneBackups(ws.deps, ws.simsFolder)).toEqual({ status: 'refused', why: 'unsafe-state' })
+    expect(ws.gate.requests.length).toBe(mark)
+  })
+
+  function baseValidJournalEntry(ws: Workspace, id = 'e-bad') {
+    return sampleJournalEntry({
+      id,
+      folderPath: ws.simsFolder,
+      backupId: null,
+      steps: [
+        {
+          kind: 'move',
+          from: join(ws.mods, 'download.zip'),
+          to: join(ws.paths.holdingDir, id, 'Mods', 'download.zip'),
+          bytes: 65_536,
+          sha256: 'a'.repeat(64),
+          state: 'applied'
+        }
+      ]
+    })
+  }
+
+  const journalMutations: { name: string; build: (ws: Workspace) => Record<string, unknown> }[] = [
+    { name: 'invalid status', build: (ws) => ({ ...baseValidJournalEntry(ws), status: 'bogus' }) },
+    { name: 'invalid undo', build: (ws) => ({ ...baseValidJournalEntry(ws), undo: 'maybe' }) },
+    { name: 'empty string backupId', build: (ws) => ({ ...baseValidJournalEntry(ws), backupId: '' }) },
+    { name: 'non-object step', build: (ws) => ({ ...baseValidJournalEntry(ws), steps: [null] }) },
+    {
+      name: 'relative move path',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [
+          {
+            kind: 'move',
+            from: 'Mods/rel.package',
+            to: join(ws.paths.holdingDir, 'e-bad', 'Mods', 'rel.package'),
+            bytes: 5,
+            sha256: 'a'.repeat(64),
+            state: 'applied'
+          }
+        ]
+      })
+    },
+    {
+      name: 'negative move bytes',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [
+          {
+            kind: 'move',
+            from: join(ws.mods, 'a.package'),
+            to: join(ws.paths.holdingDir, 'e-bad', 'Mods', 'a.package'),
+            bytes: -1,
+            sha256: 'a'.repeat(64),
+            state: 'applied'
+          }
+        ]
+      })
+    },
+    {
+      name: 'invalid step state',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [{ kind: 'remove-cache', path: join(ws.simsFolder, 'localthumbcache.package'), state: 'halfway' }]
+      })
+    },
+    {
+      name: 'dot-dot segment in folderPath',
+      build: (ws) => ({ ...baseValidJournalEntry(ws), folderPath: `${ws.simsFolder}/../The Sims 4` })
+    },
+    {
+      name: 'dot segment in move.from',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [
+          {
+            kind: 'move',
+            from: `${ws.mods}/./a.package`,
+            to: join(ws.paths.holdingDir, 'e-bad', 'Mods', 'a.package'),
+            bytes: 5,
+            sha256: 'a'.repeat(64),
+            state: 'applied'
+          }
+        ]
+      })
+    },
+    {
+      name: 'dot-dot segment in move.from',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [
+          {
+            kind: 'move',
+            from: `${ws.mods}/../Saves/Slot_00000001.save`,
+            to: join(ws.paths.holdingDir, 'e-bad', 'Mods', 'a.package'),
+            bytes: 5,
+            sha256: 'a'.repeat(64),
+            state: 'applied'
+          }
+        ]
+      })
+    },
+    {
+      name: 'dot-dot backslash segment in move.from',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [
+          {
+            kind: 'move',
+            from: `${ws.mods}\\..\\Saves\\Slot_00000001.save`,
+            to: join(ws.paths.holdingDir, 'e-bad', 'Mods', 'a.package'),
+            bytes: 5,
+            sha256: 'a'.repeat(64),
+            state: 'applied'
+          }
+        ]
+      })
+    },
+    {
+      name: 'dot-dot segment in move.to',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [
+          {
+            kind: 'move',
+            from: join(ws.mods, 'a.package'),
+            to: `${ws.paths.holdingDir}/e-bad/../other/a.package`,
+            bytes: 5,
+            sha256: 'a'.repeat(64),
+            state: 'applied'
+          }
+        ]
+      })
+    },
+    {
+      name: 'dot-dot segment in edit.savedCopy',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [
+          {
+            kind: 'edit',
+            path: join(ws.simsFolder, 'Options.ini'),
+            savedCopy: `${ws.paths.holdingDir}/e-bad/../other/Options.ini`,
+            beforeSha256: 'a'.repeat(64),
+            afterSha256: 'b'.repeat(64),
+            state: 'applied'
+          }
+        ]
+      })
+    },
+    {
+      name: 'dot-dot segment in remove-cache.path',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [{ kind: 'remove-cache', path: `${ws.simsFolder}/Mods/../localthumbcache.package`, state: 'applied' }]
+      })
+    },
+    {
+      name: 'move.from inside holdingDir',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        status: 'undone',
+        undo: 'cannot-undo',
+        steps: [
+          {
+            kind: 'move',
+            from: join(ws.paths.holdingDir, 'e-bad', 'Mods', 'other.package'),
+            to: join(ws.paths.holdingDir, 'e-bad', 'Mods', 'held.package'),
+            bytes: 5,
+            sha256: 'a'.repeat(64),
+            state: 'reverted'
+          }
+        ]
+      })
+    },
+    {
+      name: 'move.from outside entry.folderPath',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [
+          {
+            kind: 'move',
+            from: join(ws.root, 'OutsideSims', 'a.package'),
+            to: join(ws.paths.holdingDir, 'e-bad', 'Mods', 'a.package'),
+            bytes: 5,
+            sha256: 'a'.repeat(64),
+            state: 'applied'
+          }
+        ]
+      })
+    },
+    {
+      name: 'move.to inside another entry holdingDir',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [
+          {
+            kind: 'move',
+            from: join(ws.mods, 'a.package'),
+            to: join(ws.paths.holdingDir, 'other-entry', 'Mods', 'a.package'),
+            bytes: 5,
+            sha256: 'a'.repeat(64),
+            state: 'applied'
+          }
+        ]
+      })
+    },
+    {
+      name: 'edit.path inside holdingDir',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [
+          {
+            kind: 'edit',
+            path: join(ws.paths.holdingDir, 'e-bad', 'Options.ini'),
+            savedCopy: join(ws.paths.holdingDir, 'e-bad', 'edits', 'Options.ini'),
+            beforeSha256: 'a'.repeat(64),
+            afterSha256: 'b'.repeat(64),
+            state: 'applied'
+          }
+        ]
+      })
+    },
+    {
+      name: 'edit.savedCopy inside another entry holdingDir',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [
+          {
+            kind: 'edit',
+            path: join(ws.simsFolder, 'Options.ini'),
+            savedCopy: join(ws.paths.holdingDir, 'other-entry', 'edits', 'Options.ini'),
+            beforeSha256: 'a'.repeat(64),
+            afterSha256: 'b'.repeat(64),
+            state: 'applied'
+          }
+        ]
+      })
+    },
+    {
+      name: 'remove-cache.path inside holdingDir',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [{ kind: 'remove-cache', path: join(ws.paths.holdingDir, 'e-bad', 'localthumbcache.package'), state: 'applied' }]
+      })
+    },
+    {
+      name: 'remove-cache.path outside entry.folderPath',
+      build: (ws) => ({
+        ...baseValidJournalEntry(ws),
+        steps: [{ kind: 'remove-cache', path: join(ws.root, 'OutsideSims', 'localthumbcache.package'), state: 'applied' }]
+      })
+    }
+  ]
+
+  it.each(journalMutations)(
+    'rejects malformed journal entry (preserving backup counts): $name',
+    async ({ build }) => {
       const ws = await makeWorkspace(TOOLS)
       await makeVerifiedBackup(ws, 'j.package', '1')
       await makeVerifiedBackup(ws, 'j.package', '2')
       await makeVerifiedBackup(ws, 'j.package', '3')
 
       await mkdir(ws.paths.journalDir, { recursive: true })
-      await writeFile(join(ws.paths.journalDir, 'e-bad.json'), JSON.stringify(jm.entry))
+      await writeFile(join(ws.paths.journalDir, 'e-bad.json'), JSON.stringify(build(ws)))
 
       const mark = ws.gate.requests.length
       const summary = await backupSummary(ws.deps, ws.simsFolder)
-      expect(summary.canPrune, jm.name).toBe(false)
-      // Item 6: backup counts & totalBytes remain populated even when journalDir fails closed!
-      expect(summary.verifiedCount, `${jm.name} verifiedCount`).toBe(3)
-      expect(summary.totalBytes, `${jm.name} totalBytes`).toBeGreaterThan(0)
+      expect(summary.canPrune).toBe(false)
+      expect(summary.verifiedCount).toBe(3)
+      expect(summary.totalBytes).toBeGreaterThan(0)
 
-      expect(await pruneBackups(ws.deps, ws.simsFolder), jm.name).toEqual({ status: 'refused', why: 'unsafe-state' })
-      expect(ws.gate.requests.length, jm.name).toBe(mark)
+      expect(await pruneBackups(ws.deps, ws.simsFolder)).toEqual({ status: 'refused', why: 'unsafe-state' })
+      expect(ws.gate.requests.length).toBe(mark)
     }
-  })
+  )
 
   it.skipIf(process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0))(
     'fails closed on unreadable file payloads and protects canonical donor paths across aliased parent paths',
@@ -967,5 +1212,253 @@ describe('backupSummary and pruneBackups', () => {
     )
 
     expect(await pruneBackups(ws2.deps, ws2.simsFolder)).toEqual({ status: 'refused', why: 'nothing-to-prune' })
+  })
+
+  it('keeps settled edit holding copies when live file hash drifted after undo or cannot-undo apply, and prunes once live hash matches', async () => {
+    const ws = await makeWorkspace(TOOLS)
+    await makeVerifiedBackup(ws, 'ed.package', '1')
+    await makeVerifiedBackup(ws, 'ed.package', '2')
+    await makeVerifiedBackup(ws, 'ed.package', '3')
+    await mkdir(ws.paths.journalDir, { recursive: true })
+
+    const liveOpts = join(ws.simsFolder, 'Options.ini')
+    const beforeText = '[options]\nmodsdisabled = 1\nscriptmodsenabled = 0\n'
+    const afterText = '[options]\nmodsdisabled = 0\nscriptmodsenabled = 1\n'
+    const driftedText = '[options]\nmodsdisabled = 1\nscriptmodsenabled = 1\nfullscreen = 1\n'
+
+    // 1. Undone/reverted edit where live Options.ini was modified AFTER undo -> must KEEP savedCopy!
+    const undoneSaved = join(ws.paths.holdingDir, 'e-edit-undone-drift', 'edits', 'Options.ini')
+    await mkdir(dirname(undoneSaved), { recursive: true })
+    await writeFile(undoneSaved, beforeText)
+    const beforeSha = await sha256File(undoneSaved)
+    await writeFile(liveOpts, afterText)
+    const afterSha = await sha256File(liveOpts)
+    await writeFile(liveOpts, driftedText)
+
+    await writeFile(
+      join(ws.paths.journalDir, 'e-edit-undone-drift.json'),
+      JSON.stringify(
+        sampleJournalEntry({
+          id: 'e-edit-undone-drift',
+          folderPath: ws.simsFolder,
+          backupId: null,
+          status: 'undone',
+          undoneAt: '2026-11-25T10:00:00.000Z',
+          steps: [
+            {
+              kind: 'edit',
+              path: liveOpts,
+              savedCopy: undoneSaved,
+              beforeSha256: beforeSha,
+              afterSha256: afterSha,
+              state: 'reverted'
+            }
+          ]
+        })
+      )
+    )
+
+    // 2. Done/cannot-undo applied edit where live Options.ini drifted away from afterSha256 -> must KEEP savedCopy!
+    const appliedSaved = join(ws.paths.holdingDir, 'e-edit-applied-drift', 'edits', 'Options.ini')
+    await mkdir(dirname(appliedSaved), { recursive: true })
+    await writeFile(appliedSaved, beforeText)
+    await writeFile(
+      join(ws.paths.journalDir, 'e-edit-applied-drift.json'),
+      JSON.stringify(
+        sampleJournalEntry({
+          id: 'e-edit-applied-drift',
+          folderPath: ws.simsFolder,
+          backupId: null,
+          status: 'done',
+          undo: 'cannot-undo',
+          steps: [
+            {
+              kind: 'edit',
+              path: liveOpts,
+              savedCopy: appliedSaved,
+              beforeSha256: beforeSha,
+              afterSha256: afterSha,
+              state: 'applied'
+            }
+          ]
+        })
+      )
+    )
+
+    const res1 = await pruneBackups(ws.deps, ws.simsFolder)
+    expect(res1.status).toBe('done')
+    expect(await pathExists(undoneSaved)).toBe(true)
+    expect(await pathExists(appliedSaved)).toBe(true)
+
+    // Restore live Options.ini to beforeText -> undone/reverted entry now matches liveSha === beforeSha256 and prunes, while applied-drift stays kept!
+    await writeFile(liveOpts, beforeText)
+    const res2 = await pruneBackups(ws.deps, ws.simsFolder)
+    expect(res2.status).toBe('done')
+    expect(await pathExists(undoneSaved)).toBe(false)
+    expect(await pathExists(appliedSaved)).toBe(true)
+
+    // Set live Options.ini to afterText -> done/cannot-undo entry now matches liveSha === afterSha256 and prunes!
+    await writeFile(liveOpts, afterText)
+    const res3 = await pruneBackups(ws.deps, ws.simsFolder)
+    expect(res3.status).toBe('done')
+    expect(await pathExists(appliedSaved)).toBe(false)
+  })
+
+  it.skipIf(process.platform === 'win32')(
+    'enforces canonical root containment in verifyHoldingDirReadyToRemove when a parent directory inside Mods symlinks into holdingDir or outside folderPath',
+    async () => {
+      const ws = await makeWorkspace(TOOLS)
+      await makeVerifiedBackup(ws, 'c.package', '1')
+      await makeVerifiedBackup(ws, 'c.package', '2')
+      await makeVerifiedBackup(ws, 'c.package', '3')
+      await mkdir(ws.paths.journalDir, { recursive: true })
+
+      // Symlink Mods/TrapDir -> holding/e-canon-trap/Mods so step.from is lexically inside folderPath,
+      // isFile() on lstat(step.from) is true, yet realFrom resolves inside holdingDir!
+      const heldDir = join(ws.paths.holdingDir, 'e-canon-trap', 'Mods')
+      await mkdir(heldDir, { recursive: true })
+      const heldA = join(heldDir, 'a.package')
+      const heldB = join(heldDir, 'b.package')
+      await writeFile(heldA, 'precious-bytes')
+      await writeFile(heldB, 'precious-bytes')
+      const sha = await sha256File(heldA)
+      await symlink(heldDir, join(ws.mods, 'TrapDir'))
+
+      await writeFile(
+        join(ws.paths.journalDir, 'e-canon-trap.json'),
+        JSON.stringify(
+          sampleJournalEntry({
+            id: 'e-canon-trap',
+            folderPath: ws.simsFolder,
+            backupId: null,
+            status: 'undone',
+            undoneAt: '2026-11-25T11:00:00.000Z',
+            steps: [
+              {
+                kind: 'move',
+                from: join(ws.mods, 'TrapDir', 'a.package'),
+                to: heldB,
+                bytes: 14,
+                sha256: sha,
+                state: 'reverted'
+              }
+            ]
+          })
+        )
+      )
+
+      const mark = ws.gate.requests.length
+      expect((await backupSummary(ws.deps, ws.simsFolder)).canPrune).toBe(false)
+      expect(await pruneBackups(ws.deps, ws.simsFolder)).toEqual({ status: 'refused', why: 'unsafe-state' })
+      expect(ws.gate.requests.length).toBe(mark)
+      expect(await pathExists(heldA)).toBe(true)
+      expect(await pathExists(heldB)).toBe(true)
+    }
+  )
+
+  it('keys storedCopiesHashIntact cache by exact canonical path without lowercasing so distinct-case files on case-sensitive volumes cannot collide', async () => {
+    const hashCache = new Map<string, string>()
+    const goodSha = '1'.repeat(64)
+    const corruptSha = '2'.repeat(64)
+    const hashedPaths: string[] = []
+
+    const intact = await storedCopiesHashIntact(
+      '/casevol/backups',
+      [
+        { path: 'Mods/a.package', bytes: 4, mtimeMs: 1, sha256: goodSha, storedIn: 'b1' },
+        { path: 'Mods/A.package', bytes: 4, mtimeMs: 1, sha256: goodSha, storedIn: 'b1' }
+      ],
+      hashCache,
+      {
+        checkInPlace: async () => true,
+        resolveReal: async (p) => p,
+        hashFile: async (p) => {
+          hashedPaths.push(p)
+          return /[\\/]A\.package$/.test(p) ? corruptSha : goodSha
+        }
+      }
+    )
+
+    expect(intact).toBe(false)
+    expect(hashedPaths).toEqual([
+      join('/casevol/backups', 'b1', 'files', 'Mods', 'a.package'),
+      join('/casevol/backups', 'b1', 'files', 'Mods', 'A.package')
+    ])
+    expect(hashCache.size).toBe(2)
+  })
+
+  it('reads entire file payload in chunks and fails closed on mid-file read errors or premature 0-byte reads', async () => {
+    // 1. Direct unit checks on canReadFilePayload
+    let closedCount = 0
+    const prematureZeroReader = async (): Promise<ReadOnlyFile> => ({
+      size: 128,
+      read: async () => 0,
+      close: async () => {
+        closedCount += 1
+      }
+    })
+    expect(await canReadFilePayload('/fake/nonempty.package', prematureZeroReader)).toBe(false)
+    expect(closedCount).toBe(1)
+
+    const midFileErrorReader = async (): Promise<ReadOnlyFile> => ({
+      size: 150_000,
+      read: async (_buf, position, length = 0) => {
+        if (position >= 65_536) throw new Error('EIO at second chunk')
+        return Math.min(length, 65_536)
+      },
+      close: async () => {
+        closedCount += 1
+      }
+    })
+    expect(await canReadFilePayload('/fake/large.package', midFileErrorReader)).toBe(false)
+    expect(closedCount).toBe(2)
+
+    // 2. Full planner / pruneBackupsNow integration: >128 KB stored file fails on chunk 2 (position >= 65536) -> unsafe-state, 0 gate ops
+    const ws = await makeWorkspace(TOOLS)
+    const bigPayload = 'X'.repeat(140_000)
+    const b1 = await makeVerifiedBackup(ws, 'big_mod.package', bigPayload)
+    await makeVerifiedBackup(ws, 'big_mod.package', 'small-v2')
+    await makeVerifiedBackup(ws, 'big_mod.package', 'small-v3')
+
+    const b1BigStored = join(ws.paths.backupsDir, b1.id, 'files', 'Mods', 'big_mod.package')
+    const mark = ws.gate.requests.length
+
+    const failSecondChunkOpen = async (file: string): Promise<ReadOnlyFile> => {
+      const real = await openForRead(file)
+      if (file !== b1BigStored) return real
+      return {
+        size: real.size,
+        read: async (buf, position, length) => {
+          if (position > 0) throw new Error('simulated mid-file read failure past 64 KB')
+          return await real.read(buf, position, length)
+        },
+        close: () => real.close()
+      }
+    }
+
+    expect((await readBackupSummary(ws.deps, ws.simsFolder, failSecondChunkOpen)).canPrune).toBe(false)
+    expect(await pruneBackupsNow(ws.deps, ws.simsFolder, failSecondChunkOpen)).toEqual({
+      status: 'refused',
+      why: 'unsafe-state'
+    })
+    expect(ws.gate.requests.length).toBe(mark)
+
+    // Premature 0-byte read on non-empty file in backupsDir also fails closed with 0 gate ops
+    const prematureZeroOpen = async (file: string): Promise<ReadOnlyFile> => {
+      const real = await openForRead(file)
+      if (file !== b1BigStored) return real
+      return {
+        size: real.size,
+        read: async () => 0,
+        close: () => real.close()
+      }
+    }
+
+    expect((await readBackupSummary(ws.deps, ws.simsFolder, prematureZeroOpen)).canPrune).toBe(false)
+    expect(await pruneBackupsNow(ws.deps, ws.simsFolder, prematureZeroOpen)).toEqual({
+      status: 'refused',
+      why: 'unsafe-state'
+    })
+    expect(ws.gate.requests.length).toBe(mark)
   })
 })

@@ -2,6 +2,7 @@ import { lstat, readdir, realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, join, parse, relative, sep } from 'node:path'
 import type { BackupPruneResult, BackupStatus, BackupSummary, JournalEntry, JournalStep } from '../../shared/model.ts'
 import { openForRead, sha256File } from '../fs-read.ts'
+import type { ReadOnlyFile } from '../fs-read.ts'
 import type { GateResult, SafetyDeps, WriteOp } from '../ports.ts'
 import { backupInFlight, backupStatus as checkBackup, storedCopiesInPlace } from './backup.ts'
 import { findEntry } from './journal.ts'
@@ -14,7 +15,7 @@ const OPS_PER_REQUEST = 200
 const COPYING_GRACE_MS = 60 * 60 * 1000
 const TMP_MARKER = '.sims-helper-tmp'
 const PRUNE_FAILED_DETAIL = 'Could not finish clearing old safety copies.'
-const PROBE_BYTE = new Uint8Array(1)
+const READ_CHUNK_BYTES = 64 * 1024
 
 function trimTrailingSep(target: string): string {
   const winDrive = /^[A-Za-z]:[\\/]/.exec(target)
@@ -47,21 +48,56 @@ function isMissingErr(err: unknown): boolean {
 
 function isNonEmptyAbsolutePath(value: unknown): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.includes('\0')) return false
+  if (value.split(/[\\/]/).some((seg) => seg === '.' || seg === '..')) return false
   return isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value)
 }
 
-async function canReadFilePayload(file: string): Promise<boolean> {
-  let handle
+function lexicalNormCase(target: string): string {
+  const slashed = target.replace(/\\/g, '/')
+  const leadingUnc = slashed.startsWith('//') ? '//' : ''
+  const body = (leadingUnc ? slashed.slice(2) : slashed).replace(/\/+/g, '/')
+  const full = (leadingUnc + body).toLowerCase()
+  if (full === '/' || full === '//' || /^[a-z]:\/$/.test(full)) return full
+  return full.replace(/\/+$/, '')
+}
+
+function isLexicallyInsideCase(child: string, parent: string): boolean {
+  const c = lexicalNormCase(child)
+  const p = lexicalNormCase(parent)
+  if (c === p) return true
+  const prefix = p.endsWith('/') ? p : `${p}/`
+  return c.startsWith(prefix)
+}
+
+function isLexicallyStrictlyInsideCase(child: string, parent: string): boolean {
+  const c = lexicalNormCase(child)
+  const p = lexicalNormCase(parent)
+  if (c === p) return false
+  const prefix = p.endsWith('/') ? p : `${p}/`
+  return c.startsWith(prefix)
+}
+
+export type OpenReadFile = (file: string) => Promise<ReadOnlyFile>
+
+export async function canReadFilePayload(file: string, openFile: OpenReadFile = openForRead): Promise<boolean> {
+  let handle: ReadOnlyFile
   try {
-    handle = await openForRead(file)
+    handle = await openFile(file)
   } catch {
     return false
   }
   try {
-    if (handle.size > 0) {
-      await handle.read(PROBE_BYTE, 0, 1)
+    if (!Number.isFinite(handle.size) || handle.size < 0) return false
+    if (handle.size === 0) return true
+    const buffer = new Uint8Array(Math.min(READ_CHUNK_BYTES, handle.size))
+    let offset = 0
+    while (offset < handle.size) {
+      const want = Math.min(buffer.byteLength, handle.size - offset)
+      const bytesRead = await handle.read(buffer, offset, want)
+      if (bytesRead <= 0 || bytesRead > want) return false
+      offset += bytesRead
     }
-    return true
+    return offset === handle.size
   } catch {
     return false
   } finally {
@@ -174,7 +210,7 @@ function isValidJournalStep(raw: unknown): raw is JournalStep {
   return false
 }
 
-function isValidJournalEntry(entry: JournalEntry): boolean {
+function isValidJournalEntry(entry: JournalEntry, holdingDir: string, realHoldingDir: string): boolean {
   if (
     entry.status !== 'in-progress' &&
     entry.status !== 'done' &&
@@ -186,7 +222,7 @@ function isValidJournalEntry(entry: JournalEntry): boolean {
   if (entry.undo !== 'can-undo' && entry.undo !== 'cannot-undo') {
     return false
   }
-  if (typeof entry.folderPath !== 'string' || entry.folderPath.length === 0 || entry.folderPath.includes('\0')) {
+  if (!isNonEmptyAbsolutePath(entry.folderPath)) {
     return false
   }
   if (entry.backupId !== null && (typeof entry.backupId !== 'string' || !isSafeId(entry.backupId))) {
@@ -195,10 +231,42 @@ function isValidJournalEntry(entry: JournalEntry): boolean {
   if (!Array.isArray(entry.steps) || !entry.steps.every(isValidJournalStep)) {
     return false
   }
+
+  const inHolding = (p: string): boolean =>
+    isLexicallyInsideCase(p, holdingDir) || isLexicallyInsideCase(p, realHoldingDir)
+  const inEntryHolding = (p: string): boolean =>
+    isLexicallyStrictlyInsideCase(p, `${holdingDir}/${entry.id}`) ||
+    isLexicallyStrictlyInsideCase(p, `${realHoldingDir}/${entry.id}`)
+  const inFolder = (p: string): boolean => isLexicallyStrictlyInsideCase(p, entry.folderPath)
+
+  if (
+    inHolding(entry.folderPath) ||
+    isLexicallyInsideCase(holdingDir, entry.folderPath) ||
+    isLexicallyInsideCase(realHoldingDir, entry.folderPath)
+  ) {
+    return false
+  }
+
+  for (const step of entry.steps) {
+    if (step.kind === 'move') {
+      if (!inFolder(step.from) || inHolding(step.from)) return false
+      if (inHolding(step.to)) {
+        if (!inEntryHolding(step.to)) return false
+      } else if (!inFolder(step.to)) {
+        return false
+      }
+    } else if (step.kind === 'edit') {
+      if (!inFolder(step.path) || inHolding(step.path)) return false
+      if (!inEntryHolding(step.savedCopy)) return false
+    } else if (step.kind === 'remove-cache') {
+      if (!inFolder(step.path) || inHolding(step.path)) return false
+    }
+  }
   return true
 }
 
-async function scanJournalStrict(journalDir: string): Promise<JournalEntry[] | null> {
+async function scanJournalStrict(journalDir: string, holdingDir: string): Promise<JournalEntry[] | null> {
+  if (!isNonEmptyAbsolutePath(holdingDir)) return null
   try {
     const dirInfo = await lstat(journalDir)
     if (dirInfo.isSymbolicLink() || !dirInfo.isDirectory()) return null
@@ -214,6 +282,7 @@ async function scanJournalStrict(journalDir: string): Promise<JournalEntry[] | n
     return null
   }
 
+  const realHoldingDir = await resolveDeepest(holdingDir)
   const entries: JournalEntry[] = []
   for (const name of names) {
     if (name.includes(TMP_MARKER) || !name.endsWith('.json')) return null
@@ -229,14 +298,15 @@ async function scanJournalStrict(journalDir: string): Promise<JournalEntry[] | n
     if (!isSafeId(id)) return null
     const found = await findEntry(journalDir, id)
     if (found === 'unreadable' || found === 'missing') return null
-    if (!isValidJournalEntry(found)) return null
+    if (!isValidJournalEntry(found, holdingDir, realHoldingDir)) return null
     entries.push(found)
   }
   return entries
 }
 
 async function walkFilesDirStrict(
-  rootFilesDir: string
+  rootFilesDir: string,
+  openFile: OpenReadFile
 ): Promise<{ rootReal: string | null; files: ScannedFile[]; subDirs: ScannedSubDir[] } | null> {
   const files: ScannedFile[] = []
   const subDirs: ScannedSubDir[] = []
@@ -279,7 +349,7 @@ async function walkFilesDirStrict(
         subDirs.push({ abs: full, canonicalKey: caseKey(realFull), depth: depth + 1 })
         if (!(await walk(full, depth + 1))) return false
       } else if (info.isFile()) {
-        if (!(await canReadFilePayload(full))) return false
+        if (!(await canReadFilePayload(full, openFile))) return false
         files.push({ abs: full, realAbs: realFull, canonicalKey: caseKey(realFull), bytes: info.size })
       } else {
         return false
@@ -292,7 +362,7 @@ async function walkFilesDirStrict(
   return ok ? { rootReal, files, subDirs } : null
 }
 
-async function scanBackupsStrict(backupsDir: string): Promise<ScannedBackupDir[] | null> {
+async function scanBackupsStrict(backupsDir: string, openFile: OpenReadFile): Promise<ScannedBackupDir[] | null> {
   try {
     const dirInfo = await lstat(backupsDir)
     if (dirInfo.isSymbolicLink() || !dirInfo.isDirectory()) return null
@@ -362,7 +432,7 @@ async function scanBackupsStrict(backupsDir: string): Promise<ScannedBackupDir[]
     }
 
     const filesDir = join(abs, 'files')
-    const walked = await walkFilesDirStrict(filesDir)
+    const walked = await walkFilesDirStrict(filesDir, openFile)
     if (walked === null) return null
 
     result.push({
@@ -381,7 +451,10 @@ async function scanBackupsStrict(backupsDir: string): Promise<ScannedBackupDir[]
   return result
 }
 
-async function walkHoldingFilesStrict(holdingEntryAbs: string): Promise<{ files: ScannedFile[]; realRoot: string } | 'missing' | null> {
+async function walkHoldingFilesStrict(
+  holdingEntryAbs: string,
+  openFile: OpenReadFile
+): Promise<{ files: ScannedFile[]; realRoot: string } | 'missing' | null> {
   let rootInfo
   try {
     rootInfo = await lstat(holdingEntryAbs)
@@ -419,7 +492,7 @@ async function walkHoldingFilesStrict(holdingEntryAbs: string): Promise<{ files:
       if (cInfo.isDirectory()) {
         if (!(await walk(childAbs))) return false
       } else if (cInfo.isFile()) {
-        if (!(await canReadFilePayload(childAbs))) return false
+        if (!(await canReadFilePayload(childAbs, openFile))) return false
         let realChild: string
         try {
           realChild = await realpath(childAbs)
@@ -443,7 +516,7 @@ async function walkHoldingFilesStrict(holdingEntryAbs: string): Promise<{ files:
   return { files, realRoot }
 }
 
-async function scanHoldingStrict(holdingDir: string): Promise<ScannedHoldingDir[] | null> {
+async function scanHoldingStrict(holdingDir: string, openFile: OpenReadFile): Promise<ScannedHoldingDir[] | null> {
   try {
     const dirInfo = await lstat(holdingDir)
     if (dirInfo.isSymbolicLink() || !dirInfo.isDirectory()) return null
@@ -464,7 +537,7 @@ async function scanHoldingStrict(holdingDir: string): Promise<ScannedHoldingDir[
   for (const name of dirNames) {
     if (name.includes(TMP_MARKER) || !isSafeId(name)) return null
     const abs = join(holdingDir, name)
-    const walked = await walkHoldingFilesStrict(abs)
+    const walked = await walkHoldingFilesStrict(abs, openFile)
     if (walked === null || walked === 'missing') return null
     const totalFileBytes = walked.files.reduce((sum, f) => sum + f.bytes, 0)
     result.push({ name, abs, totalFileBytes })
@@ -494,9 +567,11 @@ function stepTouchesHoldingDir(entry: JournalEntry, holdingEntryAbs: string): bo
 }
 
 async function verifyHoldingDirReadyToRemove(
+  holdingDir: string,
   holdingEntryAbs: string,
   matching: JournalEntry,
-  allEntries: readonly JournalEntry[]
+  allEntries: readonly JournalEntry[],
+  openFile: OpenReadFile
 ): Promise<{ verdict: 'safe'; totalFileBytes: number } | { verdict: 'keep' } | { verdict: 'unsafe' }> {
   if (isActiveJournalEntry(matching)) return { verdict: 'keep' }
   if (matching.status !== 'undone' && !(matching.status === 'done' && matching.undo === 'cannot-undo')) {
@@ -506,14 +581,32 @@ async function verifyHoldingDirReadyToRemove(
     return { verdict: 'keep' }
   }
 
-  const walked = await walkHoldingFilesStrict(holdingEntryAbs)
+  const walked = await walkHoldingFilesStrict(holdingEntryAbs, openFile)
   if (walked === null) return { verdict: 'unsafe' }
   if (walked === 'missing') return { verdict: 'keep' }
 
+  let cachedRoots: { realFolderPath: string; realHoldingRoot: string } | null = null
+  async function getExpectedRoots(): Promise<
+    { ok: true; realFolderPath: string; realHoldingRoot: string } | { ok: false; verdict: 'keep' | 'unsafe' }
+  > {
+    if (cachedRoots !== null) return { ok: true, ...cachedRoots }
+    try {
+      const [realFolderPath, realHoldingRoot] = await Promise.all([
+        realpath(matching.folderPath),
+        realpath(holdingDir)
+      ])
+      cachedRoots = { realFolderPath, realHoldingRoot }
+      return { ok: true, realFolderPath, realHoldingRoot }
+    } catch (err) {
+      return { ok: false, verdict: isMissingErr(err) ? 'keep' : 'unsafe' }
+    }
+  }
+
+  const inThisHoldingEntry = (p: string): boolean => isInsideCase(p, holdingEntryAbs) || isInsideCase(p, walked.realRoot)
   const accountedKeys = new Set<string>()
 
   for (const step of matching.steps) {
-    if (step.kind === 'move' && isInsideCase(step.to, holdingEntryAbs)) {
+    if (step.kind === 'move' && inThisHoldingEntry(step.to)) {
       let toInfo = null
       try {
         toInfo = await lstat(step.to)
@@ -551,7 +644,17 @@ async function verifyHoldingDirReadyToRemove(
         if (isMissingErr(err)) return { verdict: 'keep' }
         return { verdict: 'unsafe' }
       }
-      if (caseKey(realTo) === caseKey(realFrom) || !isInsideCase(realTo, walked.realRoot)) {
+      const roots = await getExpectedRoots()
+      if (!roots.ok) return { verdict: roots.verdict }
+      if (isInsideCase(realFrom, roots.realHoldingRoot) || isInsideCase(realFrom, walked.realRoot)) {
+        return { verdict: 'unsafe' }
+      }
+      if (
+        caseKey(realTo) === caseKey(realFrom) ||
+        !isInsideCase(realTo, walked.realRoot) ||
+        !isInsideCase(realFrom, roots.realFolderPath) ||
+        caseKey(realFrom) === caseKey(roots.realFolderPath)
+      ) {
         return { verdict: 'keep' }
       }
 
@@ -566,7 +669,7 @@ async function verifyHoldingDirReadyToRemove(
         return { verdict: 'keep' }
       }
       accountedKeys.add(caseKey(realTo))
-    } else if (step.kind === 'edit' && isInsideCase(step.savedCopy, holdingEntryAbs)) {
+    } else if (step.kind === 'edit' && inThisHoldingEntry(step.savedCopy)) {
       let savedInfo = null
       try {
         savedInfo = await lstat(step.savedCopy)
@@ -599,17 +702,34 @@ async function verifyHoldingDirReadyToRemove(
         if (isMissingErr(err)) return { verdict: 'keep' }
         return { verdict: 'unsafe' }
       }
-      if (caseKey(realSaved) === caseKey(realLive) || !isInsideCase(realSaved, walked.realRoot)) {
+      const roots = await getExpectedRoots()
+      if (!roots.ok) return { verdict: roots.verdict }
+      if (isInsideCase(realLive, roots.realHoldingRoot) || isInsideCase(realLive, walked.realRoot)) {
+        return { verdict: 'unsafe' }
+      }
+      if (
+        caseKey(realSaved) === caseKey(realLive) ||
+        !isInsideCase(realSaved, walked.realRoot) ||
+        !isInsideCase(realLive, roots.realFolderPath) ||
+        caseKey(realLive) === caseKey(roots.realFolderPath)
+      ) {
         return { verdict: 'keep' }
       }
 
       let savedSha: string
+      let liveSha: string
       try {
-        savedSha = await sha256File(step.savedCopy)
+        ;[savedSha, liveSha] = await Promise.all([sha256File(step.savedCopy), sha256File(step.path)])
       } catch {
         return { verdict: 'keep' }
       }
-      if (savedSha !== step.beforeSha256) return { verdict: 'keep' }
+      if (matching.status === 'undone' && step.state === 'reverted') {
+        if (savedSha !== step.beforeSha256 || liveSha !== step.beforeSha256) return { verdict: 'keep' }
+      } else if (matching.status === 'done' && matching.undo === 'cannot-undo' && step.state === 'applied') {
+        if (savedSha !== step.beforeSha256 || liveSha !== step.afterSha256) return { verdict: 'keep' }
+      } else {
+        return { verdict: 'keep' }
+      }
       accountedKeys.add(caseKey(realSaved))
     }
   }
@@ -639,26 +759,36 @@ async function verifyHoldingDirReadyToRemove(
   return { verdict: 'safe', totalFileBytes }
 }
 
-async function storedCopiesHashIntact(
+export interface StoredCopiesHashIo {
+  checkInPlace?: (backupsDir: string, files: ManifestFile[]) => Promise<boolean>
+  resolveReal?: (path: string) => Promise<string>
+  hashFile?: (path: string) => Promise<string>
+}
+
+export async function storedCopiesHashIntact(
   backupsDir: string,
   lines: readonly ManifestFile[],
-  hashCache: Map<string, string>
+  hashCache: Map<string, string>,
+  io: StoredCopiesHashIo = {}
 ): Promise<boolean> {
-  if (!(await storedCopiesInPlace(backupsDir, [...lines]))) return false
+  const checkInPlace = io.checkInPlace ?? storedCopiesInPlace
+  const resolveReal = io.resolveReal ?? realpath
+  const hashFile = io.hashFile ?? sha256File
+  if (!(await checkInPlace(backupsDir, [...lines]))) return false
   for (const line of lines) {
     const candidate = storedFile(backupsDir, line)
     let realTarget: string
     try {
-      realTarget = await realpath(candidate)
+      realTarget = await resolveReal(candidate)
     } catch (err) {
       if (isMissingErr(err)) return false
       throw err
     }
-    const key = caseKey(realTarget)
+    const key = realTarget
     let actualSha = hashCache.get(key)
     if (actualSha === undefined) {
       try {
-        actualSha = await sha256File(realTarget)
+        actualSha = await hashFile(realTarget)
       } catch (err) {
         if (isMissingErr(err)) return false
         throw err
@@ -670,12 +800,12 @@ async function storedCopiesHashIntact(
   return true
 }
 
-async function planPrune(deps: SafetyDeps): Promise<PrunePlan> {
+async function planPrune(deps: SafetyDeps, openFile: OpenReadFile): Promise<PrunePlan> {
   const { journalDir, backupsDir, holdingDir } = deps.paths
   const [journalEntries, backupDirs, holdingDirs] = await Promise.all([
-    scanJournalStrict(journalDir),
-    scanBackupsStrict(backupsDir),
-    scanHoldingStrict(holdingDir)
+    scanJournalStrict(journalDir, holdingDir),
+    scanBackupsStrict(backupsDir, openFile),
+    scanHoldingStrict(holdingDir, openFile)
   ])
 
   let backupsTotalBytes = 0
@@ -843,7 +973,7 @@ async function planPrune(deps: SafetyDeps): Promise<PrunePlan> {
     const matching = entriesById.get(idKey(h.name))
     if (matching === undefined) continue
 
-    const check = await verifyHoldingDirReadyToRemove(h.abs, matching, journalEntries)
+    const check = await verifyHoldingDirReadyToRemove(holdingDir, h.abs, matching, journalEntries, openFile)
     if (check.verdict === 'unsafe') {
       return { safe: false, verifiedCount, totalBytes: backupsTotalBytes }
     }
@@ -887,8 +1017,12 @@ async function resolveFolderBackupStatus(deps: SafetyDeps, folderPath: string | 
   return await checkBackup(deps, folderPath)
 }
 
-export async function readBackupSummary(deps: SafetyDeps, folderPath: string | null): Promise<BackupSummary> {
-  const [status, plan] = await Promise.all([resolveFolderBackupStatus(deps, folderPath), planPrune(deps)])
+export async function readBackupSummary(
+  deps: SafetyDeps,
+  folderPath: string | null,
+  openFile: OpenReadFile = openForRead
+): Promise<BackupSummary> {
+  const [status, plan] = await Promise.all([resolveFolderBackupStatus(deps, folderPath), planPrune(deps, openFile)])
   if (!plan.safe) {
     return {
       status,
@@ -929,10 +1063,14 @@ async function runRemoveChunks(
   return { ok: true }
 }
 
-export async function pruneBackupsNow(deps: SafetyDeps, folderPath: string | null): Promise<BackupPruneResult> {
+export async function pruneBackupsNow(
+  deps: SafetyDeps,
+  folderPath: string | null,
+  openFile: OpenReadFile = openForRead
+): Promise<BackupPruneResult> {
   if (backupInFlight(deps)) return { status: 'refused', why: 'busy' }
 
-  const plan = await planPrune(deps)
+  const plan = await planPrune(deps, openFile)
   if (!plan.safe) return { status: 'refused', why: 'unsafe-state' }
   if (!hasAnyPlannedOps(plan)) return { status: 'refused', why: 'nothing-to-prune' }
 
@@ -967,7 +1105,13 @@ export async function pruneBackupsNow(deps: SafetyDeps, folderPath: string | nul
   // Phase 3: immediately re-verify each settled holding dir right before removing it
   let freedHoldingBytes = 0
   for (const target of plan.phase3HoldingTargets) {
-    const recheck = await verifyHoldingDirReadyToRemove(target.abs, target.matching, plan.journalEntries)
+    const recheck = await verifyHoldingDirReadyToRemove(
+      deps.paths.holdingDir,
+      target.abs,
+      target.matching,
+      plan.journalEntries,
+      openFile
+    )
     if (recheck.verdict === 'unsafe') {
       return { status: 'failed', detail: PRUNE_FAILED_DETAIL }
     }
@@ -979,7 +1123,7 @@ export async function pruneBackupsNow(deps: SafetyDeps, folderPath: string | nul
     freedHoldingBytes += recheck.totalFileBytes
   }
 
-  const summary = await readBackupSummary(deps, folderPath)
+  const summary = await readBackupSummary(deps, folderPath, openFile)
   return {
     status: 'done',
     freedBytes: plan.reclaimableBackupBytes + freedHoldingBytes,
