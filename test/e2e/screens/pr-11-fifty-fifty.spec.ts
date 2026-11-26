@@ -1,9 +1,12 @@
 import { expect, test, type Page } from '@playwright/test'
-import type { FiftyFifty, ModGroup } from '../../../src/shared/model.ts'
-import { sampleFiftyFifty, sampleJournalEntry } from '../../../src/shared/testing/sample.ts'
+import { crashWithoutCauseWords } from '../../../src/shared/copy/findings.ts'
+import type { FiftyFifty, ModGroup, StartupRecovery } from '../../../src/shared/model.ts'
+import { sampleFiftyFifty, sampleFinding, sampleJournalEntry, sampleScan } from '../../../src/shared/testing/sample.ts'
 import { launchApp, shoot, stubIpc, type LaunchedApp } from '../support/app.ts'
 
 const SLUG = 'pr-11-fifty-fifty'
+
+const NOTHING_RECOVERED: StartupRecovery = { status: 'finished', touched: [] }
 
 const LABELS = ['Wicked Wardrobe', 'MC Command Center', 'Hair', 'BuildBuy', 'Skin Details', 'Poses', 'Clutter', 'Shoes']
 
@@ -60,6 +63,16 @@ test.beforeAll(async () => {
       if (document.head) attach(); else window.addEventListener('DOMContentLoaded', attach, { once: true });
     })();`
   })
+})
+
+test.beforeEach(async () => {
+  // A cut-off change on this machine must never leak a notice into the shots.
+  await stubIpc(running.app, { 'journal:recovery': NOTHING_RECOVERED })
+  running.consoleErrors.length = 0
+})
+
+test.afterEach(async () => {
+  expect(running.consoleErrors).toEqual([])
 })
 
 test.afterAll(async () => {
@@ -139,7 +152,37 @@ test('damaged-progress', async () => {
   await shoot(running.page, SLUG, 'damaged-progress')
 })
 
-// After main: PR 7's check-up screen hosts <FiftyEntry />. Needs a scan with a 'fifty-fifty' finding.
-test.fixme('entry-on-check-up', async () => {
-  await shoot(running.page, SLUG, 'entry-on-check-up')
+// After main: PR 7's check-up screen hosts <FiftyEntry />. A scan with a 'fifty-fifty' finding shows the big card.
+test('entry-on-check-up', async () => {
+  const words = crashWithoutCauseWords({ crashCount: 1, hasMods: true })
+  const crash = sampleFinding({
+    id: 'crash-without-cause',
+    rule: 'crash-without-cause',
+    severity: 'warn',
+    certainty: 'worth-testing',
+    title: words.title,
+    detail: words.detail,
+    evidence: ['lastCrash_2026-11-24.txt: crash at 2026-11-24 20:14, game 1.129.39.1030'],
+    fixes: [],
+    next: 'fifty-fifty'
+  })
+  const scan = sampleScan({ findings: [crash] })
+  await stubIpc(running.app, {
+    'fifty:get': null,
+    'journal:list': [],
+    'groups:disabled': [],
+    'settings:get': { welcome: 'seen', folderPath: scan.folder.path },
+    'scan:run': { status: 'done', scan }
+  })
+  const { page } = running
+  await page.getByRole('button', { name: /closes by itself/i }).click()
+  await expect(page.getByText(words.title)).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Not sure which mod it is?' })).toBeVisible()
+
+  await page.setViewportSize({ width: 960, height: 700 })
+  const start = page.getByRole('button', { name: 'Find it with the 50/50 test' })
+  await start.scrollIntoViewIfNeeded()
+  await expect(start).toBeInViewport()
+  await expect(page.getByRole('heading', { name: 'Not sure which mod it is?' })).toBeInViewport()
+  await shoot(page, SLUG, 'entry-on-check-up')
 })
