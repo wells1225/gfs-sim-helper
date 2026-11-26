@@ -9,6 +9,7 @@ import type { ModFile, Progress, ResourceCfgRead, Scan } from '../../shared/mode
 import { sampleScan } from '../../shared/testing/sample.ts'
 import { appPaths } from '../app-paths.ts'
 import type { FixDeps, Safety } from '../ports.ts'
+import { readResourceCfg } from '../inventory/resource-cfg.ts'
 import { backupStatus, createBackup, listJournal, recover, runAction, undo } from '../safety/index.ts'
 import { makeWorkspace, pathExists, snapshotTree } from '../safety/testing/harness.ts'
 import type { Workspace, WorkspaceTools } from '../safety/testing/harness.ts'
@@ -222,6 +223,52 @@ describe('applyFix move-package-up', () => {
     expect(runActionSpy).not.toHaveBeenCalled()
   })
 
+  async function refusesWhenResourceCfgIs(
+    scanCfg: ResourceCfgRead,
+    onDisk: (modsDir: string) => Promise<void>
+  ): Promise<void> {
+    const root = await tempRoot()
+    const modsDir = join(root, 'Mods')
+    await mkdir(join(modsDir, 'CAS', 'a', 'b', 'c', 'd', 'e'), { recursive: true })
+    await onDisk(modsDir)
+    const deepRel = 'CAS/a/b/c/d/e/six.package'
+    const scan = withPackages([pkg(deepRel)], scanCfg, { folderPath: root, modsDir })
+    const runActionSpy = vi.fn<Safety['runAction']>()
+    const createBackupSpy = vi.fn<Safety['createBackup']>()
+    const backupStatusSpy = vi.fn<Safety['backupStatus']>()
+    const deps: FixDeps = {
+      safety: { runAction: runActionSpy, createBackup: createBackupSpy, backupStatus: backupStatusSpy } as unknown as Safety,
+      paths: appPaths({ localAppData: join(root, 'LocalAppData'), appData: join(root, 'Roaming'), desktopDir: join(root, 'Desktop') }),
+      newId: () => 'entry-1'
+    }
+    const before = await snapshotTree(root)
+
+    expect(await applyFix(deps, scan, { fix: 'move-package-up', files: [deepRel] })).toEqual(FILE_CHANGED)
+    expect(runActionSpy).not.toHaveBeenCalled()
+    expect(createBackupSpy).not.toHaveBeenCalled()
+    expect(await snapshotTree(root)).toEqual(before)
+  }
+
+  it('refuses with file-changed when Resource.cfg was missing at scan time but now sets a smaller depth', async () => {
+    await refusesWhenResourceCfgIs({ status: 'missing' }, (modsDir) =>
+      writeFile(join(modsDir, 'Resource.cfg'), 'Priority 500\nPackedFile */*/*.package\n')
+    )
+  })
+
+  it('refuses with file-changed when Resource.cfg now sets a different depth than at scan time', async () => {
+    await refusesWhenResourceCfgIs(OK3, (modsDir) =>
+      writeFile(join(modsDir, 'Resource.cfg'), 'Priority 500\nPackedFile */*.package\n')
+    )
+  })
+
+  it('refuses with file-changed when Resource.cfg was deleted since scan time', async () => {
+    await refusesWhenResourceCfgIs(OK3, async () => {})
+  })
+
+  it('refuses with file-changed when Resource.cfg cannot be read now', async () => {
+    await refusesWhenResourceCfgIs(OK3, (modsDir) => mkdir(join(modsDir, 'Resource.cfg')))
+  })
+
   function realSafety(ws: Workspace): Safety {
     return {
       backupStatus: (folderPath) => backupStatus(ws.deps, folderPath),
@@ -241,6 +288,9 @@ describe('applyFix move-package-up', () => {
     const movedPath = join(ws.mods, 'CAS', 'Outfits', 'Formal', 'deep_dress.package')
     await mkdir(dirname(deepPath), { recursive: true })
     await writeFile(deepPath, 'DBPF deep dress bytes')
+    // Resource.cfg on disk says 3, the same as the scan, so applyFix's fresh read agrees with it.
+    await writeFile(join(ws.mods, 'Resource.cfg'), 'Priority 500\nPackedFile */*/*/*.package\n')
+    expect(await readResourceCfg(ws.mods)).toEqual(OK3)
     const before = await snapshotTree(ws.simsFolder)
     expect((await backupStatus(ws.deps, ws.simsFolder)).state).not.toBe('verified')
 

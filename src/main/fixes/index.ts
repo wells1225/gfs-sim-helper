@@ -11,6 +11,7 @@ import type {
   ModFile,
   ModGroup,
   RelPath,
+  ResourceCfgRead,
   Scan
 } from '../../shared/model.ts'
 import {
@@ -22,6 +23,7 @@ import {
   type PlanFixAt,
   type PlannedStep
 } from '../ports.ts'
+import { readResourceCfg } from '../inventory/resource-cfg.ts'
 import { DEFAULT_PACKAGE_DEPTH } from '../rules/rules.ts'
 import { DISABLE, holdingModPath } from './disable.ts'
 import { editOptionsIni } from './options-ini.ts'
@@ -213,7 +215,10 @@ async function pathExists(filePath: string): Promise<boolean> {
  */
 function foldersKept(scan: Scan, fix: 'move-script-up' | 'move-package-up'): number | null {
   if (fix === 'move-script-up') return 1
-  const cfg = scan.inventory.resourceCfg
+  return packageFoldersKept(scan.inventory.resourceCfg)
+}
+
+function packageFoldersKept(cfg: ResourceCfgRead): number | null {
   if (cfg.status === 'missing') return DEFAULT_PACKAGE_DEPTH
   if (cfg.status === 'unreadable') return null
   return Number.isInteger(cfg.maxPackageDepth) && cfg.maxPackageDepth >= 0 ? cfg.maxPackageDepth : null
@@ -530,6 +535,10 @@ export async function applyFix(
     at.existingCaches = await findExistingCaches(scan.folder.path)
   } else if (request.fix === 'move-script-up' || request.fix === 'move-package-up') {
     const kept = foldersKept(scan, request.fix)
+    // The depth comes from the scan, so a Resource.cfg changed since then would move files to the wrong folder.
+    if (request.fix === 'move-package-up' && kept !== packageFoldersKept(await readResourceCfg(scan.inventory.modsDir))) {
+      return { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
+    }
     const existingDestinations: RelPath[] = []
     for (const relPath of request.files) {
       if (kept === null || !isSafeRelPath(relPath)) continue

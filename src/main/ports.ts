@@ -114,7 +114,7 @@ export interface PlanFixAt {
   entryId: string
   optionsText?: string // Options.ini as read, for 'turn-mods-on'
   existingCaches?: readonly string[] // the CACHE_NAMES present now, for 'clear-caches'
-  existingModPaths?: readonly RelPath[] // destinations already taken, for 'move-script-up' and 'move-package-up'
+  existingModPaths?: readonly RelPath[] // destinations already taken, for 'move-script-up'
 }
 
 export type OnProgress = (progress: Progress) => void
