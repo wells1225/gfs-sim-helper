@@ -210,10 +210,12 @@ describe('buildReport', () => {
       'AddonGameInstance.json',
       'GameVersion.txt',
       'Options.ini',
+      'Read me.txt',
       'lastException_63887259912.txt',
       'scan.json',
       'skipped.txt'
     ])
+    expect(result.entries[0]).toBe('Read me.txt')
 
     for (const [entryName, bytes] of Object.entries(unzipped)) {
       expect(entryName.toLowerCase()).not.toContain('lila')
@@ -221,8 +223,177 @@ describe('buildReport', () => {
       expect(content.toLowerCase(), `entry ${entryName}`).not.toContain('lila')
     }
 
+    const readme = strFromU8(unzipped['Read me.txt']!)
+    expect(readme.startsWith('Sims Helper report\n')).toBe(true)
+    expect(readme).toContain('The game closes by itself')
+    expect(readme).toContain('1.129.39.1030')
+    expect(readme).toContain('lastException_63887259912.txt')
+    expect(readme).toContain('Saves and Tray folders are never included in this report.')
+    expect(readme).not.toContain(root)
+    expect(readme).not.toContain(simsDir)
+    expect(readme).not.toMatch(/[A-Za-z]:[\\/]/)
+    expect(readme).not.toMatch(/[\u2013\u2014]/)
+    expect(readme).not.toContain('\r')
+
     const skippedText = strFromU8(unzipped['skipped.txt']!)
     expect(skippedText).toContain('lastException_huge.txt')
+  })
+
+  it('writes a plain-language Read me.txt with symptom, game, mods, changes, findings and logs, and no user name or paths', async () => {
+    const base = sampleScan()
+    const folderPath = base.folder.path
+    const scan = sampleScan({
+      symptom: 'freezes',
+      gameRunning: 'running',
+      findings: [
+        base.findings[2]!,
+        {
+          ...base.findings[1]!,
+          evidence: [
+            `${folderPath}\\Mods\\Gameplay\\deep.ts4script (3 folders deep)`,
+            'line 2',
+            'line 3',
+            'line 4',
+            'line 5',
+            'line 6 should not show'
+          ]
+        },
+        base.findings[0]!
+      ],
+      changes: {
+        sinceAt: '2026-11-20T10:00:00.000Z',
+        gameVersion: { from: '1.128.0.1000', to: '1.129.39.1030' },
+        added: [{ groupId: 'dir:hair', label: 'Hair', hasScript: false }],
+        updated: [{ groupId: 'cf:901234', label: 'Wicked Wardrobe', hasScript: true }],
+        removed: []
+      }
+    })
+
+    const requests: WriteRequest[] = []
+    const capture: Gate = {
+      async run(request) {
+        requests.push(request)
+        return { status: 'done' }
+      }
+    }
+    const paths = appPaths({ localAppData: '/tmp/local', appData: '/tmp/roaming', desktopDir: '/tmp/desktop' })
+    const clock = { now: () => new Date(2026, 10, 24, 12, 0, 0) }
+    const redact = makeRedactor({ USERNAME: 'Lila', USERPROFILE: 'C:\\Users\\Lila' })
+
+    const { result } = await buildReport({ gate: capture, paths, clock, redact }, scan)
+    expect(result.status).toBe('saved')
+    if (result.status !== 'saved') return
+    expect(result.entries[0]).toBe('Read me.txt')
+
+    const op = requests[0]!.ops[0]!
+    if (op.op !== 'write') throw new Error('expected a write')
+    const unzipped = unzipSync(op.data as Uint8Array)
+    expect(Object.keys(unzipped)[0]).toBe('Read me.txt')
+    const readme = strFromU8(unzipped['Read me.txt']!)
+
+    expect(readme).toContain('Sims Helper report')
+    expect(readme).toContain('2026-11-24T12:00:00.000Z')
+    expect(readme).toContain('It freezes or gets stuck')
+    expect(readme).toContain('Game version: 1.129.39.1030')
+    expect(readme).toContain('Game was running: Yes')
+    expect(readme).toContain('Files: 2')
+    expect(readme).toContain('Mod groups: 2')
+    expect(readme).toContain('Script mods: 1')
+    expect(readme).toContain('Mods folder size: 1.2 MB')
+    expect(readme).toContain('Options.ini: mods off, script mods off')
+    expect(readme).toContain('Resource.cfg: packages load up to 5 folders deep')
+    expect(readme).toContain('Game updated from 1.128.0.1000 to 1.129.39.1030')
+    expect(readme).toContain('Added 1 mod: Hair')
+    expect(readme).toContain('Updated 1 mod: Wicked Wardrobe')
+    expect(readme).not.toContain('Removed')
+    expect(readme).toContain('lastException_63887259912.txt')
+    expect(readme).toContain('[Mods folder]')
+    expect(readme).toContain('line 5')
+    expect(readme).not.toContain('line 6 should not show')
+    expect(readme).toContain('and 1 more')
+
+    const first = readme.indexOf('[Do this first] Mods are turned off after an update')
+    const second = readme.indexOf('[Worth fixing] A script mod is buried too deep in folders')
+    const third = readme.indexOf('[Good to know] The thumbnail cache is older than your latest mod change')
+    expect(first).toBeGreaterThan(-1)
+    expect(second).toBeGreaterThan(first)
+    expect(third).toBeGreaterThan(second)
+
+    expect(readme.toLowerCase()).not.toContain('lila')
+    expect(readme).not.toContain(folderPath)
+    expect(readme).not.toContain('Program Files')
+    expect(readme).not.toMatch(/[A-Za-z]:[\\/]/)
+    expect(readme).not.toMatch(/[\u2013\u2014]/)
+    expect(readme).not.toContain('\r')
+  })
+
+  it('caps long change lists, keeps line endings to \\n, and never lets a planned file replace Read me.txt', async () => {
+    const root = await makeTempDir()
+    const simsDir = join(root, 'The Sims 4')
+    await mkdir(simsDir, { recursive: true })
+    await writeFile(join(simsDir, 'READ ME.txt'), 'not the summary', 'utf8')
+
+    const base = sampleScan()
+    const added = Array.from({ length: 13 }, (_, i) => ({ groupId: `dir:m${i}`, label: `Mod ${i + 1}`, hasScript: false }))
+    const scan = sampleScan({
+      folder: { ...base.folder, path: simsDir },
+      inventory: { ...base.inventory, modsDir: join(simsDir, 'Mods'), curseForge: { status: 'not-found' } },
+      logs: [{ ...base.logs[0]!, file: 'READ ME.txt' }],
+      findings: [{ ...base.findings[0]!, detail: 'First line\r\nSecond line\rThird line' }],
+      changes: { sinceAt: '2026-11-20T10:00:00.000Z', gameVersion: null, added, updated: [], removed: [] }
+    })
+    const requests: WriteRequest[] = []
+    const gate: Gate = {
+      async run(request) {
+        requests.push(request)
+        return { status: 'done' }
+      }
+    }
+    const paths = appPaths({ localAppData: '/tmp/local', appData: '/tmp/roaming', desktopDir: '/tmp/desktop' })
+    const clock = { now: () => new Date(2026, 10, 24, 12, 0, 0) }
+
+    const { result } = await buildReport({ gate, paths, clock, redact: makeRedactor({ USERNAME: 'Lila' }) }, scan)
+    expect(result.status).toBe('saved')
+    if (result.status !== 'saved') return
+    expect(result.entries.filter((name) => name.toLowerCase() === 'read me.txt')).toEqual(['Read me.txt'])
+
+    const op = requests[0]!.ops[0]!
+    if (op.op !== 'write') throw new Error('expected a write')
+    const unzipped = unzipSync(op.data as Uint8Array)
+    expect(Object.keys(unzipped).filter((name) => name.toLowerCase() === 'read me.txt')).toEqual(['Read me.txt'])
+    const readme = strFromU8(unzipped['Read me.txt']!)
+
+    expect(readme.startsWith('Sims Helper report\n')).toBe(true)
+    expect(readme).not.toContain('not the summary')
+    expect(readme).toContain('Added 13 mods: Mod 1, Mod 2')
+    expect(readme).toContain('Mod 10, and 3 more')
+    expect(readme).not.toContain('Mod 11')
+    expect(readme).not.toContain('\r')
+    expect(readme).toContain('First line\nSecond line\nThird line')
+  })
+
+  it('says so plainly when there are no findings and no logs', async () => {
+    const scan = sampleScan({ findings: [], logs: [], game: null, changes: null })
+    const requests: WriteRequest[] = []
+    const gate: Gate = {
+      async run(request) {
+        requests.push(request)
+        return { status: 'done' }
+      }
+    }
+    const paths = appPaths({ localAppData: '/tmp/local', appData: '/tmp/roaming', desktopDir: '/tmp/desktop' })
+    const clock = { now: () => new Date(2026, 10, 24, 12, 0, 0) }
+
+    await buildReport({ gate, paths, clock, redact: makeRedactor({ USERNAME: 'Lila' }) }, scan)
+    const op = requests[0]!.ops[0]!
+    if (op.op !== 'write') throw new Error('expected a write')
+    const readme = strFromU8(unzipSync(op.data as Uint8Array)['Read me.txt']!)
+
+    expect(readme).toContain('Game version: Unknown')
+    expect(readme).toContain('No obvious mod problems were found.')
+    expect(readme).toContain('No readable crash or exception logs found.')
+    expect(readme).not.toContain('What changed since')
+    expect(readme.toLowerCase()).not.toContain('lila')
   })
 
   it('returns write-refused when the gate refuses', async () => {

@@ -65,6 +65,7 @@ export function SendToTyler() {
             <div>
               <p className="mb-1.5 font-semibold text-foreground">What&apos;s inside</p>
               <ul className="space-y-1 text-muted-foreground">
+                <li>A plain-language summary (Read me.txt) so Tyler gets an easy overview</li>
                 <li>Crash &amp; last exception logs</li>
                 <li>Options.ini &amp; GameVersion.txt</li>
                 <li>Your mod list &amp; CurseForge list</li>

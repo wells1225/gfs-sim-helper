@@ -19,7 +19,7 @@ describe('SendToTyler', () => {
       'report:build': {
         status: 'saved',
         fileName: 'Sims Helper report 20261124-120000.zip',
-        entries: ['lastException_63887259912.txt', 'Options.ini', 'GameVersion.txt', 'scan.json', 'AddonGameInstance.json']
+        entries: ['Read me.txt', 'lastException_63887259912.txt', 'Options.ini', 'GameVersion.txt', 'scan.json', 'AddonGameInstance.json']
       },
       'report:reveal': undefined
     })
@@ -37,6 +37,8 @@ describe('SendToTyler', () => {
     expect(screen.getByText(/crash logs and mod list/i)).toBeInTheDocument()
     expect(screen.getByText(/never your saves/i)).toBeInTheDocument()
     expect(screen.getByText(/user name is removed/i)).toBeInTheDocument()
+    expect(screen.getByText(/plain-language summary \(Read me\.txt\)/i)).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/[\u2013\u2014]/)
 
     await user.click(screen.getByRole('button', { name: /create report zip/i }))
 
