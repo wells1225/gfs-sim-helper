@@ -1,38 +1,32 @@
 import type { BackupResult, BackupStatus, FixOutcome, JournalEntry } from '../../shared/model.ts'
 import type { ActionPlan, OnProgress, SafetyDeps } from '../ports.ts'
+import { recoverNow, runActionNow, undoNow } from './actions.ts'
+import { backupInFlight, backupStatus as checkBackup, makeBackup, tracked } from './backup.ts'
+import { listEntries } from './journal.ts'
+import { oneAtATime } from './lock.ts'
 
-export async function backupStatus(_deps: SafetyDeps, _folderPath: string): Promise<BackupStatus> {
-  throw new Error('not implemented: backupStatus')
+// backupStatus never waits for the lock: the gate asks it in the middle of runAction and undo.
+export async function backupStatus(deps: SafetyDeps, folderPath: string): Promise<BackupStatus> {
+  return await checkBackup(deps, folderPath)
 }
 
-export async function createBackup(
-  _deps: SafetyDeps,
-  _folderPath: string,
-  _onProgress?: OnProgress
-): Promise<BackupResult> {
-  throw new Error('not implemented: createBackup')
+export async function createBackup(deps: SafetyDeps, folderPath: string, onProgress?: OnProgress): Promise<BackupResult> {
+  if (backupInFlight(deps)) return { status: 'refused', reason: 'backup-already-running' }
+  return await tracked(deps, () => oneAtATime(deps, () => makeBackup(deps, folderPath, onProgress)))
 }
 
-export async function runAction(
-  _deps: SafetyDeps,
-  _plan: ActionPlan,
-  _onProgress?: OnProgress
-): Promise<FixOutcome> {
-  throw new Error('not implemented: runAction')
+export async function runAction(deps: SafetyDeps, plan: ActionPlan, onProgress?: OnProgress): Promise<FixOutcome> {
+  return await oneAtATime(deps, () => runActionNow(deps, plan, onProgress))
 }
 
-export async function undo(
-  _deps: SafetyDeps,
-  _entryId: string,
-  _onProgress?: OnProgress
-): Promise<FixOutcome> {
-  throw new Error('not implemented: undo')
+export async function undo(deps: SafetyDeps, entryId: string, onProgress?: OnProgress): Promise<FixOutcome> {
+  return await oneAtATime(deps, () => undoNow(deps, entryId, onProgress))
 }
 
-export async function listJournal(_deps: SafetyDeps): Promise<JournalEntry[]> {
-  throw new Error('not implemented: listJournal')
+export async function listJournal(deps: SafetyDeps): Promise<JournalEntry[]> {
+  return await listEntries(deps.paths.journalDir)
 }
 
-export async function recover(_deps: SafetyDeps): Promise<JournalEntry[]> {
-  throw new Error('not implemented: recover')
+export async function recover(deps: SafetyDeps): Promise<JournalEntry[]> {
+  return await oneAtATime(deps, async () => await recoverNow(deps, await listEntries(deps.paths.journalDir)))
 }
