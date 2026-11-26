@@ -24,6 +24,7 @@ import { Progress as ProgressBar } from '../components/ui/progress.tsx'
 import { FiftyEntry } from '../fiftyfifty/FiftyEntry.tsx'
 import { useNav } from '../nav.tsx'
 import { useSession } from '../session.tsx'
+import { ChangesCard } from './ChangesCard.tsx'
 import { FindingCard } from './FindingCard.tsx'
 
 const SEVERITY_ORDER: readonly {
@@ -379,6 +380,8 @@ export function CheckUp() {
           )}
         </div>
       </Alert>
+
+      <ChangesCard changes={scan.changes} />
 
       {groupedFindings.map((group) => {
         const GroupIcon = group.icon

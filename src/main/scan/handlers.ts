@@ -6,6 +6,7 @@ import { locate } from '../locate/index.ts'
 import type { AppContext } from '../ports.ts'
 import { buildReport } from '../report/index.ts'
 import { runScan, sameFolderPath } from './index.ts'
+import { folderFingerprint, recordScanSnapshot } from './snapshot.ts'
 
 export type ScanChannel =
   | 'settings:get'
@@ -60,6 +61,26 @@ async function runLocate(ctx: AppContext): Promise<LocateView> {
 export function scanHandlers(ctx: AppContext): Handlers<ScanChannel> {
   const settingsPath = join(ctx.paths.stateDir, 'settings.json')
   let lastReportFile: string | null = null
+  const snapshotTails = new Map<string, Promise<void>>()
+
+  async function withFolderSnapshotLock<T>(folderHash: string, task: () => Promise<T>): Promise<T> {
+    const prev = snapshotTails.get(folderHash) ?? Promise.resolve()
+    let release!: () => void
+    const current = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const tail = prev.then(() => current)
+    snapshotTails.set(folderHash, tail)
+    try {
+      await prev
+      return await task()
+    } finally {
+      release()
+      if (snapshotTails.get(folderHash) === tail) {
+        snapshotTails.delete(folderHash)
+      }
+    }
+  }
 
   return {
     async 'settings:get'() {
@@ -162,7 +183,13 @@ export function scanHandlers(ctx: AppContext): Handlers<ScanChannel> {
       )
 
       if (result.status === 'done') {
-        ctx.session.scan = result.scan
+        const folderHash = folderFingerprint(result.scan.folder.path)
+        const changes = await withFolderSnapshotLock(folderHash, () =>
+          recordScanSnapshot(ctx.gate, ctx.paths.stateDir, result.scan)
+        )
+        const scan = { ...result.scan, changes }
+        ctx.session.scan = scan
+        return { status: 'done', scan }
       }
 
       return result

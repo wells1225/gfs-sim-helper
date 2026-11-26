@@ -241,4 +241,71 @@ describe('CheckUp', () => {
       expect(isBefore(fiftyLink(), sendButton())).toBe(true)
     })
   })
+
+  describe('what changed since last check-up', () => {
+    it('renders nothing when changes is null or has no changes', () => {
+      renderCheckUp({ scan: sampleScan({ changes: null }) })
+      expect(screen.queryByText('What changed since your last check-up')).not.toBeInTheDocument()
+
+      cleanup()
+      renderCheckUp({
+        scan: sampleScan({
+          changes: {
+            sinceAt: '2026-11-20T12:00:00.000Z',
+            gameVersion: null,
+            added: [],
+            updated: [],
+            removed: []
+          }
+        })
+      })
+      expect(screen.queryByText('What changed since your last check-up')).not.toBeInTheDocument()
+    })
+
+    it('renders summary counts, expands accordion with script badge, caps >15 items per category, and avoids em/en dashes', async () => {
+      const user = userEvent.setup()
+      const manyAdded = Array.from({ length: 18 }, (_, i) => ({
+        groupId: `dir:added-${i + 1}`,
+        label: i === 0 ? 'MC Command Center' : `Added Mod ${i + 1}`,
+        hasScript: i === 0
+      }))
+
+      renderCheckUp({
+        scan: sampleScan({
+          changes: {
+            sinceAt: '2026-11-20T12:00:00.000Z',
+            gameVersion: { from: '1.128.10.1030', to: '1.129.39.1030' },
+            added: manyAdded,
+            updated: [{ groupId: 'cf:901234', label: 'Wicked Wardrobe', hasScript: true }],
+            removed: [{ groupId: 'dir:old-hair', label: 'Old Hair', hasScript: false }]
+          }
+        })
+      })
+
+      expect(screen.getByText('What changed since your last check-up')).toBeInTheDocument()
+      expect(screen.getByText(/Game updated from 1\.128\.10\.1030 to 1\.129\.39\.1030/)).toBeInTheDocument()
+      expect(screen.getByText(/18 mods added/)).toBeInTheDocument()
+      expect(screen.getByText(/1 mod updated/)).toBeInTheDocument()
+      expect(screen.getByText(/1 mod removed/)).toBeInTheDocument()
+      expect(screen.getByText(/Nov 20, 2026/)).toBeInTheDocument()
+      expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+
+      // Mod list starts collapsed
+      expect(screen.queryByText('MC Command Center')).not.toBeInTheDocument()
+
+      const trigger = screen.getByRole('button', { name: /changed mods/i })
+      await user.click(trigger)
+
+      expect(screen.getByText('MC Command Center')).toBeVisible()
+      expect(screen.getByText('Wicked Wardrobe')).toBeVisible()
+      expect(screen.getByText('Old Hair')).toBeVisible()
+      expect(screen.getAllByText('Script mod')).toHaveLength(2)
+
+      // 18 added mods capped at 15 + "and 3 more"
+      expect(screen.getByText('Added Mod 15')).toBeVisible()
+      expect(screen.queryByText('Added Mod 16')).not.toBeInTheDocument()
+      expect(screen.getByText('and 3 more')).toBeVisible()
+      expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+    })
+  })
 })
