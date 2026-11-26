@@ -1,12 +1,43 @@
 import { expect, test } from '@playwright/test'
 import type { DisabledGroup, JournalEntry, StartupRecovery } from '../../../src/shared/model.ts'
-import { SAMPLE_SHA_A, SAMPLE_SHA_B, sampleJournalEntry } from '../../../src/shared/testing/sample.ts'
-import { launchApp, shoot, stubIpc } from '../support/app.ts'
+import { SAMPLE_SHA_A, SAMPLE_SHA_B, sampleJournalEntry, sampleScan } from '../../../src/shared/testing/sample.ts'
+import { launchApp, shoot, stubIpc, type StubIpcMap } from '../support/app.ts'
 
 const PR_SLUG = 'pr-10-fixes'
 
-// Main's recover is still PR 9's stub on this branch and answers failed, so every shot stubs journal:recovery itself.
 const NOTHING_RECOVERED: StartupRecovery = { status: 'finished', touched: [] }
+
+const NO_TRANSITIONS = `(() => {
+  const style = document.createElement('style');
+  style.textContent = '*, *::before, *::after { transition: none !important; }';
+  const attach = () => {
+    if (!style.isConnected) (document.head || document.documentElement).appendChild(style);
+  };
+  if (document.head) attach();
+  else window.addEventListener('DOMContentLoaded', attach, { once: true });
+})();`
+
+async function openCheckUp(extraStubs: StubIpcMap = {}) {
+  const scan = sampleScan()
+  const running = await launchApp()
+  try {
+    await running.page.addInitScript({ content: NO_TRANSITIONS })
+    await stubIpc(running.app, {
+      'journal:recovery': NOTHING_RECOVERED,
+      'journal:list': [],
+      'groups:disabled': [],
+      'settings:get': { welcome: 'seen', folderPath: scan.folder.path },
+      'scan:run': { status: 'done', scan },
+      ...extraStubs
+    })
+    await running.page.getByRole('button', { name: /closes by itself/i }).click()
+    await expect(running.page.getByRole('heading', { name: 'Do this first', exact: true })).toBeVisible()
+    return { running, scan }
+  } catch (err) {
+    await running.close()
+    throw err
+  }
+}
 
 function buildHistoryEntries(): JournalEntry[] {
   const folderPath = 'C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4'
@@ -260,9 +291,137 @@ test('branch shot: mods-no-check-up', async () => {
   }
 })
 
-// After-main shots (need PR 7's Check-up screen to host FindingActions and populate session scan)
-test.fixme('after-main shot: finding-with-fix', async () => {})
-test.fixme('after-main shot: fix-backing-up', async () => {})
-test.fixme('after-main shot: fix-done', async () => {})
-test.fixme('after-main shot: fix-game-running', async () => {})
-test.fixme('after-main shot: mods-list', async () => {})
+test('after-main shot: finding-with-fix', async () => {
+  const { running } = await openCheckUp()
+  try {
+    await expect(running.page.getByRole('button', { name: 'Turn mods back on' })).toBeVisible()
+    await expect(running.page.getByRole('button', { name: 'Move it up a folder' })).toBeVisible()
+
+    expect(running.consoleErrors).toEqual([])
+    await shoot(running.page, PR_SLUG, 'finding-with-fix')
+  } finally {
+    await running.close()
+  }
+})
+
+test('after-main shot: fix-backing-up', async () => {
+  const { running } = await openCheckUp()
+  try {
+    await running.app.evaluate(({ ipcMain, BrowserWindow }) => {
+      ipcMain.removeHandler('fix:apply')
+      ipcMain.handle('fix:apply', () => {
+        setTimeout(() => {
+          const win = BrowserWindow.getAllWindows()[0]
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('progress', {
+              task: 'backup',
+              stage: 'copying',
+              done: 1240,
+              total: 5300
+            })
+          }
+        }, 50)
+        return new Promise(() => {
+          // Held open so the screenshot captures the backup progress state
+        })
+      })
+    })
+
+    await running.page.getByRole('button', { name: 'Turn mods back on' }).click()
+    await expect(running.page.getByText('Making a safety copy first…')).toBeVisible()
+    await expect(running.page.getByText('Copying 1,240 of 5,300 files')).toBeVisible()
+
+    expect(running.consoleErrors).toEqual([])
+    await shoot(running.page, PR_SLUG, 'fix-backing-up')
+  } finally {
+    await running.close()
+  }
+})
+
+test('after-main shot: fix-done', async () => {
+  const doneEntry = sampleJournalEntry({
+    id: '20261124-121500-fx01',
+    at: '2026-11-24T12:15:00.000Z',
+    action: 'turn-mods-on',
+    summary: 'Turned mods and script mods back on',
+    status: 'done',
+    undo: 'can-undo'
+  })
+
+  const { running } = await openCheckUp({
+    'fix:apply': { status: 'done', entry: doneEntry }
+  })
+  try {
+    await running.page.getByRole('button', { name: 'Turn mods back on' }).click()
+    await expect(
+      running.page.locator('main').getByText('Turned mods and script mods back on', { exact: true })
+    ).toBeVisible()
+    await expect(running.page.locator('main').getByRole('button', { name: 'Undo' })).toBeVisible()
+
+    expect(running.consoleErrors).toEqual([])
+    await shoot(running.page, PR_SLUG, 'fix-done')
+  } finally {
+    await running.close()
+  }
+})
+
+test('after-main shot: fix-game-running', async () => {
+  const { running } = await openCheckUp({
+    'fix:apply': { status: 'refused', refusal: { why: 'gate', refusal: { reason: 'game-running' } } }
+  })
+  try {
+    await running.page.getByRole('button', { name: 'Turn mods back on' }).click()
+    await expect(
+      running.page.getByText('The Sims 4 is still open. Save and close the game, then try again.')
+    ).toBeVisible()
+    await expect(running.page.getByRole('button', { name: 'Try again' })).toBeVisible()
+
+    expect(running.consoleErrors).toEqual([])
+    await shoot(running.page, PR_SLUG, 'fix-game-running')
+  } finally {
+    await running.close()
+  }
+})
+
+test('after-main shot: mods-list', async () => {
+  const disabled: DisabledGroup[] = [
+    {
+      groupId: 'dir:buildbuy',
+      label: 'BuildBuy',
+      entryId: '20261124-114000-d2',
+      at: '2026-11-24T11:40:00.000Z',
+      origin: 'fix'
+    }
+  ]
+
+  const { running } = await openCheckUp({
+    'groups:disabled': disabled,
+    'journal:list': [
+      sampleJournalEntry({
+        id: '20261124-114000-d2',
+        at: '2026-11-24T11:40:00.000Z',
+        action: 'disable-group',
+        summary: 'Set aside BuildBuy',
+        groupId: 'dir:buildbuy',
+        groupLabel: 'BuildBuy',
+        hasScript: false,
+        status: 'done',
+        undo: 'can-undo'
+      })
+    ]
+  })
+  try {
+    await running.page.getByRole('button', { name: 'Your mods' }).click()
+    await expect(running.page.getByRole('searchbox', { name: 'Search your mods' })).toBeVisible()
+    await expect(running.page.getByText('Wicked Wardrobe')).toBeVisible()
+    await expect(running.page.getByText('Hair')).toBeVisible()
+    await expect(running.page.getByText('BuildBuy')).toBeVisible()
+    await expect(running.page.getByText('2 active')).toBeVisible()
+    await expect(running.page.getByText('1 set aside')).toBeVisible()
+
+    expect(running.consoleErrors).toEqual([])
+    await shoot(running.page, PR_SLUG, 'mods-list')
+  } finally {
+    await running.close()
+  }
+})
