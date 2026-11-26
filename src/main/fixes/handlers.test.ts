@@ -497,3 +497,34 @@ describe('last check: an unreadable fiftyfifty.json blocks fixes', () => {
     expect(res.status).toBe('done')
   })
 })
+
+describe('stage review: journal read failures never leak paths over IPC', () => {
+  it('journal:list and groups:disabled reject without filesystem paths or usernames when reading fails', async () => {
+    const rawErr = Object.assign(
+      new Error("EACCES: permission denied, scandir 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper\\journal'"),
+      { code: 'EACCES', path: 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper\\journal' }
+    )
+    const { ctx } = await makeContext({
+      safety: {
+        async listJournal() {
+          throw rawErr
+        }
+      },
+      fixes: {
+        async disabledGroups() {
+          throw rawErr
+        }
+      }
+    })
+    const handlers = fixHandlers(ctx)
+
+    for (const call of [() => handlers['journal:list'](undefined), () => handlers['groups:disabled'](undefined)]) {
+      const msg = await call().then(
+        () => null,
+        (err: unknown) => (err instanceof Error ? err.message : String(err))
+      )
+      expect(msg).not.toBeNull()
+      expect(msg!).not.toMatch(/Lila|AppData|EACCES|[A-Z]:\\|\//i)
+    }
+  })
+})

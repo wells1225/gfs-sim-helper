@@ -228,4 +228,33 @@ describe('scanHandlers', () => {
     await handlers['report:reveal']()
     expect(revealed).toEqual([join(desktopDir, built.fileName)])
   })
+
+  it('waits for startupRecovery to finish before scanning', async () => {
+    const { simsDir, ctx } = await makeFixtureEnv()
+    const events: string[] = []
+    let finishRecovery!: () => void
+    ctx.startupRecovery = () =>
+      new Promise((resolve) => {
+        events.push('recovery:start')
+        finishRecovery = () => {
+          events.push('recovery:done')
+          resolve({ status: 'finished', touched: [] })
+        }
+      })
+    const origBuild = ctx.scan.buildInventory
+    ctx.scan.buildInventory = async (...args) => {
+      events.push('scan:inventory')
+      return origBuild(...args)
+    }
+
+    const handlers = scanHandlers(ctx)
+    const pending = handlers['scan:run']({ folderPath: simsDir, symptom: 'closes' })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(events).toEqual(['recovery:start'])
+
+    finishRecovery()
+    const result = await pending
+    expect(result.status).toBe('done')
+    expect(events).toEqual(['recovery:start', 'recovery:done', 'scan:inventory'])
+  })
 })
