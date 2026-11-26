@@ -1,6 +1,6 @@
 import { CircleCheck, FlaskConical, Gamepad2, Info, ShieldCheck } from 'lucide-react'
 import type { ReactNode } from 'react'
-import type { FiftyAnswer, FiftyFifty, Scan } from '../../shared/model.ts'
+import type { FiftyAnswer, FiftyFifty, Scan, Symptom } from '../../shared/model.ts'
 import { Alert, AlertDescription } from '../components/ui/alert.tsx'
 import { Button } from '../components/ui/button.tsx'
 import { Card } from '../components/ui/card.tsx'
@@ -169,7 +169,17 @@ export function ReadyStep({
   )
 }
 
-export function TestStep({ state, onTested, locked }: { state: FiftyFifty; onTested(): void; locked: boolean }) {
+export function TestStep({
+  state,
+  onTested,
+  locked,
+  symptom
+}: {
+  state: FiftyFifty
+  onTested(): void
+  locked: boolean
+  symptom?: Symptom
+}) {
   const control = isControlRound(state)
   return (
     <Card>
@@ -189,6 +199,15 @@ export function TestStep({ state, onTested, locked }: { state: FiftyFifty; onTes
           </p>
         </div>
       </Alert>
+      {symptom === 'one-save-or-lot' && (
+        <p className="flex items-start gap-2 text-sm leading-relaxed text-muted-foreground">
+          <Info className="mt-0.5 size-4 shrink-0" strokeWidth={1.75} aria-hidden />
+          <span>
+            If the problem only happens on one save or lot, it may not show up in a new test household. That is okay. You
+            can choose Stop the test below and send a report to Tyler instead.
+          </span>
+        </p>
+      )}
       <Text>Keep CurseForge closed while you test. When you are done, close the game and come back here.</Text>
       <div>
         <Button size="lg" onClick={onTested} disabled={locked}>

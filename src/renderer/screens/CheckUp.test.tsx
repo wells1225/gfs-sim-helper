@@ -187,4 +187,58 @@ describe('CheckUp', () => {
     expect(screen.getByText('Found 1 thing worth fixing')).toBeInTheDocument()
     expect(document.body.textContent).not.toMatch(/likeliest|the reason/i)
   })
+
+  describe('tailors guidance to what happened', () => {
+    const sendButton = () => screen.getByRole('button', { name: /send to tyler/i })
+    const fiftyLink = () => screen.getByRole('button', { name: /50\/50 test/i })
+    const isBefore = (a: Element, b: Element) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+
+    it('one save or lot: explains the 50/50 test may not catch it and puts Send to Tyler first', () => {
+      renderCheckUp({ scan: sampleScan({ symptom: 'one-save-or-lot', findings: [] }) })
+
+      expect(screen.getByText(/only happens on one save or lot/i)).toBeInTheDocument()
+      expect(screen.getByText(/brand new test household/i)).toBeInTheDocument()
+      expect(isBefore(sendButton(), fiftyLink())).toBe(true)
+      expect(screen.getByText(/mods folder looks healthy/i)).toBeInTheDocument()
+      expect(document.body.textContent).not.toMatch(/is still crashing/i)
+      expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+    })
+
+    it('one save or lot with findings still shows the guidance and the report first', () => {
+      renderCheckUp({ scan: sampleScan({ symptom: 'one-save-or-lot' }) })
+
+      expect(screen.getByText(/only happens on one save or lot/i)).toBeInTheDocument()
+      expect(isBefore(sendButton(), fiftyLink())).toBe(true)
+    })
+
+    it('won\'t load: the all-clear talks about a game that will not open, not crashing', () => {
+      renderCheckUp({ scan: sampleScan({ symptom: 'wont-load', findings: [] }) })
+
+      expect(screen.getByText(/still will not open/i)).toBeInTheDocument()
+      expect(screen.getByText(/game update/i)).toBeInTheDocument()
+      expect(screen.getByText(/Repair in the EA app/)).toBeInTheDocument()
+      expect(document.body.textContent).not.toMatch(/is still crashing/i)
+      expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+    })
+
+    it('freezes: the all-clear talks about freezing, not crashing', () => {
+      renderCheckUp({ scan: sampleScan({ symptom: 'freezes', findings: [] }) })
+
+      expect(screen.getByText(/If your game still freezes or gets stuck/)).toBeInTheDocument()
+      expect(document.body.textContent).not.toMatch(/is still crashing/i)
+      expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+    })
+
+    it.each(['closes', 'not-sure'] as const)('%s: keeps the usual wording and order', (symptom) => {
+      renderCheckUp({ scan: sampleScan({ symptom, findings: [] }) })
+
+      expect(
+        screen.getByText(
+          'If your game is still crashing, you can try the 50/50 test or send a report to Tyler so he can take a closer look.'
+        )
+      ).toBeInTheDocument()
+      expect(screen.queryByText(/only happens on one save or lot/i)).not.toBeInTheDocument()
+      expect(isBefore(fiftyLink(), sendButton())).toBe(true)
+    })
+  })
 })

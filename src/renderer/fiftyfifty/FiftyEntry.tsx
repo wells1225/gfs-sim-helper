@@ -10,15 +10,22 @@ export function FiftyEntry({ scan }: { scan: Scan }) {
   const groups = scan.inventory.groups.length
   if (groups === 0) return null
   const open = () => go({ screen: 'fifty-fifty' })
+  const saveNote =
+    scan.symptom === 'one-save-or-lot' ? (
+      <p className="text-sm text-muted-foreground">A new test household may not show a problem tied to one save.</p>
+    ) : null
 
   if (!scan.findings.some((f) => f.next === 'fifty-fifty')) {
     return (
-      <p className="text-[0.9375rem] text-muted-foreground">
-        Still crashing and not sure why?{' '}
-        <Button variant="link" className="h-auto p-0" onClick={open}>
-          Try the 50/50 test
-        </Button>
-      </p>
+      <div className="flex flex-col gap-1">
+        <p className="text-[0.9375rem] text-muted-foreground">
+          Still crashing and not sure why?{' '}
+          <Button variant="link" className="h-auto p-0" onClick={open}>
+            Try the 50/50 test
+          </Button>
+        </p>
+        {saveNote}
+      </div>
     )
   }
 
@@ -34,6 +41,7 @@ export function FiftyEntry({ scan }: { scan: Scan }) {
             For your <span className="tabular-nums">{groupsWord(groups)}</span> that takes about{' '}
             <span className="tabular-nums">{roundsWord(rounds)}</span>, one game load each.
           </p>
+          {saveNote}
         </div>
       </div>
       <div>
