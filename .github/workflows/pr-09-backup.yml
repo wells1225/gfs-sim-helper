@@ -1,0 +1,20 @@
+name: pr-09-backup
+on:
+  pull_request:
+    paths: ['src/main/safety/**', '.github/workflows/pr-09-backup.yml']
+  push:
+    branches: [main]
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run fixtures -- big
+      - run: npx vitest run src/main/safety/backup-probe.test.ts
+        env:
+          SIMS_HELPER_PROBE: backup
