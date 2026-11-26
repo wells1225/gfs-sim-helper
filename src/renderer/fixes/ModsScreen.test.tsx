@@ -141,7 +141,9 @@ describe('Your mods: filters, sort and summary', () => {
       </Harness>
     )
 
-    expect(await screen.findByText('3 mods · 1 script mod · 1.7 MB · 1 set aside')).toBeInTheDocument()
+    expect(await screen.findByText('3 mods · 1 script mod · 1.7 MB')).toBeInTheDocument()
+    // The header badge shows the set-aside count once, never duplicated inside the summary line.
+    expect(await screen.findAllByText(/1 set aside/)).toHaveLength(1)
   })
 
   it('filter buttons change which mods show', async () => {

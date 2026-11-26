@@ -519,8 +519,7 @@ export function ModsScreen() {
             {[
               plural(summary.groups, 'mod', 'mods'),
               plural(summary.scripts, 'script mod', 'script mods'),
-              ...(scan ? [formatBytes(summary.bytes)] : []),
-              `${summary.setAside.toLocaleString()} set aside`
+              ...(scan ? [formatBytes(summary.bytes)] : [])
             ].join(' · ')}
           </p>
 
