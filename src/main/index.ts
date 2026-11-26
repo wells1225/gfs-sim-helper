@@ -114,12 +114,7 @@ if (!gotSingleInstanceLock) {
   app.quit()
 } else {
   let quitGuard: RecoveryQuitGuard | null = null
-
-  app.on('second-instance', () => {
-    if (!mainWindow) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.focus()
-  })
+  let hasReadyStarted = false
 
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
@@ -180,6 +175,7 @@ if (!gotSingleInstanceLock) {
       quit: () => app.quit(),
       openWindowCount: () => BrowserWindow.getAllWindows().length
     })
+    hasReadyStarted = true
 
     nativeTheme.on('updated', () => {
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -194,6 +190,17 @@ if (!gotSingleInstanceLock) {
         mainWindow = createWindow()
       }
     })
+  })
+
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      if (hasReadyStarted && app.isReady()) {
+        mainWindow = createWindow()
+      }
+      return
+    }
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.focus()
   })
 
   app.on('before-quit', (event) => {

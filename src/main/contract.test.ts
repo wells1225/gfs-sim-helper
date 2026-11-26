@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { Page } from '@playwright/test'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { INVOKE_CHANNELS, type Handlers, type IpcInvoke } from '../shared/ipc.ts'
 import type {
   ActionKind,
@@ -852,6 +852,25 @@ describe('share saves contract (PR 14)', () => {
 })
 
 describe('stage review integration invariants', () => {
+  function makeContext() {
+    return createContext({
+      host: makeFakeHost(),
+      paths: appPaths({
+        localAppData: '/fake/LocalAppData',
+        appData: '/fake/Roaming',
+        desktopDir: '/fake/Desktop',
+        env: {}
+      }),
+      safeStorage: {
+        isEncryptionAvailable: () => false,
+        encryptString: (text) => Buffer.from(text, 'utf8'),
+        decryptString: (data) => Buffer.from(data).toString('utf8')
+      },
+      emit: () => {},
+      reveal: () => {}
+    })
+  }
+
   it('main/index.ts starts startupRecovery after registerIpc, guards quit until settled, and creates the window', async () => {
     const src = await readFile(join(REPO_ROOT, 'src/main/index.ts'), 'utf8')
     expect(src).not.toMatch(/await\s+ctx\.startupRecovery\(\)/)
@@ -1297,6 +1316,282 @@ describe('stage review integration invariants', () => {
     const t0 = performance.now()
     expect(sanitizeIpcError(new Error(longText), ctx.redact).message.endsWith('<path>')).toBe(true)
     expect(performance.now() - t0).toBeLessThan(250)
+  })
+
+  it('sanitizeIpcError strips trailing brackets in linear time without leaking path segments', () => {
+    const ctx = makeContext()
+
+    const closingParens = ')'.repeat(50_000)
+    const balancedInput = `Could not read C:\\Users\\Lila\\Mods${'('.repeat(50_000)} ${closingParens}a`
+    const t0 = performance.now()
+    const balancedMsg = sanitizeIpcError(new Error(balancedInput), ctx.redact).message
+    const elapsedBalanced = performance.now() - t0
+    expect(elapsedBalanced).toBeLessThan(100)
+    expect(balancedMsg).toBe(`Could not read <path> ${closingParens}a`)
+    expect(balancedMsg).not.toContain('Lila')
+    expect(balancedMsg).not.toContain('Users')
+    expect(balancedMsg).not.toContain('Mods')
+
+    const unbalancedInput = `Could not read C:\\Users\\Lila\\Mods ${closingParens}a`
+    const t1 = performance.now()
+    const unbalancedMsg = sanitizeIpcError(new Error(unbalancedInput), ctx.redact).message
+    const elapsedUnbalanced = performance.now() - t1
+    expect(elapsedUnbalanced).toBeLessThan(100)
+    expect(unbalancedMsg).toBe(`Could not read <path> ${closingParens}a`)
+    expect(unbalancedMsg).not.toContain('Lila')
+  })
+
+  it('sanitizeIpcError redacts multi-word filenames with conjunctions, prepositions, and articles while preserving prose instructions', () => {
+    const ctx = makeContext()
+
+    const cases: [string, string][] = [
+      ['Could not read C:\\Games\\Save and Exit.ini', 'Could not read <path>'],
+      ['Could not read C:\\Users\\Lila\\Better Build and Buy.package', 'Could not read <path>'],
+      ['Could not read C:\\Users\\Lila\\Mods\\Slice of Life.package', 'Could not read <path>'],
+      ['Could not read C:\\Users\\Lila\\Mods\\Walk to School in the Rain.package', 'Could not read <path>'],
+      ['Could not read C:\\Users\\Lila\\Mods\\Made for Sims with Pets by Lila.package', 'Could not read <path>'],
+      ['Failed at C:\\Games\\Mods, please check Options.ini', 'Failed at <path>, please check Options.ini'],
+      ['Failed at C:\\Games\\Mods; restart Options.ini', 'Failed at <path>; restart Options.ini'],
+      ['Failed at C:\\Games\\Mods: contact support', 'Failed at <path>: contact support'],
+      ['Failed at C:\\Games\\Mods make sure Options.ini is valid', 'Failed at <path> make sure Options.ini is valid'],
+      ['Failed at C:\\Games\\Mods reopen Options.ini', 'Failed at <path> reopen Options.ini']
+    ]
+    for (const [input, expected] of cases) {
+      expect(sanitizeIpcError(new Error(input), ctx.redact).message, input).toBe(expected)
+      expect(sanitizeIpcError(new Error(input)).message, `without redact: ${input}`).toBe(expected)
+    }
+  })
+
+  it('sanitizeIpcError does not misclassify network read/write errors without path or dest as file errors', () => {
+    const ctx = makeContext()
+
+    expect(
+      sanitizeIpcError({ message: 'read ECONNRESET', code: 'ECONNRESET', syscall: 'read' }, ctx.redact).message
+    ).toBe('read ECONNRESET')
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET', syscall: 'read' }),
+        ctx.redact
+      ).message
+    ).toBe('read ECONNRESET')
+
+    for (const code of [
+      'ECONNRESET',
+      'ECONNREFUSED',
+      'ECONNABORTED',
+      'EPIPE',
+      'ETIMEDOUT',
+      'EHOSTUNREACH',
+      'ENETUNREACH',
+      'ENOTFOUND',
+      'EAI_AGAIN',
+      'ERR_SOCKET_CLOSED'
+    ]) {
+      const err = Object.assign(new Error(`write ${code}`), { code, syscall: 'write' })
+      expect(sanitizeIpcError(err, ctx.redact).message, code).toBe(`write ${code}`)
+    }
+
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('read ECONNRESET at C:\\Users\\Lila\\AppData\\Local\\pipe'), {
+          code: 'ECONNRESET',
+          syscall: 'read'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('read ECONNRESET at <path>')
+
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('write EPIPE'), {
+          code: 'EPIPE',
+          syscall: 'write',
+          path: 'C:\\Users\\Lila\\pipe'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('A file operation failed')
+  })
+
+  it('main/index.ts reopens the window on second-instance when closed while startup recovery is still running', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'sims-second-instance-'))
+    try {
+      vi.resetModules()
+
+      let ready = true
+      let resolveWhenReady!: () => void
+      const whenReadyPromise = new Promise<void>((resolve) => {
+        resolveWhenReady = resolve
+      })
+      let resolveRecovery!: (res: StartupRecovery) => void
+      const recoveryPromise = new Promise<StartupRecovery>((resolve) => {
+        resolveRecovery = resolve
+      })
+
+      const appListeners = new Map<string, ((...args: unknown[]) => void)[]>()
+      const emitApp = (event: string, ...args: unknown[]): void => {
+        for (const fn of appListeners.get(event) ?? []) {
+          fn(...args)
+        }
+      }
+
+      let quitCalls = 0
+      const createdWindows: FakeWindow[] = []
+      const openWindows: FakeWindow[] = []
+
+      class FakeWindow {
+        destroyed = false
+        minimized = false
+        restored = false
+        focused = false
+        closedListeners: (() => void)[] = []
+        webContents = {
+          mainFrame: { url: 'file:///fake/index.html' },
+          send: () => {},
+          setWindowOpenHandler: () => {},
+          on: () => {}
+        }
+
+        constructor() {
+          createdWindows.push(this)
+          openWindows.push(this)
+        }
+
+        static getAllWindows(): FakeWindow[] {
+          return [...openWindows]
+        }
+
+        once(_event: string, _fn: () => void): void {}
+
+        on(event: string, fn: () => void): void {
+          if (event === 'closed') {
+            this.closedListeners.push(fn)
+          }
+        }
+
+        async loadURL(): Promise<void> {}
+        async loadFile(): Promise<void> {}
+        show(): void {}
+        setBackgroundColor(): void {}
+
+        isDestroyed(): boolean {
+          return this.destroyed
+        }
+
+        isMinimized(): boolean {
+          return this.minimized
+        }
+
+        restore(): void {
+          this.minimized = false
+          this.restored = true
+        }
+
+        focus(): void {
+          this.focused = true
+        }
+
+        close(): void {
+          this.destroyed = true
+          const idx = openWindows.indexOf(this)
+          if (idx !== -1) openWindows.splice(idx, 1)
+          for (const fn of this.closedListeners) fn()
+        }
+      }
+
+      vi.doMock('electron', () => ({
+        app: {
+          isPackaged: false,
+          requestSingleInstanceLock: () => true,
+          isReady: () => ready,
+          whenReady: () => whenReadyPromise,
+          getPath: (name: string) => join(tempRoot, name),
+          getVersion: () => '0.1.0',
+          on: (event: string, fn: (...args: unknown[]) => void) => {
+            const list = appListeners.get(event) ?? []
+            list.push(fn)
+            appListeners.set(event, list)
+          },
+          quit: () => {
+            let prevented = false
+            emitApp('before-quit', {
+              preventDefault: () => {
+                prevented = true
+              }
+            })
+            if (!prevented) quitCalls += 1
+          }
+        },
+        BrowserWindow: FakeWindow,
+        Menu: { setApplicationMenu: () => {} },
+        nativeTheme: { shouldUseDarkColors: false, on: () => {} },
+        screen: { getPrimaryDisplay: () => ({ workAreaSize: { width: 1280, height: 800 } }) },
+        ipcMain: { handle: () => {} },
+        safeStorage: {
+          isEncryptionAvailable: () => false,
+          encryptString: (t: string) => Buffer.from(t, 'utf8'),
+          decryptString: (b: Buffer) => b.toString('utf8')
+        },
+        dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
+        shell: { showItemInFolder: () => {}, openExternal: async () => {} }
+      }))
+
+      vi.doMock('./app-host.ts', () => ({
+        createAppHost: () => makeFakeHost(),
+        desktopDir: () => join(tempRoot, 'Desktop')
+      }))
+
+      const actualServices = await vi.importActual<typeof import('./services.ts')>('./services.ts')
+      vi.doMock('./services.ts', () => ({
+        ...actualServices,
+        createContext: (input: CreateContextInput) => ({
+          ...actualServices.createContext(input),
+          startupRecovery: () => recoveryPromise
+        })
+      }))
+
+      await import('./index.ts')
+
+      emitApp('second-instance')
+      expect(createdWindows).toHaveLength(0)
+
+      resolveWhenReady()
+      await whenReadyPromise
+      await Promise.resolve()
+      expect(createdWindows).toHaveLength(1)
+      expect(openWindows).toHaveLength(1)
+
+      createdWindows[0]!.close()
+      emitApp('window-all-closed')
+      expect(openWindows).toHaveLength(0)
+      expect(quitCalls).toBe(0)
+
+      ready = false
+      emitApp('second-instance')
+      expect(openWindows).toHaveLength(0)
+
+      ready = true
+      emitApp('second-instance')
+      expect(openWindows).toHaveLength(1)
+      expect(createdWindows).toHaveLength(2)
+
+      createdWindows[1]!.minimized = true
+      emitApp('second-instance')
+      expect(createdWindows).toHaveLength(2)
+      expect(createdWindows[1]!.restored).toBe(true)
+      expect(createdWindows[1]!.focused).toBe(true)
+
+      resolveRecovery({ status: 'finished', touched: [] })
+      await recoveryPromise
+      await Promise.resolve()
+      expect(quitCalls).toBe(0)
+    } finally {
+      vi.doUnmock('electron')
+      vi.doUnmock('./app-host.ts')
+      vi.doUnmock('./services.ts')
+      vi.resetModules()
+      await rm(tempRoot, { recursive: true, force: true })
+    }
   })
 
   it('fix:apply and fifty:start never overlap: fifty:start sees a group whose disable just finished, and a fix after fifty:start is refused', async () => {

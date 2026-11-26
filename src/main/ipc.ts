@@ -130,11 +130,18 @@ const FS_ERRNO_CODES = new Set(
   ).split(' ')
 )
 
+const NETWORK_ERRNO_CODES = new Set(
+  (
+    'ECONNRESET ECONNREFUSED ECONNABORTED EPIPE ETIMEDOUT ' +
+    'EHOSTUNREACH ENETUNREACH ENOTFOUND EAI_AGAIN ERR_SOCKET_CLOSED'
+  ).split(' ')
+)
+
 const FINAL_PROSE_STOPWORDS = new Set(
   (
-    'and or nor but so yet then please check see try for with without from to into onto in on at by via ' +
-    'because since while when where if unless until after before instead otherwise later again ' +
-    'read open write save load close delete remove move copy rename restore verify ensure inspect edit update use run ' +
+    'please check see try ensure verify make close restart reopen contact send tell ' +
+    'because since while when where if unless instead otherwise ' +
+    'read write delete remove rename restore inspect ' +
     'is are was were be been has have had can cannot could should would will may might must need needs'
   ).split(' ')
 )
@@ -168,7 +175,7 @@ const KNOWN_UNIX_ROOTS = new Set([
 
 const MAX_BRIDGE_CHARS = 120
 const MAX_BRIDGE_WORDS = 8
-const MAX_FINAL_WORDS = 4
+const MAX_FINAL_WORDS = 8
 
 const isAsciiLetter = (ch: string): boolean => ASCII_LETTER.test(ch)
 const isAsciiDigit = (ch: string): boolean => ASCII_DIGIT.test(ch)
@@ -196,8 +203,15 @@ function isFolderWord(word: string): boolean {
 }
 
 function isFinalProseStopword(word: string): boolean {
-  const bare = word.replace(/^[(\[]+|[)\]]+$/g, '').toLowerCase()
-  return FINAL_PROSE_STOPWORDS.has(bare)
+  let start = 0
+  while (start < word.length && (word[start] === '(' || word[start] === '[')) {
+    start += 1
+  }
+  let end = word.length
+  while (end > start && (word[end - 1] === ')' || word[end - 1] === ']')) {
+    end -= 1
+  }
+  return FINAL_PROSE_STOPWORDS.has(word.slice(start, end).toLowerCase())
 }
 
 interface BracketCounts {
@@ -712,6 +726,7 @@ function isFsErrorObject(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false
   const candidate = err as { path?: unknown; dest?: unknown; syscall?: unknown; code?: unknown }
   if (isPathValue(candidate.path) || isPathValue(candidate.dest)) return true
+  if (typeof candidate.code === 'string' && NETWORK_ERRNO_CODES.has(candidate.code.toUpperCase())) return false
   if (typeof candidate.syscall === 'string' && FS_SYSCALLS.has(candidate.syscall.toLowerCase())) return true
   if (typeof candidate.code === 'string' && isFsErrnoCode(candidate.code)) return true
   return false
@@ -722,11 +737,21 @@ function hasFsErrnoPrefix(text: string): boolean {
   return match !== null && isFsErrnoCode(match[1]!)
 }
 
+function errorText(err: unknown): string {
+  if (err instanceof Error) return err.message
+  if (typeof err === 'string') return err
+  if (err && typeof err === 'object') {
+    const message = (err as { message?: unknown }).message
+    if (typeof message === 'string') return message
+  }
+  return 'Something went wrong'
+}
+
 export function sanitizeIpcError(err: unknown, redact?: (text: string) => string): Error {
   if (isFsErrorObject(err)) {
     return new Error('A file operation failed')
   }
-  const raw = err instanceof Error ? err.message : typeof err === 'string' ? err : 'Something went wrong'
+  const raw = errorText(err)
   if (hasFsErrnoPrefix(raw)) {
     return new Error('A file operation failed')
   }
