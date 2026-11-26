@@ -13,7 +13,13 @@ import { backupStatus, backupSummary, createBackup, pruneBackups, runAction, und
 import { oneAtATime } from './lock.ts'
 import { manifestFile, manifestJson, newestVerified, readManifest } from './manifest.ts'
 import type { Manifest } from './manifest.ts'
-import { canReadFilePayload, pruneBackupsNow, readBackupSummary, storedCopiesHashIntact } from './prune.ts'
+import {
+  canReadFilePayload,
+  pruneBackupsNow,
+  readBackupSummary,
+  storedCopiesHashIntact,
+  verifyHoldingDirReadyToRemove
+} from './prune.ts'
 import { makeWorkspace, pathExists } from './testing/harness.ts'
 import type { Workspace, WorkspaceTools } from './testing/harness.ts'
 import { makeTestGate } from './testing/test-gate.ts'
@@ -1385,6 +1391,125 @@ describe('backupSummary and pruneBackups', () => {
       join('/casevol/backups', 'b1', 'files', 'Mods', 'A.package')
     ])
     expect(hashCache.size).toBe(2)
+  })
+
+  it('keys Phase 3 holding-file accounting by exact realpath so an unlisted distinct-case sibling (A.package beside verified a.package) keeps the holding directory', async () => {
+    const holdingDir = join('/casevol', 'app-data', 'holding')
+    const moveHoldingAbs = join(holdingDir, 'e-move-case')
+    const moveModsAbs = join(moveHoldingAbs, 'Mods')
+    const simsFolder = join('/casevol', 'The Sims 4')
+    const liveModLower = join(simsFolder, 'Mods', 'a.package')
+    const heldLower = join(moveModsAbs, 'a.package')
+    const heldUpperUnlisted = join(moveModsAbs, 'A.package')
+    const shaLower = '1'.repeat(64)
+    const shaUpper = '2'.repeat(64)
+
+    let moveModsChildren = ['a.package', 'A.package']
+
+    const moveEntry = sampleJournalEntry({
+      id: 'e-move-case',
+      folderPath: simsFolder,
+      backupId: null,
+      status: 'undone',
+      undoneAt: '2026-11-26T00:00:00.000Z',
+      steps: [
+        {
+          kind: 'move',
+          from: liveModLower,
+          to: heldLower,
+          bytes: 10,
+          sha256: shaLower,
+          state: 'reverted'
+        }
+      ]
+    })
+
+    const editHoldingAbs = join(holdingDir, 'e-edit-case')
+    const editDirAbs = join(editHoldingAbs, 'edits')
+    const liveOpts = join(simsFolder, 'Options.ini')
+    const savedOptsUpper = join(editDirAbs, 'Options.ini')
+    const unlistedOptsLower = join(editDirAbs, 'options.ini')
+    let editDirChildren = ['Options.ini', 'options.ini']
+
+    const editEntry = sampleJournalEntry({
+      id: 'e-edit-case',
+      folderPath: simsFolder,
+      backupId: null,
+      status: 'done',
+      undo: 'cannot-undo',
+      steps: [
+        {
+          kind: 'edit',
+          path: liveOpts,
+          savedCopy: savedOptsUpper,
+          beforeSha256: shaLower,
+          afterSha256: shaLower,
+          state: 'applied'
+        }
+      ]
+    })
+
+    const dirs = new Set([holdingDir, simsFolder, moveHoldingAbs, moveModsAbs, editHoldingAbs, editDirAbs])
+    const fileSizes = new Map<string, number>([
+      [liveModLower, 10],
+      [heldLower, 10],
+      [heldUpperUnlisted, 99],
+      [liveOpts, 20],
+      [savedOptsUpper, 20],
+      [unlistedOptsLower, 77]
+    ])
+
+    const fakeIo = {
+      openFile: async (p: string): Promise<ReadOnlyFile> => {
+        const size = fileSizes.get(p) ?? 10
+        return {
+          size,
+          read: async (_buf, _pos, len = 0) => len,
+          close: async () => {}
+        }
+      },
+      readDir: async (p: string): Promise<string[]> => {
+        if (p === moveHoldingAbs) return ['Mods']
+        if (p === moveModsAbs) return moveModsChildren
+        if (p === editHoldingAbs) return ['edits']
+        if (p === editDirAbs) return editDirChildren
+        return []
+      },
+      statLink: async (p: string) => {
+        if (dirs.has(p)) {
+          return { isSymbolicLink: () => false, isDirectory: () => true, isFile: () => false, size: 0 }
+        }
+        const size = fileSizes.get(p)
+        if (size !== undefined) {
+          return { isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true, size }
+        }
+        const err = new Error('ENOENT') as NodeJS.ErrnoException
+        err.code = 'ENOENT'
+        throw err
+      },
+      resolveReal: async (p: string) => p,
+      hashFile: async (p: string) => (p === heldUpperUnlisted || p === unlistedOptsLower ? shaUpper : shaLower)
+    }
+
+    // With unlisted distinct-case sibling present, Phase 3 MUST keep both move and edit holding directories!
+    expect(await verifyHoldingDirReadyToRemove(holdingDir, moveHoldingAbs, moveEntry, [moveEntry], fakeIo)).toEqual({
+      verdict: 'keep'
+    })
+    expect(await verifyHoldingDirReadyToRemove(holdingDir, editHoldingAbs, editEntry, [editEntry], fakeIo)).toEqual({
+      verdict: 'keep'
+    })
+
+    // Once the unlisted sibling is absent, the exact accounted file satisfies the check and becomes safe to prune
+    moveModsChildren = ['a.package']
+    editDirChildren = ['Options.ini']
+    expect(await verifyHoldingDirReadyToRemove(holdingDir, moveHoldingAbs, moveEntry, [moveEntry], fakeIo)).toEqual({
+      verdict: 'safe',
+      totalFileBytes: 10
+    })
+    expect(await verifyHoldingDirReadyToRemove(holdingDir, editHoldingAbs, editEntry, [editEntry], fakeIo)).toEqual({
+      verdict: 'safe',
+      totalFileBytes: 20
+    })
   })
 
   it('reads entire file payload in chunks and fails closed on mid-file read errors or premature 0-byte reads', async () => {

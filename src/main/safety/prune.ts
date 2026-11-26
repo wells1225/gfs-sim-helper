@@ -451,13 +451,28 @@ async function scanBackupsStrict(backupsDir: string, openFile: OpenReadFile): Pr
   return result
 }
 
+export interface VerifyHoldingIo {
+  openFile?: OpenReadFile
+  readDir?: (path: string) => Promise<string[]>
+  statLink?: (
+    path: string
+  ) => Promise<{ isSymbolicLink(): boolean; isDirectory(): boolean; isFile(): boolean; size: number }>
+  resolveReal?: (path: string) => Promise<string>
+  hashFile?: (path: string) => Promise<string>
+}
+
 async function walkHoldingFilesStrict(
   holdingEntryAbs: string,
-  openFile: OpenReadFile
+  io: VerifyHoldingIo = {}
 ): Promise<{ files: ScannedFile[]; realRoot: string } | 'missing' | null> {
+  const openFile = io.openFile ?? openForRead
+  const readDir = io.readDir ?? readdir
+  const statLink = io.statLink ?? lstat
+  const resolveReal = io.resolveReal ?? realpath
+
   let rootInfo
   try {
-    rootInfo = await lstat(holdingEntryAbs)
+    rootInfo = await statLink(holdingEntryAbs)
   } catch (err) {
     if ((err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return 'missing'
     return null
@@ -466,7 +481,7 @@ async function walkHoldingFilesStrict(
 
   let realRoot: string
   try {
-    realRoot = await realpath(holdingEntryAbs)
+    realRoot = await resolveReal(holdingEntryAbs)
   } catch {
     return null
   }
@@ -475,7 +490,7 @@ async function walkHoldingFilesStrict(
   async function walk(cur: string): Promise<boolean> {
     let names: string[]
     try {
-      names = await readdir(cur)
+      names = await readDir(cur)
     } catch {
       return false
     }
@@ -484,7 +499,7 @@ async function walkHoldingFilesStrict(
       const childAbs = join(cur, child)
       let cInfo
       try {
-        cInfo = await lstat(childAbs)
+        cInfo = await statLink(childAbs)
       } catch {
         return false
       }
@@ -495,14 +510,14 @@ async function walkHoldingFilesStrict(
         if (!(await canReadFilePayload(childAbs, openFile))) return false
         let realChild: string
         try {
-          realChild = await realpath(childAbs)
+          realChild = await resolveReal(childAbs)
         } catch {
           return false
         }
         files.push({
           abs: childAbs,
           realAbs: realChild,
-          canonicalKey: caseKey(realChild),
+          canonicalKey: realChild,
           bytes: cInfo.size
         })
       } else {
@@ -537,7 +552,7 @@ async function scanHoldingStrict(holdingDir: string, openFile: OpenReadFile): Pr
   for (const name of dirNames) {
     if (name.includes(TMP_MARKER) || !isSafeId(name)) return null
     const abs = join(holdingDir, name)
-    const walked = await walkHoldingFilesStrict(abs, openFile)
+    const walked = await walkHoldingFilesStrict(abs, { openFile })
     if (walked === null || walked === 'missing') return null
     const totalFileBytes = walked.files.reduce((sum, f) => sum + f.bytes, 0)
     result.push({ name, abs, totalFileBytes })
@@ -566,13 +581,17 @@ function stepTouchesHoldingDir(entry: JournalEntry, holdingEntryAbs: string): bo
   return false
 }
 
-async function verifyHoldingDirReadyToRemove(
+export async function verifyHoldingDirReadyToRemove(
   holdingDir: string,
   holdingEntryAbs: string,
   matching: JournalEntry,
   allEntries: readonly JournalEntry[],
-  openFile: OpenReadFile
+  io: VerifyHoldingIo = {}
 ): Promise<{ verdict: 'safe'; totalFileBytes: number } | { verdict: 'keep' } | { verdict: 'unsafe' }> {
+  const statLink = io.statLink ?? lstat
+  const resolveReal = io.resolveReal ?? realpath
+  const hashFile = io.hashFile ?? sha256File
+
   if (isActiveJournalEntry(matching)) return { verdict: 'keep' }
   if (matching.status !== 'undone' && !(matching.status === 'done' && matching.undo === 'cannot-undo')) {
     return { verdict: 'keep' }
@@ -581,7 +600,7 @@ async function verifyHoldingDirReadyToRemove(
     return { verdict: 'keep' }
   }
 
-  const walked = await walkHoldingFilesStrict(holdingEntryAbs, openFile)
+  const walked = await walkHoldingFilesStrict(holdingEntryAbs, io)
   if (walked === null) return { verdict: 'unsafe' }
   if (walked === 'missing') return { verdict: 'keep' }
 
@@ -592,8 +611,8 @@ async function verifyHoldingDirReadyToRemove(
     if (cachedRoots !== null) return { ok: true, ...cachedRoots }
     try {
       const [realFolderPath, realHoldingRoot] = await Promise.all([
-        realpath(matching.folderPath),
-        realpath(holdingDir)
+        resolveReal(matching.folderPath),
+        resolveReal(holdingDir)
       ])
       cachedRoots = { realFolderPath, realHoldingRoot }
       return { ok: true, realFolderPath, realHoldingRoot }
@@ -609,7 +628,7 @@ async function verifyHoldingDirReadyToRemove(
     if (step.kind === 'move' && inThisHoldingEntry(step.to)) {
       let toInfo = null
       try {
-        toInfo = await lstat(step.to)
+        toInfo = await statLink(step.to)
       } catch (err) {
         if (!isMissingErr(err)) return { verdict: 'unsafe' }
       }
@@ -627,7 +646,7 @@ async function verifyHoldingDirReadyToRemove(
 
       let fromInfo = null
       try {
-        fromInfo = await lstat(step.from)
+        fromInfo = await statLink(step.from)
       } catch (err) {
         if (isMissingErr(err)) return { verdict: 'keep' }
         return { verdict: 'unsafe' }
@@ -639,7 +658,7 @@ async function verifyHoldingDirReadyToRemove(
       let realTo: string
       let realFrom: string
       try {
-        ;[realTo, realFrom] = await Promise.all([realpath(step.to), realpath(step.from)])
+        ;[realTo, realFrom] = await Promise.all([resolveReal(step.to), resolveReal(step.from)])
       } catch (err) {
         if (isMissingErr(err)) return { verdict: 'keep' }
         return { verdict: 'unsafe' }
@@ -650,7 +669,7 @@ async function verifyHoldingDirReadyToRemove(
         return { verdict: 'unsafe' }
       }
       if (
-        caseKey(realTo) === caseKey(realFrom) ||
+        realTo === realFrom ||
         !isInsideCase(realTo, walked.realRoot) ||
         !isInsideCase(realFrom, roots.realFolderPath) ||
         caseKey(realFrom) === caseKey(roots.realFolderPath)
@@ -661,18 +680,18 @@ async function verifyHoldingDirReadyToRemove(
       let heldSha: string
       let origSha: string
       try {
-        ;[heldSha, origSha] = await Promise.all([sha256File(step.to), sha256File(step.from)])
+        ;[heldSha, origSha] = await Promise.all([hashFile(step.to), hashFile(step.from)])
       } catch {
         return { verdict: 'keep' }
       }
       if (heldSha !== step.sha256 || origSha !== step.sha256 || heldSha !== origSha) {
         return { verdict: 'keep' }
       }
-      accountedKeys.add(caseKey(realTo))
+      accountedKeys.add(realTo)
     } else if (step.kind === 'edit' && inThisHoldingEntry(step.savedCopy)) {
       let savedInfo = null
       try {
-        savedInfo = await lstat(step.savedCopy)
+        savedInfo = await statLink(step.savedCopy)
       } catch (err) {
         if (!isMissingErr(err)) return { verdict: 'unsafe' }
       }
@@ -687,7 +706,7 @@ async function verifyHoldingDirReadyToRemove(
 
       let liveInfo = null
       try {
-        liveInfo = await lstat(step.path)
+        liveInfo = await statLink(step.path)
       } catch (err) {
         if (isMissingErr(err)) return { verdict: 'keep' }
         return { verdict: 'unsafe' }
@@ -697,7 +716,7 @@ async function verifyHoldingDirReadyToRemove(
       let realSaved: string
       let realLive: string
       try {
-        ;[realSaved, realLive] = await Promise.all([realpath(step.savedCopy), realpath(step.path)])
+        ;[realSaved, realLive] = await Promise.all([resolveReal(step.savedCopy), resolveReal(step.path)])
       } catch (err) {
         if (isMissingErr(err)) return { verdict: 'keep' }
         return { verdict: 'unsafe' }
@@ -708,7 +727,7 @@ async function verifyHoldingDirReadyToRemove(
         return { verdict: 'unsafe' }
       }
       if (
-        caseKey(realSaved) === caseKey(realLive) ||
+        realSaved === realLive ||
         !isInsideCase(realSaved, walked.realRoot) ||
         !isInsideCase(realLive, roots.realFolderPath) ||
         caseKey(realLive) === caseKey(roots.realFolderPath)
@@ -719,7 +738,7 @@ async function verifyHoldingDirReadyToRemove(
       let savedSha: string
       let liveSha: string
       try {
-        ;[savedSha, liveSha] = await Promise.all([sha256File(step.savedCopy), sha256File(step.path)])
+        ;[savedSha, liveSha] = await Promise.all([hashFile(step.savedCopy), hashFile(step.path)])
       } catch {
         return { verdict: 'keep' }
       }
@@ -730,7 +749,7 @@ async function verifyHoldingDirReadyToRemove(
       } else {
         return { verdict: 'keep' }
       }
-      accountedKeys.add(caseKey(realSaved))
+      accountedKeys.add(realSaved)
     }
   }
 
@@ -747,7 +766,7 @@ async function verifyHoldingDirReadyToRemove(
     for (const step of other.steps) {
       if (step.kind !== 'move' || !isInsideCase(step.to, holdingEntryAbs)) continue
       try {
-        await lstat(step.to)
+        await statLink(step.to)
         return { verdict: 'keep' }
       } catch (err) {
         if (!isMissingErr(err)) return { verdict: 'unsafe' }
@@ -973,7 +992,7 @@ async function planPrune(deps: SafetyDeps, openFile: OpenReadFile): Promise<Prun
     const matching = entriesById.get(idKey(h.name))
     if (matching === undefined) continue
 
-    const check = await verifyHoldingDirReadyToRemove(holdingDir, h.abs, matching, journalEntries, openFile)
+    const check = await verifyHoldingDirReadyToRemove(holdingDir, h.abs, matching, journalEntries, { openFile })
     if (check.verdict === 'unsafe') {
       return { safe: false, verifiedCount, totalBytes: backupsTotalBytes }
     }
@@ -1110,7 +1129,7 @@ export async function pruneBackupsNow(
       target.abs,
       target.matching,
       plan.journalEntries,
-      openFile
+      { openFile }
     )
     if (recheck.verdict === 'unsafe') {
       return { status: 'failed', detail: PRUNE_FAILED_DETAIL }
