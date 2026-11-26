@@ -1,7 +1,7 @@
 name: release
 
-# A v* tag builds the installer and leaves a DRAFT release. It never publishes: Tyler opens the draft on GitHub
-# and clicks Publish release, and that click is the moment a version reaches Lila's PC.
+# A v* tag builds the installer and leaves a DRAFT release. It never publishes: Tyler, or an agent he lets, checks the
+# draft and publishes it, and that is the moment a version reaches Lila's PC.
 # No stored secret: only the built-in token. Only the publish job can write, and it runs no repo code and no npm.
 # (docs/research/fable-auto-update.md, sections 2 and 3)
 
@@ -135,7 +135,7 @@ jobs:
           name: staged
           path: staged
 
-      - name: Leave a draft release (Tyler publishes it)
+      - name: Leave a draft release (published by hand after a check)
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

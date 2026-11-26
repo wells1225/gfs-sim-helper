@@ -101,7 +101,7 @@ A needed change to any of these goes to the lead as a "Contract request". The le
 - PRs 7, 10, 11, 12, 14: no workflow file. Their screenshots come from their own `test/e2e/screens/<pr-slug>.spec.ts`,
   which `ci.yml` runs and uploads.
 - PR 13 adds `.github/workflows/pr-13-update.yml` (installer A updates itself to B on `windows-latest`) and
-  `.github/workflows/release.yml` (a `v*` tag builds a draft release; only Tyler publishes). See `briefs/pr-13.md`.
+  `.github/workflows/release.yml` (a `v*` tag builds a draft release; published by hand). See `briefs/pr-13.md`.
 - PRs 4 and 9 have a timing probe, so each adds its own `.github/workflows/<pr-slug>.yml`. Shape:
 
 ```yaml

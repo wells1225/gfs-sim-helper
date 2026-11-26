@@ -102,7 +102,8 @@ or CI, never by nine builders at once.
   merged, so PR 14 branches from `main` and each of those files has one named writer (`ownership.md`). Its
   contract requests widen `ActionKind` and `JournalOrigin`: PR 10's History must still build with them.
 
-- **Releases after PR 13.** Only Tyler publishes: `release.yml` leaves a draft and his Publish click ships it.
+- **Releases after PR 13.** `release.yml` leaves a draft, and publishing it by hand ships it. Tyler or an agent may tag and publish
+  (Tyler, 2026-11-25), after the build passes and the installer's SHA-512 matches `latest.yml`.
   Before the first release, turn on immutable releases and a `v*` tag ruleset. Never rename, transfer or delete the
   repo: every installed copy reads its updates from `wells1225/gfs-sim-helper`.
 
