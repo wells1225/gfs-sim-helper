@@ -517,6 +517,57 @@ describe('buildReport', () => {
     expect(readme).toContain('- lastException_user (2).txt (')
   })
 
+  it('matches planned ZIP paths in Read me.txt for nested colliding logs across folders', async () => {
+    const root = await makeTempDir()
+    const simsDir = join(root, 'The Sims 4')
+    await Promise.all([
+      mkdir(join(simsDir, 'Mods', 'Other'), { recursive: true }),
+      mkdir(join(simsDir, 'Mods', 'Lila'), { recursive: true }),
+      mkdir(join(simsDir, 'Mods', 'user'), { recursive: true })
+    ])
+    await writeFile(join(simsDir, 'Mods', 'Other', 'mc_lastexception.html'), 'other-log', 'utf8')
+    await writeFile(join(simsDir, 'Mods', 'Lila', 'mc_lastexception.html'), 'lila-log', 'utf8')
+    await writeFile(join(simsDir, 'Mods', 'user', 'mc_lastexception.html'), 'user-log', 'utf8')
+
+    const base = sampleScan()
+    const scan = sampleScan({
+      folder: { ...base.folder, path: simsDir },
+      inventory: { ...base.inventory, modsDir: join(simsDir, 'Mods'), curseForge: { status: 'not-found' } },
+      logs: [
+        { ...base.logs[0]!, kind: 'mccc', file: 'Mods/Other/mc_lastexception.html' },
+        { ...base.logs[0]!, kind: 'mccc', file: 'Mods/Lila/mc_lastexception.html' },
+        { ...base.logs[0]!, kind: 'mccc', file: 'Mods/user/mc_lastexception.html' }
+      ]
+    })
+
+    const requests: WriteRequest[] = []
+    const gate: Gate = {
+      async run(request) {
+        requests.push(request)
+        return { status: 'done' }
+      }
+    }
+    const paths = appPaths({ localAppData: '/tmp/local', appData: '/tmp/roaming', desktopDir: '/tmp/desktop' })
+    const clock = { now: () => new Date(2026, 10, 24, 12, 0, 0) }
+    const redact = makeRedactor({ USERNAME: 'Lila', USERPROFILE: 'C:\\Users\\Lila' })
+
+    const { result } = await buildReport({ gate, paths, clock, redact }, scan)
+    expect(result.status).toBe('saved')
+
+    const op = requests[0]!.ops[0]!
+    if (op.op !== 'write') throw new Error('expected a write')
+    const unzipped = unzipSync(op.data as Uint8Array)
+    expect(unzipped['Mods/Other/mc_lastexception.html']).toBeDefined()
+    expect(unzipped['Mods/user/mc_lastexception.html']).toBeDefined()
+    expect(unzipped['Mods/user/mc_lastexception (2).html']).toBeDefined()
+
+    const readme = strFromU8(unzipped['Read me.txt']!)
+    expect(readme).toContain('- Mods/Other/mc_lastexception.html (')
+    expect(readme).toContain('- Mods/user/mc_lastexception.html (')
+    expect(readme).toContain('- Mods/user/mc_lastexception (2).html (')
+    expect(readme).not.toContain('(3)')
+  })
+
   it('returns write-refused when the gate refuses', async () => {
     const scan = sampleScan()
     const gate: Gate = {

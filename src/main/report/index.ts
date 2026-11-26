@@ -183,7 +183,11 @@ function makePathScrubber(scan: Scan): (text: string) => string {
 }
 
 /** The plain-language summary Tyler reads first. Pass deps.redact so every dynamic value is redacted without rewriting fixed headings. */
-export function buildReadme(scan: Scan, redact?: (text: string) => string): string {
+export function buildReadme(
+  scan: Scan,
+  redact?: (text: string) => string,
+  plannedEntries?: { name: string; source: { file: string } | { json: unknown } }[]
+): string {
   const lines: string[] = []
   const inv = scan.inventory
   const scrub = makePathScrubber(scan)
@@ -269,16 +273,19 @@ export function buildReadme(scan: Scan, redact?: (text: string) => string): stri
   if (scan.logs.length === 0) {
     lines.push('No readable crash or exception logs found.')
   } else {
-    const logEntryNames = new Map<string, string>()
-    const seenLogNames = new Set<string>()
-    for (const log of scan.logs) {
-      const fileKey = log.file.replaceAll('\\', '/').toLowerCase()
-      let logName = logEntryNames.get(fileKey)
-      if (!logName) {
-        logName = uniqueEntryName(safeZipEntryName(fileBasename(log.file), redact), seenLogNames)
-        seenLogNames.add(logName.toLowerCase())
-        logEntryNames.set(fileKey, logName)
+    const planned = plannedEntries ?? planReport(scan, redact ?? ((text) => text))
+    const plannedByFile = new Map<string, string>()
+    for (const entry of planned) {
+      if ('file' in entry.source) {
+        plannedByFile.set(entry.source.file.replaceAll('\\', '/').toLowerCase(), entry.name)
       }
+    }
+    for (const log of scan.logs) {
+      const rel = normalizeRelEntry(log.file)
+      const plannedName = rel
+        ? plannedByFile.get(joinFolderPath(scan.folder.path, rel).replaceAll('\\', '/').toLowerCase())
+        : undefined
+      const logName = plannedName ?? safeZipEntryName(fileBasename(log.file), redact)
       lines.push(`- ${logName} (${LOG_KIND_TEXT[log.kind] ?? clean(log.kind)}, ${clean(log.fileModifiedAt)})`)
     }
   }
@@ -344,7 +351,7 @@ export async function buildReport(
     const skippedLines: string[] = []
 
     // First entry, so it is the first thing Tyler sees when he opens the zip.
-    zipEntries[README_NAME] = strToU8(buildReadme(scan, deps.redact))
+    zipEntries[README_NAME] = strToU8(buildReadme(scan, deps.redact, planned))
 
     for (const entry of planned) {
       if (entry.name.toLowerCase() === README_NAME.toLowerCase()) continue
