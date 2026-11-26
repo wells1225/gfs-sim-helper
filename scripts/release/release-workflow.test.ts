@@ -1,5 +1,5 @@
 // @vitest-environment node
-// release.yml can only really run on a v* tag, which only Tyler pushes, so its safety rules are pinned here as text.
+// release.yml can only really run on a v* tag, which only Tyler's account pushes, so its safety rules are pinned here as text.
 import { readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
