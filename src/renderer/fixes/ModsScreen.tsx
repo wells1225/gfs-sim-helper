@@ -66,9 +66,9 @@ function formatFileDate(iso: IsoTime): string {
   return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date)
 }
 
-/** A safe piece of an element id: group ids hold colons, slashes and spaces. */
-function idPart(groupId: string): string {
-  return groupId.replace(/[^a-zA-Z0-9_-]/g, '_')
+/** The id of a row's file list. The row's place keeps it unique: two group ids can differ only in punctuation. */
+function fileListId(index: number): string {
+  return `mods-files-${index}`
 }
 
 export function ModsScreen() {
@@ -559,7 +559,7 @@ export function ModsScreen() {
                 aria-label="Sort your mods"
                 value={sort}
                 onChange={(e) => setSort(e.target.value as ModsSort)}
-                className="h-8 rounded-md border border-border bg-card px-2 text-sm text-foreground shadow-xs"
+                className="h-8 rounded-md border border-border bg-card px-2 text-sm text-foreground shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
               >
                 {(Object.keys(SORT_LABELS) as ModsSort[]).map((choice) => (
                   <option key={choice} value={choice}>
@@ -601,10 +601,10 @@ export function ModsScreen() {
             </h2>
           )}
 
-          {rows.map(({ item, matchedFile }) => {
+          {rows.map(({ item, matchedFile }, index) => {
             const isBusy = busyGroupId === item.groupId
             const isOpen = expanded.has(item.groupId)
-            const listId = `mods-files-${idPart(item.groupId)}`
+            const listId = fileListId(index)
             return (
               <Card key={item.groupId} className="gap-0 px-4 py-3.5">
                 <div className="flex items-center justify-between gap-4">

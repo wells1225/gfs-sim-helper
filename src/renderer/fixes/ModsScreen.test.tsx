@@ -44,18 +44,18 @@ function packageFile(relPath: string, groupId: string, bytes: number, modifiedAt
 }
 
 /**
- * The sample scan (Wicked Wardrobe, a script mod from Oct 10, and Hair from Nov 18) plus BuildBuy, the biggest and
- * oldest. The game updated on Nov 15, so BuildBuy and Wicked Wardrobe are older than the update.
+ * The sample scan (Wicked Wardrobe, a 48 KB script mod from Oct 10, and Hair, 1.2 MB from Nov 18) plus BuildBuy,
+ * 500 KB and the oldest. The game updated on Nov 15, so BuildBuy and Wicked Wardrobe are older than the update.
  */
 function explorerScan(gameUpdatedAt: string | null = '2026-11-15T17:00:00.000Z'): Scan {
   const base = sampleScan()
-  const fern = packageFile('BuildBuy/Plants/fern_pot.package', 'dir:buildbuy', 3_000_000, '2026-09-01T08:00:00.000Z')
+  const fern = packageFile('BuildBuy/Plants/fern_pot.package', 'dir:buildbuy', 500_000, '2026-09-01T08:00:00.000Z')
   const buildBuy: ModGroup = {
     id: 'dir:buildbuy',
     label: 'BuildBuy',
     source: 'folder',
     files: [fern.relPath],
-    bytes: 3_000_000,
+    bytes: 500_000,
     hasScript: false,
     curseForge: null
   }
@@ -141,7 +141,7 @@ describe('Your mods: filters, sort and summary', () => {
       </Harness>
     )
 
-    expect(await screen.findByText('3 mods · 1 script mod · 4.1 MB · 1 set aside')).toBeInTheDocument()
+    expect(await screen.findByText('3 mods · 1 script mod · 1.7 MB · 1 set aside')).toBeInTheDocument()
   })
 
   it('filter buttons change which mods show', async () => {
@@ -199,7 +199,7 @@ describe('Your mods: filters, sort and summary', () => {
     expect(visibleOrder()).toEqual(['Set BuildBuy aside', 'Set Hair aside', 'Set Wicked Wardrobe aside'])
 
     await user.selectOptions(sort, 'Largest first')
-    expect(visibleOrder()).toEqual(['Set BuildBuy aside', 'Set Hair aside', 'Set Wicked Wardrobe aside'])
+    expect(visibleOrder()).toEqual(['Set Hair aside', 'Set BuildBuy aside', 'Set Wicked Wardrobe aside'])
 
     await user.selectOptions(sort, 'Oldest first')
     expect(visibleOrder()).toEqual(['Set BuildBuy aside', 'Set Wicked Wardrobe aside', 'Set Hair aside'])
