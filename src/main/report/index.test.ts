@@ -396,6 +396,59 @@ describe('buildReport', () => {
     expect(readme.toLowerCase()).not.toContain('lila')
   })
 
+  it('redacts usernames and emails inside changed mod labels, findings, and log names in Read me.txt and scan.json', async () => {
+    const base = sampleScan()
+    const scan = sampleScan({
+      findings: [
+        {
+          ...base.findings[0]!,
+          title: 'Your last exception mentions Lila.private',
+          detail: 'Check Custom by Lila (lila.sims@example.com) before playing.',
+          evidence: ['Mods/Lila.private.package', 'Custom by Lila_CC_Pack']
+        }
+      ],
+      logs: [{ ...base.logs[0]!, file: 'Lila_lastException.txt' }],
+      changes: {
+        sinceAt: '2026-11-20T10:00:00.000Z',
+        gameVersion: null,
+        added: [{ groupId: 'file:lila.private.package', label: 'Lila.private', hasScript: false }],
+        updated: [
+          { groupId: 'dir:custom by lila', label: 'Custom by Lila (lila.sims@example.com)', hasScript: true }
+        ],
+        removed: []
+      }
+    })
+
+    const requests: WriteRequest[] = []
+    const gate: Gate = {
+      async run(request) {
+        requests.push(request)
+        return { status: 'done' }
+      }
+    }
+    const paths = appPaths({ localAppData: '/tmp/local', appData: '/tmp/roaming', desktopDir: '/tmp/desktop' })
+    const clock = { now: () => new Date(2026, 10, 24, 12, 0, 0) }
+    const redact = makeRedactor({ USERNAME: 'Lila', USERPROFILE: 'C:\\Users\\Lila' })
+
+    const { result } = await buildReport({ gate, paths, clock, redact }, scan)
+    expect(result.status).toBe('saved')
+
+    const op = requests[0]!.ops[0]!
+    if (op.op !== 'write') throw new Error('expected a write')
+    const unzipped = unzipSync(op.data as Uint8Array)
+    const readme = strFromU8(unzipped['Read me.txt']!)
+    const scanJson = strFromU8(unzipped['scan.json']!)
+
+    expect(readme).toContain('Added 1 mod: <user>.private')
+    expect(readme).toContain('Updated 1 mod: Custom by <user> (<email>)')
+    expect(readme).toContain('<user>_lastException.txt')
+    expect(readme.toLowerCase()).not.toContain('lila')
+    expect(readme).not.toContain('lila.sims@example.com')
+
+    expect(scanJson.toLowerCase()).not.toContain('lila')
+    expect(scanJson).not.toContain('lila.sims@example.com')
+  })
+
   it('returns write-refused when the gate refuses', async () => {
     const scan = sampleScan()
     const gate: Gate = {

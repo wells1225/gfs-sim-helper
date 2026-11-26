@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { strToU8, zipSync } from 'fflate'
 import type { GateRefusal, LogKind, ReportResult, Scan, Severity, Symptom } from '../../shared/model.ts'
 import type { AppContext } from '../ports.ts'
+import { sanitizeSnapshotLabel } from '../scan/snapshot.ts'
 
 const MAX_REPORT_FILE_BYTES = 8 * 1024 * 1024
 const ALLOWED_CURSEFORGE_BASENAME = 'addongameinstance.json'
@@ -47,7 +48,7 @@ function fileBasename(filePath: string): string {
 
 function redactJsonValue(value: unknown, redact: (text: string) => string): unknown {
   if (typeof value === 'string') {
-    return redact(value)
+    return sanitizeSnapshotLabel(value, redact)
   }
   if (value instanceof Date) {
     return value.toISOString()
@@ -58,7 +59,7 @@ function redactJsonValue(value: unknown, redact: (text: string) => string): unkn
   if (value !== null && typeof value === 'object') {
     const out: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(value)) {
-      out[redact(k)] = redactJsonValue(v, redact)
+      out[sanitizeSnapshotLabel(k, redact)] = redactJsonValue(v, redact)
     }
     return out
   }
@@ -127,8 +128,8 @@ function switchText(value: 'on' | 'off' | 'missing'): string {
   return value === 'missing' ? 'not set' : value
 }
 
-function changedNames(items: { label: string }[]): string {
-  const names = items.slice(0, MAX_CHANGED_NAMES).map((item) => item.label)
+function changedNames(items: { label: string }[], clean: (text: string) => string): string {
+  const names = items.slice(0, MAX_CHANGED_NAMES).map((item) => clean(item.label))
   const extra = items.length - names.length
   return extra > 0 ? `${names.join(', ')}, and ${extra} more` : names.join(', ')
 }
@@ -158,10 +159,11 @@ function makePathScrubber(scan: Scan): (text: string) => string {
 }
 
 /** The plain-language summary Tyler reads first. Callers must still run it through redact. */
-export function buildReadme(scan: Scan): string {
+export function buildReadme(scan: Scan, redact?: (text: string) => string): string {
   const lines: string[] = []
   const inv = scan.inventory
   const scrub = makePathScrubber(scan)
+  const clean = (text: string): string => sanitizeSnapshotLabel(scrub(text), redact)
 
   lines.push('Sims Helper report')
   lines.push(`Check-up time: ${scan.at}`)
@@ -209,13 +211,13 @@ export function buildReadme(scan: Scan): string {
       lines.push(`- Game updated from ${changes.gameVersion.from} to ${changes.gameVersion.to}`)
     }
     if (changes.added.length > 0) {
-      lines.push(`- Added ${plural(changes.added.length, 'mod', 'mods')}: ${changedNames(changes.added)}`)
+      lines.push(`- Added ${plural(changes.added.length, 'mod', 'mods')}: ${changedNames(changes.added, clean)}`)
     }
     if (changes.updated.length > 0) {
-      lines.push(`- Updated ${plural(changes.updated.length, 'mod', 'mods')}: ${changedNames(changes.updated)}`)
+      lines.push(`- Updated ${plural(changes.updated.length, 'mod', 'mods')}: ${changedNames(changes.updated, clean)}`)
     }
     if (changes.removed.length > 0) {
-      lines.push(`- Removed ${plural(changes.removed.length, 'mod', 'mods')}: ${changedNames(changes.removed)}`)
+      lines.push(`- Removed ${plural(changes.removed.length, 'mod', 'mods')}: ${changedNames(changes.removed, clean)}`)
     }
     lines.push('')
   }
@@ -226,10 +228,10 @@ export function buildReadme(scan: Scan): string {
   } else {
     for (const severity of SEVERITY_ORDER) {
       for (const finding of scan.findings.filter((f) => f.severity === severity)) {
-        lines.push(`[${SEVERITY_TEXT[severity]}] ${finding.title}`)
-        lines.push(`  ${finding.detail}`)
+        lines.push(`[${SEVERITY_TEXT[severity]}] ${clean(finding.title)}`)
+        lines.push(`  ${clean(finding.detail)}`)
         for (const ev of finding.evidence.slice(0, MAX_EVIDENCE_LINES)) {
-          lines.push(`  * ${ev}`)
+          lines.push(`  * ${clean(ev)}`)
         }
         if (finding.evidence.length > MAX_EVIDENCE_LINES) {
           lines.push(`  * and ${finding.evidence.length - MAX_EVIDENCE_LINES} more`)
@@ -244,7 +246,7 @@ export function buildReadme(scan: Scan): string {
     lines.push('No readable crash or exception logs found.')
   } else {
     for (const log of scan.logs) {
-      lines.push(`- ${fileBasename(log.file)} (${LOG_KIND_TEXT[log.kind] ?? log.kind}, ${log.fileModifiedAt})`)
+      lines.push(`- ${clean(fileBasename(log.file))} (${LOG_KIND_TEXT[log.kind] ?? log.kind}, ${log.fileModifiedAt})`)
     }
   }
   lines.push('')
@@ -263,7 +265,7 @@ export function planReport(
   const seenNames = new Set<string>()
 
   const addEntry = (rawName: string, source: { file: string } | { json: unknown }): void => {
-    const name = redact(rawName).replaceAll('\\', '/').replace(/^\/+/, '')
+    const name = sanitizeSnapshotLabel(rawName, redact).replaceAll('\\', '/').replace(/^\/+/, '')
     const key = name.toLowerCase()
     if (!name || seenNames.has(key)) return
     seenNames.add(key)
@@ -303,7 +305,7 @@ export async function buildReport(
     const skippedLines: string[] = []
 
     // First entry, so it is the first thing Tyler sees when he opens the zip.
-    zipEntries[README_NAME] = strToU8(deps.redact(buildReadme(scan)))
+    zipEntries[README_NAME] = strToU8(deps.redact(buildReadme(scan, deps.redact)))
 
     for (const entry of planned) {
       if (entry.name.toLowerCase() === README_NAME.toLowerCase()) continue
