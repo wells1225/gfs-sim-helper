@@ -7,6 +7,15 @@ const PR_SLUG = 'pr-10-fixes'
 
 const NOTHING_RECOVERED: StartupRecovery = { status: 'finished', touched: [] }
 
+const NO_BACKUPS_SUMMARY = {
+  status: { state: 'none' as const },
+  verifiedCount: 0,
+  totalBytes: 0,
+  reclaimableBytes: 0,
+  reclaimableBackups: 0,
+  canPrune: false
+}
+
 const NO_TRANSITIONS = `(() => {
   const style = document.createElement('style');
   style.textContent = '*, *::before, *::after { transition: none !important; }';
@@ -139,7 +148,8 @@ test('branch shot: history', async () => {
   try {
     await stubIpc(running.app, {
       'journal:recovery': NOTHING_RECOVERED,
-      'journal:list': buildHistoryEntries()
+      'journal:list': buildHistoryEntries(),
+      'backup:summary': NO_BACKUPS_SUMMARY
     })
 
     await running.page.getByRole('button', { name: 'History' }).click()
@@ -202,7 +212,8 @@ test('branch shot: history-undone', async () => {
     await stubIpc(running.app, {
       'journal:recovery': NOTHING_RECOVERED,
       'journal:list': [target, entries[2]!],
-      'journal:undo': { status: 'done', entry: undoneTarget }
+      'journal:undo': { status: 'done', entry: undoneTarget },
+      'backup:summary': NO_BACKUPS_SUMMARY
     })
 
     await running.page.getByRole('button', { name: 'History' }).click()

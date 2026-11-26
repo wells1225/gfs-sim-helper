@@ -127,7 +127,7 @@ export function HistoryScreen() {
 
   const handleUndo = useCallback(
     async (entry: JournalEntry) => {
-      if (!api) return
+      if (!api || undoingId !== null || pruningBackups) return
       setErrorState(null)
       setPartWayMessage(null)
       setProgress(null)
@@ -176,7 +176,7 @@ export function HistoryScreen() {
         }
       }
     },
-    [api]
+    [api, undoingId, pruningBackups]
   )
 
   const toggleSession = (sessionId: string) => {
@@ -271,7 +271,12 @@ export function HistoryScreen() {
                 <AlertDescription>{copy.detail}</AlertDescription>
                 {copy.canRetry && targetEntry && (
                   <div>
-                    <Button variant="outline" size="sm" onClick={() => void handleUndo(targetEntry)}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={undoingId !== null || pruningBackups}
+                      onClick={() => void handleUndo(targetEntry)}
+                    >
                       Try again
                     </Button>
                   </div>

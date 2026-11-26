@@ -7,12 +7,13 @@ import { freeBytes } from './disk.ts'
 import { listFolderFiles } from './files.ts'
 import type { ListedFile, SkippedLink } from './files.ts'
 import { listEntries } from './journal.ts'
-import { manifestFile, manifestJson, newestVerified, storedFile } from './manifest.ts'
+import { isStrictIsoTime, manifestFile, manifestJson, newestVerified, normalizeIsoTime, storedFile } from './manifest.ts'
 import type { Manifest, ManifestFile } from './manifest.ts'
 import {
   fromManifestPath,
   inOneDriveReal,
   isInsideReal,
+  isSafeId,
   manifestKey,
   missingDirs,
   pathKey,
@@ -92,7 +93,11 @@ export async function backupStatus(deps: SafetyDeps, folderPath: string): Promis
   try {
     const manifest = await newestVerified(deps.paths.backupsDir, folderPath)
     if (!manifest) return { state: 'none' }
-    const { id: backupId, at } = manifest.record
+    const { id: backupId, at: rawAt } = manifest.record
+    if (!isSafeId(backupId) || !isStrictIsoTime(rawAt)) {
+      return { state: 'unknown', detail: STATUS_UNKNOWN }
+    }
+    const at = normalizeIsoTime(rawAt)
     // A backup that lost any of its bytes covers nothing. `stale` makes the next backup copy them again.
     if (!(await storedCopiesInPlace(deps.paths.backupsDir, manifest.files))) return { state: 'stale', backupId, at }
     const lines = new Map(manifest.files.map((line) => [manifestKey(line.path), line]))

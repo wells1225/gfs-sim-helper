@@ -734,4 +734,63 @@ describe('backup:summary and backup:prune handlers (PR 23)', () => {
     await writeFile(stateFile, JSON.stringify({ phase: 'stopped' }), 'utf8')
     expect((await handlers['backup:prune'](undefined)).status).toBe('done')
   })
+
+  it('sanitizes unexpected errors and status fields in backup:prune and backup:summary so raw errors or OS paths never leak', async () => {
+    const throwingPrune = await makeContext({
+      safety: {
+        async pruneBackups() {
+          throw new Error("EACCES: permission denied, unlink 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper\\backups'")
+        }
+      }
+    })
+    const pruneRes = await fixHandlers(throwingPrune.ctx)['backup:prune'](undefined)
+    expect(pruneRes).toEqual({
+      status: 'failed',
+      detail: 'Could not finish clearing old safety copies.'
+    })
+    expect(JSON.stringify(pruneRes)).not.toMatch(/Lila|AppData|EACCES|[A-Z]:\\|\//i)
+
+    // Throwing backupSummary returns safe unknown status without leaking paths
+    const throwingSummary = await makeContext({
+      safety: {
+        async backupSummary() {
+          throw new Error("EACCES: scandir 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper\\backups'")
+        }
+      }
+    })
+    const sumThrown = await fixHandlers(throwingSummary.ctx)['backup:summary'](undefined)
+    expect(sumThrown.status).toEqual({
+      state: 'unknown',
+      detail: 'We could not check your safety copy right now.'
+    })
+    expect(JSON.stringify(sumThrown)).not.toMatch(/Lila|AppData|EACCES|[A-Z]:\\|\//i)
+
+    // Path-bearing status.at or status.detail from safety.backupSummary is sanitized fail-closed
+    for (const badStatus of [
+      { state: 'verified' as const, backupId: 'b1', at: 'C:\\Users\\Lila\\Documents\\The Sims 4' },
+      { state: 'stale' as const, backupId: '../escape', at: '2026-11-24T12:00:00.000Z' },
+      { state: 'unknown' as const, detail: 'Failed reading C:\\Users\\Lila\\AppData\\manifest.json' }
+    ]) {
+      const { ctx } = await makeContext({
+        safety: {
+          async backupSummary() {
+            return {
+              status: badStatus,
+              verifiedCount: 1,
+              totalBytes: 512,
+              reclaimableBytes: 0,
+              reclaimableBackups: 0,
+              canPrune: false
+            }
+          }
+        }
+      })
+      const res = await fixHandlers(ctx)['backup:summary'](undefined)
+      expect(res.status).toEqual({
+        state: 'unknown',
+        detail: 'We could not check your safety copy right now.'
+      })
+      expect(JSON.stringify(res)).not.toMatch(/Lila|AppData|escape|[A-Z]:\\|\//i)
+    }
+  })
 })

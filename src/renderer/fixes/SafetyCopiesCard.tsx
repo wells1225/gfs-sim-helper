@@ -38,7 +38,7 @@ function refusalNotice(why: Extract<BackupPruneResult, { status: 'refused' }>['w
     case 'unsafe-state':
       return {
         title: 'Could not safely clear copies right now',
-        detail: 'Some backup records could not be checked cleanly, so nothing was removed. Your saves and mods were not touched.',
+        detail: 'Some safety copies could not be checked cleanly, so nothing was removed. Your saves and mods were not touched.',
         variant: 'warn'
       }
     case 'nothing-to-prune':
@@ -84,6 +84,7 @@ export function SafetyCopiesCard({ busy, refreshKey, onPruningChange }: SafetyCo
   const [pruning, setPruning] = useState(false)
   const [notice, setNotice] = useState<PruneNotice | null>(null)
   const mountedRef = useRef(true)
+  const reqSeqRef = useRef(0)
 
   useEffect(() => {
     mountedRef.current = true
@@ -94,14 +95,15 @@ export function SafetyCopiesCard({ busy, refreshKey, onPruningChange }: SafetyCo
 
   const loadSummary = useCallback(async () => {
     if (!api) return
+    const seq = ++reqSeqRef.current
     try {
       const next = await api.invoke('backup:summary')
-      if (mountedRef.current && next && typeof next === 'object' && 'status' in next) {
+      if (mountedRef.current && seq === reqSeqRef.current && next && typeof next === 'object' && 'status' in next) {
         setSummary(next)
         setSummaryUnavailable(false)
       }
     } catch {
-      if (mountedRef.current) {
+      if (mountedRef.current && seq === reqSeqRef.current) {
         setSummaryUnavailable(true)
       }
     }
@@ -136,6 +138,7 @@ export function SafetyCopiesCard({ busy, refreshKey, onPruningChange }: SafetyCo
 
   const handlePrune = async () => {
     if (!api || busy || pruning) return
+    reqSeqRef.current += 1
     setNotice(null)
     setPruning(true)
     onPruningChange?.(true)
@@ -155,6 +158,7 @@ export function SafetyCopiesCard({ busy, refreshKey, onPruningChange }: SafetyCo
 
       setConfirming(false)
       if (result.status === 'done') {
+        reqSeqRef.current += 1
         setSummary(result.summary)
         setSummaryUnavailable(false)
         const noun = result.removedBackups === 1 ? '1 older safety copy' : `${result.removedBackups.toLocaleString()} older safety copies`

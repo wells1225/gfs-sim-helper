@@ -1586,7 +1586,7 @@ describe('HistoryScreen SafetyCopiesCard (PR 23)', () => {
     [
       'unsafe-state',
       { status: 'refused', why: 'unsafe-state' } as BackupPruneResult,
-      /Could not safely clear copies right now/
+      /Some safety copies could not be checked cleanly/
     ],
     ['nothing-to-prune', { status: 'refused', why: 'nothing-to-prune' } as BackupPruneResult, /Nothing left to clear/],
     ['failed', { status: 'failed', detail: 'disk error' } as BackupPruneResult, /Could not finish clearing old copies/]
@@ -1636,5 +1636,77 @@ describe('HistoryScreen SafetyCopiesCard (PR 23)', () => {
     await user.click(screen.getByRole('button', { name: 'Undo' }))
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull())
     expect(screen.getAllByText('Undone').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('disables History Undo Try again button while pruning is in flight and ignores stale summary responses', async () => {
+    const user = userEvent.setup()
+    const entry = sampleJournalEntry({ id: 'e-retry', summary: 'Set aside Hair', status: 'done', undo: 'can-undo' })
+    let resolvePrune!: (res: BackupPruneResult) => void
+    let resolveStaleSummary!: (res: BackupSummary) => void
+    let summaryCalls = 0
+
+    const api = fakeApi({
+      'journal:list': [entry],
+      'journal:undo': () => ({
+        status: 'refused',
+        refusal: { why: 'gate', refusal: { reason: 'game-running' } }
+      }),
+      'backup:summary': () => {
+        summaryCalls += 1
+        if (summaryCalls === 2) {
+          return new Promise<BackupSummary>((resolve) => {
+            resolveStaleSummary = resolve
+          })
+        }
+        return prunableSummary
+      },
+      'backup:prune': () =>
+        new Promise<BackupPruneResult>((resolve) => {
+          resolvePrune = resolve
+        })
+    })
+
+    const { rerender } = render(
+      <Harness api={api} initialRoute={{ screen: 'history' }}>
+        <HistoryScreen />
+      </Harness>
+    )
+
+    // Trigger Undo refusal so the Try again button appears
+    await user.click(await screen.findByRole('button', { name: 'Undo' }))
+    const tryAgainBtn = await screen.findByRole('button', { name: 'Try again' })
+    expect(tryAgainBtn).not.toBeDisabled()
+
+    // Start pruning -> both Undo and Try again must be disabled while pruning runs
+    await user.click(screen.getByRole('button', { name: 'Clear old safety copies' }))
+    await user.click(screen.getByRole('button', { name: 'Clear old copies' }))
+
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeDisabled()
+
+    // Finish prune
+    await act(async () => {
+      resolvePrune({
+        status: 'done',
+        freedBytes: prunableSummary.reclaimableBytes,
+        removedBackups: 2,
+        summary: cleanedSummary
+      })
+    })
+
+    expect(screen.getByRole('button', { name: 'Try again' })).not.toBeDisabled()
+    expect(screen.getByText(/2 verified copies kept/)).toBeInTheDocument()
+
+    // Ensure a slow earlier loadSummary cannot overwrite newer state
+    rerender(
+      <Harness api={api} initialRoute={{ screen: 'history' }}>
+        <HistoryScreen />
+      </Harness>
+    )
+    if (resolveStaleSummary) {
+      await act(async () => {
+        resolveStaleSummary(prunableSummary)
+      })
+    }
   })
 })

@@ -12,7 +12,7 @@ export async function backupStatus(deps: SafetyDeps, folderPath: string): Promis
 }
 
 export async function backupSummary(deps: SafetyDeps, folderPath: string | null): Promise<BackupSummary> {
-  return await readBackupSummary(deps, folderPath)
+  return await oneAtATime(deps, () => readBackupSummary(deps, folderPath))
 }
 
 export async function pruneBackups(deps: SafetyDeps, folderPath: string | null): Promise<BackupPruneResult> {

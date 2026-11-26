@@ -1,5 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { BackupRecord, Sha256 } from '../../shared/model.ts'
 import type { SkippedLink } from './files.ts'
 import { isSafeId, samePath } from './where.ts'
@@ -26,21 +26,68 @@ export function storedFile(backupsDir: string, line: ManifestFile): string {
   return join(backupsDir, line.storedIn, 'files', ...line.path.split('/'))
 }
 
+const STRICT_ISO_TIME =
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,9})?(?:Z|([+-])(\d{2}):(\d{2}))$/
+
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate()
+}
+
+export function isStrictIsoTime(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  const match = STRICT_ISO_TIME.exec(value)
+  if (!match) return false
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const hour = Number(match[4])
+  const minute = Number(match[5])
+  const second = Number(match[6])
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) return false
+  if (hour > 23 || minute > 59 || second > 59) return false
+  if (match[7] !== undefined) {
+    const offHour = Number(match[8])
+    const offMinute = Number(match[9])
+    if (offHour > 23 || offMinute > 59) return false
+  }
+  return Number.isFinite(Date.parse(value))
+}
+
+export function normalizeIsoTime(value: string): string {
+  return new Date(Date.parse(value)).toISOString()
+}
+
 function safeManifestPath(path: unknown): path is string {
   if (typeof path !== 'string' || path === '' || path.startsWith('/')) return false
+  if (path.includes('\\') || path.includes(':') || path.includes('\0')) return false
   return path.split('/').every((part) => part !== '' && part !== '.' && part !== '..')
 }
 
-function validManifestFile(line: unknown): line is ManifestFile {
+function storedFileStrictlyInside(backupsDir: string, line: ManifestFile): boolean {
+  const filesRoot = resolve(backupsDir, line.storedIn, 'files')
+  const resolvedStored = resolve(storedFile(backupsDir, line))
+  const rel = relative(filesRoot, resolvedStored)
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+}
+
+function validManifestFile(line: unknown, backupsDir: string): line is ManifestFile {
   const item = line as ManifestFile | null
-  return (
-    safeManifestPath(item?.path) &&
-    typeof item?.bytes === 'number' &&
-    typeof item?.mtimeMs === 'number' &&
-    typeof item?.sha256 === 'string' &&
-    typeof item?.storedIn === 'string' &&
-    isSafeId(item.storedIn)
-  )
+  if (
+    !safeManifestPath(item?.path) ||
+    typeof item?.bytes !== 'number' ||
+    !Number.isFinite(item.bytes) ||
+    !Number.isInteger(item.bytes) ||
+    item.bytes < 0 ||
+    typeof item?.mtimeMs !== 'number' ||
+    !Number.isFinite(item.mtimeMs) ||
+    typeof item?.sha256 !== 'string' ||
+    item.sha256 === '' ||
+    typeof item?.storedIn !== 'string' ||
+    !isSafeId(item.storedIn)
+  ) {
+    return false
+  }
+  return storedFileStrictlyInside(backupsDir, item)
 }
 
 /** null when the manifest is missing or cannot be read: such a backup never counts. */
@@ -48,9 +95,28 @@ export async function readManifest(backupsDir: string, id: string): Promise<Mani
   if (!isSafeId(id)) return null
   try {
     const parsed = JSON.parse(await readFile(manifestFile(backupsDir, id), 'utf8')) as Manifest
-    if (!parsed?.record || !Array.isArray(parsed.files) || parsed.record.id !== id) return null
-    if (!parsed.files.every(validManifestFile)) return null
-    return parsed
+    const rec = parsed?.record
+    if (!rec || typeof rec !== 'object' || !Array.isArray(parsed.files) || rec.id !== id) return null
+    if (!isStrictIsoTime(rec.at)) return null
+    if (typeof rec.folderPath !== 'string' || rec.folderPath.length === 0 || rec.folderPath.includes('\0')) return null
+    if (rec.state !== 'verified' && rec.state !== 'copying' && rec.state !== 'failed') return null
+    if (typeof rec.files !== 'number' || !Number.isFinite(rec.files) || !Number.isInteger(rec.files) || rec.files < 0) {
+      return null
+    }
+    if (typeof rec.bytes !== 'number' || !Number.isFinite(rec.bytes) || !Number.isInteger(rec.bytes) || rec.bytes < 0) {
+      return null
+    }
+    if (!parsed.files.every((line) => validManifestFile(line, backupsDir))) return null
+    const sumBytes = parsed.files.reduce((sum, f) => sum + f.bytes, 0)
+    if (rec.state === 'verified') {
+      if (rec.files !== parsed.files.length || rec.bytes !== sumBytes) return null
+    } else {
+      if (parsed.files.length > rec.files || sumBytes > rec.bytes) return null
+    }
+    return {
+      ...parsed,
+      record: { ...rec, at: normalizeIsoTime(rec.at) }
+    }
   } catch {
     return null
   }

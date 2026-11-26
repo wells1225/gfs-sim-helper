@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { copyFile, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,6 +14,7 @@ import { manifestFile, manifestJson, newestVerified, readManifest } from './mani
 import type { Manifest } from './manifest.ts'
 import { makeWorkspace, pathExists } from './testing/harness.ts'
 import type { Workspace, WorkspaceTools } from './testing/harness.ts'
+import { makeTestGate } from './testing/test-gate.ts'
 
 const SPECS = join(dirname(fileURLToPath(import.meta.url)), '../../../scripts/fixtures/specs')
 const roots: string[] = []
@@ -29,8 +30,22 @@ const TOOLS: WorkspaceTools = {
   }
 }
 
+async function restoreModes(dir: string): Promise<void> {
+  await chmod(dir, 0o700).catch(() => {})
+  const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+  for (const e of entries) {
+    if (e.isSymbolicLink()) continue
+    const full = join(dir, e.name)
+    if (e.isDirectory()) await restoreModes(full)
+    else await chmod(full, 0o600).catch(() => {})
+  }
+}
+
 afterEach(async () => {
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
+  for (const root of roots.splice(0)) {
+    await restoreModes(root)
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 async function makeVerifiedBackup(ws: Workspace, touchRel?: string, content?: string) {
@@ -244,7 +259,7 @@ describe('backupSummary and pruneBackups', () => {
       await mkdir(dir, { recursive: true })
       await writeFile(join(dir, 'part.dat'), 'partial')
       const m: Manifest = {
-        record: { id, at, folderPath: ws.simsFolder, files: 0, bytes: 0, state },
+        record: { id, at, folderPath: ws.simsFolder, files: 1, bytes: 7, state },
         files: []
       }
       await writeFile(manifestFile(ws.paths.backupsDir, id), manifestJson(m))
@@ -252,7 +267,6 @@ describe('backupSummary and pruneBackups', () => {
 
     await writeStateManifest('20261125-143000-rec1', 'copying', '2026-11-25T14:30:00.000Z') // 30m ago -> keep
     await writeStateManifest('20261125-160000-fut1', 'copying', '2026-11-25T16:00:00.000Z') // future -> keep
-    await writeStateManifest('20261125-120000-badt', 'copying', 'not-a-timestamp') // unparseable -> keep
     await writeStateManifest('20261125-130000-old1', 'copying', '2026-11-25T13:00:00.000Z') // 2h ago -> prune
     await writeStateManifest('20261125-145500-fail', 'failed', '2026-11-25T14:55:00.000Z') // failed -> prune
 
@@ -263,12 +277,11 @@ describe('backupSummary and pruneBackups', () => {
     expect(res.removedBackups).toBe(2)
     expect(await pathExists(join(ws.paths.backupsDir, '20261125-143000-rec1'))).toBe(true)
     expect(await pathExists(join(ws.paths.backupsDir, '20261125-160000-fut1'))).toBe(true)
-    expect(await pathExists(join(ws.paths.backupsDir, '20261125-120000-badt'))).toBe(true)
     expect(await pathExists(join(ws.paths.backupsDir, '20261125-130000-old1'))).toBe(false)
     expect(await pathExists(join(ws.paths.backupsDir, '20261125-145500-fail'))).toBe(false)
   })
 
-  it('prunes settled holding dirs when originals are verified safe, and protects unverified or non-empty orphan Mods holding dirs', async () => {
+  it('prunes settled holding dirs only when every file is accounted for and safe, and keeps all orphan or unlisted holding dirs', async () => {
     const ws = await makeWorkspace(TOOLS)
     const lamp = join(ws.mods, 'BuildBuy', 'lamp_a.package')
     const heldLamp = join(ws.paths.holdingDir, 'e-real-undo', 'Mods', 'BuildBuy', 'lamp_a.package')
@@ -287,7 +300,6 @@ describe('backupSummary and pruneBackups', () => {
     expect(applied.status).toBe('done')
     const undone = await undo(ws.deps, 'e-real-undo')
     expect(undone.status).toBe('done')
-    // Empty holding/<entryId>/Mods/BuildBuy directory remains after undo
     expect(await pathExists(join(ws.paths.holdingDir, 'e-real-undo'))).toBe(true)
 
     // Settled undone with verified copy-left at step.to (step.from exists with matching sha256) -> safe to prune
@@ -346,9 +358,12 @@ describe('backupSummary and pruneBackups', () => {
       )
     )
 
-    // Settled done && cannot-undo holding dir -> safe to prune
-    await mkdir(join(ws.paths.holdingDir, 'e-cannot-undo', 'edits'), { recursive: true })
-    await writeFile(join(ws.paths.holdingDir, 'e-cannot-undo', 'edits', 'Options.ini'), '[options]\n')
+    // Settled done && cannot-undo holding dir whose edits/Options.ini IS accounted for by its edit step -> safe to prune
+    const savedOpts = join(ws.paths.holdingDir, 'e-cannot-undo', 'edits', 'Options.ini')
+    await mkdir(dirname(savedOpts), { recursive: true })
+    await writeFile(savedOpts, '[options]\nmodsdisabled = 1\n')
+    const savedOptsSha = await sha256File(savedOpts)
+    const liveOptsSha = await sha256File(join(ws.simsFolder, 'Options.ini'))
     await writeFile(
       join(ws.paths.journalDir, 'e-cannot-undo.json'),
       JSON.stringify(
@@ -358,17 +373,51 @@ describe('backupSummary and pruneBackups', () => {
           backupId: null,
           status: 'done',
           undo: 'cannot-undo',
+          steps: [
+            {
+              kind: 'edit',
+              path: join(ws.simsFolder, 'Options.ini'),
+              savedCopy: savedOpts,
+              beforeSha256: savedOptsSha,
+              afterSha256: liveOptsSha,
+              state: 'applied'
+            }
+          ]
+        })
+      )
+    )
+
+    // Settled undone holding dir WITH an unlisted stray file -> MUST STAY KEPT
+    const unlistedInSettled = join(ws.paths.holdingDir, 'e-unlisted-file', 'edits', 'unlisted.ini')
+    await mkdir(dirname(unlistedInSettled), { recursive: true })
+    await writeFile(unlistedInSettled, 'unexpected-bytes')
+    await writeFile(
+      join(ws.paths.journalDir, 'e-unlisted-file.json'),
+      JSON.stringify(
+        sampleJournalEntry({
+          id: 'e-unlisted-file',
+          folderPath: ws.simsFolder,
+          backupId: null,
+          status: 'undone',
+          undoneAt: '2026-11-24T12:32:00.000Z',
           steps: []
         })
       )
     )
 
-    // Orphan holding dir WITH file in Mods/ -> MUST STAY PROTECTED
+    // Orphan holding dirs (missing journal entry): ALL kept (Mods/, edits/Options.ini, stray file, and empty)!
     const orphanWithMod = join(ws.paths.holdingDir, 'orphan-with-mod', 'Mods', 'precious.package')
     await mkdir(dirname(orphanWithMod), { recursive: true })
     await writeFile(orphanWithMod, 'do-not-touch-me')
 
-    // Orphan holding dir with EMPTY Mods/ -> safe to prune
+    const orphanWithEdits = join(ws.paths.holdingDir, 'orphan-with-edits', 'edits', 'Options.ini')
+    await mkdir(dirname(orphanWithEdits), { recursive: true })
+    await writeFile(orphanWithEdits, '[options]\n')
+
+    const orphanStray = join(ws.paths.holdingDir, 'orphan-stray', 'note.txt')
+    await mkdir(dirname(orphanStray), { recursive: true })
+    await writeFile(orphanStray, 'keep-me')
+
     await mkdir(join(ws.paths.holdingDir, 'orphan-empty', 'Mods', 'Sub'), { recursive: true })
 
     const res = await pruneBackups(ws.deps, ws.simsFolder)
@@ -377,11 +426,14 @@ describe('backupSummary and pruneBackups', () => {
     expect(await pathExists(join(ws.paths.holdingDir, 'e-real-undo'))).toBe(false)
     expect(await pathExists(join(ws.paths.holdingDir, 'e-copyleft-ok'))).toBe(false)
     expect(await pathExists(join(ws.paths.holdingDir, 'e-cannot-undo'))).toBe(false)
-    expect(await pathExists(join(ws.paths.holdingDir, 'orphan-empty'))).toBe(false)
 
-    // Protected ones remain untouched!
+    // Protected & orphan ones remain untouched!
     expect(await pathExists(unsafeTo)).toBe(true)
+    expect(await pathExists(unlistedInSettled)).toBe(true)
     expect(await pathExists(orphanWithMod)).toBe(true)
+    expect(await pathExists(orphanWithEdits)).toBe(true)
+    expect(await pathExists(orphanStray)).toBe(true)
+    expect(await pathExists(join(ws.paths.holdingDir, 'orphan-empty'))).toBe(true)
   })
 
   it('fails closed (canPrune: false, refused unsafe-state, 0 gate ops) on corrupt files, temp files, or symlinks', async () => {
@@ -532,7 +584,7 @@ describe('backupSummary and pruneBackups', () => {
     expect(await pathExists(join(ws.paths.backupsDir, b1.id, 'files', 'Mods', 'shared_anchor.package'))).toBe(true)
     expect(await pathExists(join(ws.paths.backupsDir, b1.id, 'files', 'Mods', 'bulk_0.package'))).toBe(false)
 
-    // Busy refusal before acquiring lock while createBackup is in flight
+    // Busy refusal before acquiring lock while createBackup is in flight, and backupSummary serializes on lock
     let releaseBackup!: () => void
     ws.gate.hooks.beforeRequest = async () => {
       ws.gate.hooks.beforeRequest = undefined
@@ -543,10 +595,21 @@ describe('backupSummary and pruneBackups', () => {
     }
     const runningBackup = createBackup(ws.deps, ws.simsFolder)
     await new Promise((r) => setTimeout(r, 15))
-    expect((await backupSummary(ws.deps, ws.simsFolder)).canPrune).toBe(false)
     expect(await pruneBackups(ws.deps, ws.simsFolder)).toEqual({ status: 'refused', why: 'busy' })
+
+    let summarySettled = false
+    const pendingSummary = backupSummary(ws.deps, ws.simsFolder).then((s) => {
+      summarySettled = true
+      return s
+    })
+    await new Promise((r) => setTimeout(r, 15))
+    expect(summarySettled).toBe(false)
+
     releaseBackup()
     await runningBackup
+    const settledSummary = await pendingSummary
+    expect(summarySettled).toBe(true)
+    expect(settledSummary.verifiedCount).toBe(3)
 
     // Busy refusal re-checked after acquiring oneAtATime(deps) lock
     let releaseLock!: () => void
@@ -599,12 +662,21 @@ describe('backupSummary and pruneBackups', () => {
         ? { ...line, path: 'Mods/BuildBuy/LAMP_A.PACKAGE', storedIn: a1.id.toUpperCase() }
         : line
     )
-    // Also remove lamp_a from a3 so ONLY a4's uppercased storedIn/path protects a1's lamp_a.package
+    // Also remove lamp_a from a3 (keeping record.files and record.bytes valid!) so ONLY a4's uppercased storedIn/path protects a1's lamp_a.package
     const m3 = await readManifest(ws.paths.backupsDir, a3.id)
     if (!m3) throw new Error('missing m3')
+    const m3Files = m3.files.filter((l) => l.path !== 'Mods/BuildBuy/lamp_a.package')
     await writeFile(
       manifestFile(ws.paths.backupsDir, a3.id),
-      manifestJson({ ...m3, files: m3.files.filter((l) => l.path !== 'Mods/BuildBuy/lamp_a.package') })
+      manifestJson({
+        ...m3,
+        record: {
+          ...m3.record,
+          files: m3Files.length,
+          bytes: m3Files.reduce((sum, f) => sum + f.bytes, 0)
+        },
+        files: m3Files
+      })
     )
     await writeFile(manifestFile(ws.paths.backupsDir, a4.id), manifestJson({ ...m4, files: patchedFiles }))
 
@@ -630,5 +702,270 @@ describe('backupSummary and pruneBackups', () => {
       true
     )
     expect(await pathExists(join(ws.paths.backupsDir, a1.id, 'files', 'Mods', 'a_mod.package'))).toBe(false)
+  })
+
+  it('verifies SHA-256 hashes on intact fallback so same-size byte corruption in newest 2 backups keeps oldest hash-intact backup', async () => {
+    const ws = await makeWorkspace(TOOLS)
+    const b1 = await makeVerifiedBackup(ws, 'critical.package', 'v1-intact-8bytes')
+    const b2 = await makeVerifiedBackup(ws, 'critical.package', 'v2-intact-8bytes')
+    const b3 = await makeVerifiedBackup(ws, 'critical.package', 'v3-intact-8bytes')
+
+    const b1Sha = await sha256File(join(ws.paths.backupsDir, b1.id, 'files', 'Mods', 'critical.package'))
+
+    // Corrupt b2 and b3 stored copies on disk with SAME byte length (16 bytes)
+    await writeFile(join(ws.paths.backupsDir, b2.id, 'files', 'Mods', 'critical.package'), 'XXXXXXXXX-8bytes')
+    await writeFile(join(ws.paths.backupsDir, b3.id, 'files', 'Mods', 'critical.package'), 'YYYYYYYYY-8bytes')
+
+    // All 3 must be protected (b3 & b2 as newest 2, b1 as newest hash-intact!)
+    const summary = await backupSummary(ws.deps, ws.simsFolder)
+    expect(summary.reclaimableBackups).toBe(0)
+    expect(summary.canPrune).toBe(false)
+    expect(await pruneBackups(ws.deps, ws.simsFolder)).toEqual({ status: 'refused', why: 'nothing-to-prune' })
+    expect(await pathExists(manifestFile(ws.paths.backupsDir, b1.id))).toBe(true)
+    expect(await sha256File(join(ws.paths.backupsDir, b1.id, 'files', 'Mods', 'critical.package'))).toBe(b1Sha)
+
+    // If a 4th older backup b0 existed before b1, b1 is kept as newest hash-intact while only b0 would be pruned;
+    // and if ALL 3 verified backups have same-size corruption, prune fails closed (unsafe-state) and deletes 0!
+    await writeFile(join(ws.paths.backupsDir, b1.id, 'files', 'Mods', 'critical.package'), 'ZZZZZZZZZ-8bytes')
+    expect((await backupSummary(ws.deps, ws.simsFolder)).canPrune).toBe(false)
+    expect(await pruneBackups(ws.deps, ws.simsFolder)).toEqual({ status: 'refused', why: 'unsafe-state' })
+  })
+
+  it('rejects backslash, drive-letter, invalid record.at, and count/byte mismatches in manifests, plus malformed journal entries (preserving backup counts)', async () => {
+    const manifestMutations: { name: string; mutate: (m: Manifest) => unknown }[] = [
+      {
+        name: 'backslash in manifest file path',
+        mutate: (m) => ({
+          ...m,
+          files: m.files.map((f, i) => (i === 0 ? { ...f, path: 'Mods\\evil.package' } : f))
+        })
+      },
+      {
+        name: 'drive-letter colon in manifest file path',
+        mutate: (m) => ({
+          ...m,
+          files: m.files.map((f, i) => (i === 0 ? { ...f, path: 'C:/Windows/win.ini' } : f))
+        })
+      },
+      {
+        name: 'non-ISO or OS path in record.at',
+        mutate: (m) => ({
+          ...m,
+          record: { ...m.record, at: 'C:\\Users\\Lila\\secret' }
+        })
+      },
+      {
+        name: 'verified manifest files count mismatch',
+        mutate: (m) => ({
+          ...m,
+          record: { ...m.record, files: m.files.length + 1 }
+        })
+      },
+      {
+        name: 'verified manifest bytes total mismatch',
+        mutate: (m) => ({
+          ...m,
+          record: { ...m.record, bytes: m.record.bytes + 10 }
+        })
+      }
+    ]
+
+    for (const c of manifestMutations) {
+      const ws = await makeWorkspace(TOOLS)
+      const b1 = await makeVerifiedBackup(ws, 'm.package', '1')
+      await makeVerifiedBackup(ws, 'm.package', '2')
+      await makeVerifiedBackup(ws, 'm.package', '3')
+
+      const orig = await readManifest(ws.paths.backupsDir, b1.id)
+      if (!orig) throw new Error('missing orig')
+      await writeFile(manifestFile(ws.paths.backupsDir, b1.id), JSON.stringify(c.mutate(orig)))
+
+      const mark = ws.gate.requests.length
+      expect((await backupSummary(ws.deps, ws.simsFolder)).canPrune, c.name).toBe(false)
+      expect(await pruneBackups(ws.deps, ws.simsFolder), c.name).toEqual({ status: 'refused', why: 'unsafe-state' })
+      expect(ws.gate.requests.length, c.name).toBe(mark)
+    }
+
+    const journalMutations: { name: string; entry: Record<string, unknown> }[] = [
+      { name: 'invalid status', entry: { ...sampleJournalEntry({ id: 'e-bad' }), status: 'bogus' } },
+      { name: 'invalid undo', entry: { ...sampleJournalEntry({ id: 'e-bad' }), undo: 'maybe' } },
+      { name: 'empty string backupId', entry: { ...sampleJournalEntry({ id: 'e-bad' }), backupId: '' } },
+      { name: 'non-object step', entry: { ...sampleJournalEntry({ id: 'e-bad' }), steps: [null] } },
+      {
+        name: 'relative move path',
+        entry: {
+          ...sampleJournalEntry({ id: 'e-bad' }),
+          steps: [{ kind: 'move', from: 'Mods/rel.package', to: '/abs/to', bytes: 5, sha256: 'a'.repeat(64), state: 'applied' }]
+        }
+      },
+      {
+        name: 'negative move bytes',
+        entry: {
+          ...sampleJournalEntry({ id: 'e-bad' }),
+          steps: [{ kind: 'move', from: '/abs/from', to: '/abs/to', bytes: -1, sha256: 'a'.repeat(64), state: 'applied' }]
+        }
+      },
+      {
+        name: 'invalid step state',
+        entry: {
+          ...sampleJournalEntry({ id: 'e-bad' }),
+          steps: [{ kind: 'remove-cache', path: '/abs/cache', state: 'halfway' }]
+        }
+      }
+    ]
+
+    for (const jm of journalMutations) {
+      const ws = await makeWorkspace(TOOLS)
+      await makeVerifiedBackup(ws, 'j.package', '1')
+      await makeVerifiedBackup(ws, 'j.package', '2')
+      await makeVerifiedBackup(ws, 'j.package', '3')
+
+      await mkdir(ws.paths.journalDir, { recursive: true })
+      await writeFile(join(ws.paths.journalDir, 'e-bad.json'), JSON.stringify(jm.entry))
+
+      const mark = ws.gate.requests.length
+      const summary = await backupSummary(ws.deps, ws.simsFolder)
+      expect(summary.canPrune, jm.name).toBe(false)
+      // Item 6: backup counts & totalBytes remain populated even when journalDir fails closed!
+      expect(summary.verifiedCount, `${jm.name} verifiedCount`).toBe(3)
+      expect(summary.totalBytes, `${jm.name} totalBytes`).toBeGreaterThan(0)
+
+      expect(await pruneBackups(ws.deps, ws.simsFolder), jm.name).toEqual({ status: 'refused', why: 'unsafe-state' })
+      expect(ws.gate.requests.length, jm.name).toBe(mark)
+    }
+  })
+
+  it.skipIf(process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0))(
+    'fails closed on unreadable file payloads and protects canonical donor paths across aliased parent paths',
+    async () => {
+      const ws = await makeWorkspace(TOOLS)
+      const b1 = await makeVerifiedBackup(ws, 'pay.package', 'payload-1')
+      await makeVerifiedBackup(ws, 'pay.package', 'payload-2')
+      await makeVerifiedBackup(ws, 'pay.package', 'payload-3')
+
+      const targetFile = join(ws.paths.backupsDir, b1.id, 'files', 'Mods', 'pay.package')
+      await chmod(targetFile, 0o000)
+
+      const mark = ws.gate.requests.length
+      expect((await backupSummary(ws.deps, ws.simsFolder)).canPrune).toBe(false)
+      expect(await pruneBackups(ws.deps, ws.simsFolder)).toEqual({ status: 'refused', why: 'unsafe-state' })
+      expect(ws.gate.requests.length).toBe(mark)
+
+      await chmod(targetFile, 0o600)
+
+      // Canonical donor path protection when backupsDir parent is reached via an alias link
+      const aliasParent = join(ws.root, 'AliasAppData')
+      await symlink(ws.paths.dataDir, aliasParent)
+      const aliasedDeps = {
+        ...ws.deps,
+        paths: {
+          ...ws.paths,
+          dataDir: aliasParent,
+          backupsDir: join(aliasParent, 'backups'),
+          holdingDir: join(aliasParent, 'holding'),
+          journalDir: join(aliasParent, 'journal')
+        }
+      }
+      aliasedDeps.gate = makeTestGate({
+        fs: TOOLS.fs,
+        dataDir: aliasParent,
+        gameState: ws.deps.gameState,
+        backupStatus: (folderPath) => backupStatus(aliasedDeps, folderPath)
+      })
+      const res = await pruneBackups(aliasedDeps, ws.simsFolder)
+      expect(res.status).toBe('done')
+      expect(await pathExists(join(ws.paths.backupsDir, b1.id, 'files', 'Mods', 'BuildBuy', 'lamp_a.package'))).toBe(
+        true
+      )
+      expect(await pathExists(targetFile)).toBe(false)
+    }
+  )
+
+  it('rechecks Phase 3 holding copies immediately after Phase 2 and reconciles mid-Phase-2 partial failures idempotently', async () => {
+    // 1. Phase 3 immediate recheck: restored original disappears during Phase 2 -> held copy in holding/<id> is KEPT!
+    const ws1 = await makeWorkspace(TOOLS)
+    await makeVerifiedBackup(ws1, 'x.package', 'v1')
+    await makeVerifiedBackup(ws1, 'x.package', 'v2')
+    await makeVerifiedBackup(ws1, 'x.package', 'v3')
+
+    const restoredOrig = join(ws1.mods, 'BuildBuy', 'lamp_a.package')
+    const origBytes = await readFile(restoredOrig)
+    const origSha = await sha256File(restoredOrig)
+    const heldCopy = join(ws1.paths.holdingDir, 'e-race', 'Mods', 'BuildBuy', 'lamp_a.package')
+    await mkdir(dirname(heldCopy), { recursive: true })
+    await writeFile(heldCopy, origBytes)
+    await mkdir(ws1.paths.journalDir, { recursive: true })
+    await writeFile(
+      join(ws1.paths.journalDir, 'e-race.json'),
+      JSON.stringify(
+        sampleJournalEntry({
+          id: 'e-race',
+          folderPath: ws1.simsFolder,
+          backupId: null,
+          status: 'undone',
+          undoneAt: '2026-11-24T12:40:00.000Z',
+          steps: [
+            {
+              kind: 'move',
+              from: restoredOrig,
+              to: heldCopy,
+              bytes: origBytes.byteLength,
+              sha256: origSha,
+              state: 'reverted'
+            }
+          ]
+        })
+      )
+    )
+
+    // Delete restoredOrig right after Phase 2 deletes files in backupsDir (before Phase 3 runs!)
+    ws1.gate.hooks.afterOp = async (op) => {
+      if (op.op === 'remove' && op.path.includes(join('backups', '20261124-120000-0001', 'files'))) {
+        await rm(restoredOrig, { force: true })
+      }
+    }
+
+    const raceRes = await pruneBackups(ws1.deps, ws1.simsFolder)
+    expect(raceRes.status).toBe('done')
+    // Held copy MUST survive because restoredOrig disappeared before Phase 3!
+    expect(await pathExists(heldCopy)).toBe(true)
+    expect(await sha256File(heldCopy)).toBe(origSha)
+
+    // 2. Mid-Phase-2 partial failure (after deleting 1 of 2 donor files) -> retry completes cleanly -> 3rd run nothing-to-prune
+    const ws2 = await makeWorkspace(TOOLS)
+    const u1 = join(ws2.mods, 'unreferenced_1.package')
+    const u2 = join(ws2.mods, 'unreferenced_2.package')
+    await writeFile(u1, 'drop-me-1')
+    await writeFile(u2, 'drop-me-2')
+    const d1 = await makeVerifiedBackup(ws2)
+    await rm(u1)
+    await rm(u2)
+    await makeVerifiedBackup(ws2, 'keep_new_1.package', 'k1')
+    await makeVerifiedBackup(ws2, 'keep_new_2.package', 'k2')
+
+    let donorFileRemoves = 0
+    ws2.gate.hooks.beforeOp = (op) => {
+      if (op.op === 'remove' && op.path.includes(join(d1.id, 'files'))) {
+        donorFileRemoves += 1
+        if (donorFileRemoves === 2) return 'simulated crash mid-phase-2'
+      }
+      return undefined
+    }
+
+    const firstTry = await pruneBackups(ws2.deps, ws2.simsFolder)
+    expect(firstTry.status).toBe('failed')
+    expect(await pathExists(manifestFile(ws2.paths.backupsDir, d1.id))).toBe(false)
+    expect(await pathExists(join(ws2.paths.backupsDir, d1.id, 'files', 'Mods', 'unreferenced_1.package'))).toBe(false)
+    expect(await pathExists(join(ws2.paths.backupsDir, d1.id, 'files', 'Mods', 'unreferenced_2.package'))).toBe(true)
+
+    ws2.gate.hooks.beforeOp = undefined
+    const secondTry = await pruneBackups(ws2.deps, ws2.simsFolder)
+    expect(secondTry.status).toBe('done')
+    expect(await pathExists(join(ws2.paths.backupsDir, d1.id, 'files', 'Mods', 'unreferenced_2.package'))).toBe(false)
+    expect(await pathExists(join(ws2.paths.backupsDir, d1.id, 'files', 'Mods', 'BuildBuy', 'lamp_a.package'))).toBe(
+      true
+    )
+
+    expect(await pruneBackups(ws2.deps, ws2.simsFolder)).toEqual({ status: 'refused', why: 'nothing-to-prune' })
   })
 })
