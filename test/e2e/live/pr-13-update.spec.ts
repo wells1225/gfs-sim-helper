@@ -4,7 +4,7 @@
 import { expect, test, type ElectronApplication } from '@playwright/test'
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { readdir, readFile } from 'node:fs/promises'
+import { readdir, readFile, rm } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { basename, join } from 'node:path'
 import { promisify } from 'node:util'
@@ -43,6 +43,17 @@ test.beforeAll(async () => {
     })
   })
   await new Promise<void>((done) => server.listen(FEED_PORT, '127.0.0.1', done))
+})
+
+async function clearLastCheck(localAppData: string): Promise<void> {
+  if (!localAppData) return
+  await rm(join(localAppData, 'SimsHelper', 'state', 'update.json'), { force: true })
+}
+
+test.beforeEach(async () => {
+  // Each case launches as a fresh day so the real gate's persisted 24-hour check window in
+  // state/update.json from the previous test does not skip the automatic check on open.
+  await clearLastCheck(process.env['LOCALAPPDATA'] ?? '')
 })
 
 test.afterAll(async () => {
@@ -128,6 +139,12 @@ test('a tampered update is refused: the download fails, nothing is kept, the ver
     console.log(`pending folder after the refused download: ${pendingDir} -> [${kept.join(', ')}]`)
     expect(kept.filter((name) => name.toLowerCase().endsWith('.exe'))).toEqual([])
     expect((await appFacts(app)).version).toBe(before.version)
+
+    // With the real write gate on main, the automatic start check persists its timestamp in state/update.json.
+    const savedRaw = await readFile(join(before.localAppData, 'SimsHelper', 'state', 'update.json'), 'utf8')
+    const saved = JSON.parse(savedRaw) as { lastCheckAt?: unknown }
+    expect(typeof saved.lastCheckAt).toBe('string')
+    expect(Number.isFinite(Date.parse(saved.lastCheckAt as string))).toBe(true)
   } finally {
     latestOverride = null
     await closeQuietly(running)
