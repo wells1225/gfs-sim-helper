@@ -62,6 +62,9 @@ export function scanHandlers(ctx: AppContext): Handlers<ScanChannel> {
   const settingsPath = join(ctx.paths.stateDir, 'settings.json')
   let lastReportFile: string | null = null
   const snapshotTails = new Map<string, Promise<void>>()
+  let scanSeq = 0
+  let latestCompletedScanSeq = 0
+  const latestCompletedFolderSeq = new Map<string, number>()
 
   async function withFolderSnapshotLock<T>(folderHash: string, task: () => Promise<T>): Promise<T> {
     const prev = snapshotTails.get(folderHash) ?? Promise.resolve()
@@ -144,6 +147,7 @@ export function scanHandlers(ctx: AppContext): Handlers<ScanChannel> {
     },
 
     async 'scan:run'(req) {
+      const seq = ++scanSeq
       await ctx.startupRecovery()
       const folderPath: unknown = req?.folderPath
       const located = await runLocate(ctx)
@@ -184,11 +188,22 @@ export function scanHandlers(ctx: AppContext): Handlers<ScanChannel> {
 
       if (result.status === 'done') {
         const folderHash = folderFingerprint(result.scan.folder.path)
-        const changes = await withFolderSnapshotLock(folderHash, () =>
-          recordScanSnapshot(ctx.gate, ctx.paths.stateDir, result.scan)
-        )
+        const { changes, stale } = await withFolderSnapshotLock(folderHash, async () => {
+          const completedForFolder = latestCompletedFolderSeq.get(folderHash) ?? 0
+          if (seq < completedForFolder) {
+            return { changes: null, stale: true }
+          }
+          const computed = await recordScanSnapshot(ctx.gate, ctx.paths.stateDir, result.scan, {
+            redact: ctx.redact
+          })
+          latestCompletedFolderSeq.set(folderHash, seq)
+          return { changes: computed, stale: false }
+        })
         const scan = { ...result.scan, changes }
-        ctx.session.scan = scan
+        if (!stale && seq > latestCompletedScanSeq) {
+          latestCompletedScanSeq = seq
+          ctx.session.scan = scan
+        }
         return { status: 'done', scan }
       }
 

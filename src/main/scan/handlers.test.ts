@@ -10,6 +10,7 @@ import type { Host } from '../locate/host.ts'
 import type { AppContext, Gate, WriteRequest } from '../ports.ts'
 import { makeRedactor } from '../redact.ts'
 import { scanHandlers } from './handlers.ts'
+import { folderFingerprint, readScanSnapshot } from './snapshot.ts'
 
 const tempDirs: string[] = []
 
@@ -297,5 +298,89 @@ describe('scanHandlers', () => {
     const built = await pending
     expect(built.status).toBe('saved')
     expect(events).toEqual(['recovery:start', 'recovery:done', 'report:write'])
+  })
+
+  it('prevents an older out-of-order scan from overwriting a newer snapshot, reporting reversed changes, or clobbering ctx.session.scan', async () => {
+    const { simsDir, stateDir, ctx, gateRequests } = await makeFixtureEnv()
+    const baseInv = sampleScan({
+      folder: { path: simsDir, inOneDrive: false, newestFileAt: new Date('2026-11-23T22:15:00.000Z') }
+    }).inventory
+    const invA = {
+      ...baseInv,
+      files: [],
+      groups: [
+        {
+          id: 'dir:mod-a',
+          label: 'Mod A',
+          source: 'folder' as const,
+          files: [],
+          bytes: 100,
+          hasScript: false,
+          curseForge: null
+        }
+      ]
+    }
+    const invB = {
+      ...baseInv,
+      files: [],
+      groups: [
+        ...invA.groups,
+        {
+          id: 'dir:mod-b',
+          label: 'Mod B',
+          source: 'folder' as const,
+          files: [],
+          bytes: 200,
+          hasScript: false,
+          curseForge: null
+        }
+      ]
+    }
+
+    let buildCall = 0
+    let releaseScanA!: () => void
+    const scanAStarted = new Promise<void>((resolve) => {
+      ctx.scan.buildInventory = async () => {
+        buildCall += 1
+        if (buildCall === 1) {
+          resolve()
+          await new Promise<void>((r) => {
+            releaseScanA = r
+          })
+          return invA
+        }
+        return invB
+      }
+    })
+
+    let scanIdCounter = 0
+    ctx.scan.newId = () => `20261124-120000-000${++scanIdCounter}`
+
+    const handlers = scanHandlers(ctx)
+
+    // Start scan A first; pause it mid-inventory
+    const promiseA = handlers['scan:run']({ folderPath: simsDir, symptom: 'closes' })
+    await scanAStarted
+
+    // Start scan B second and let it finish completely first
+    const resultB = await handlers['scan:run']({ folderPath: simsDir, symptom: 'closes' })
+    expect(resultB.status).toBe('done')
+    if (resultB.status !== 'done') return
+    expect(ctx.session.scan).toBe(resultB.scan)
+    expect(gateRequests).toHaveLength(1)
+
+    // Now let older scan A finish second
+    releaseScanA()
+    const resultA = await promiseA
+    expect(resultA.status).toBe('done')
+    if (resultA.status !== 'done') return
+
+    // Scan A must NOT report reversed changes, must NOT overwrite B's snapshot, and must NOT overwrite ctx.session.scan
+    expect(resultA.scan.changes).toBeNull()
+    expect(ctx.session.scan).toBe(resultB.scan)
+    expect(gateRequests).toHaveLength(1)
+
+    const persisted = await readScanSnapshot(stateDir, folderFingerprint(simsDir))
+    expect(persisted?.groups).toHaveLength(2)
   })
 })

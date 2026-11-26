@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,7 +11,17 @@ import type { Host } from '../locate/host.ts'
 import type { AppContext, Gate, WriteRequest } from '../ports.ts'
 import { makeRedactor } from '../redact.ts'
 import { scanHandlers } from './handlers.ts'
-import { buildScanSnapshot, diffScanSnapshots, folderFingerprint, readScanSnapshot, snapshotPathFor } from './snapshot.ts'
+import {
+  buildScanSnapshot,
+  diffScanSnapshots,
+  folderFingerprint,
+  groupFingerprint,
+  MAX_SNAPSHOT_BYTES,
+  readScanSnapshot,
+  recordScanSnapshot,
+  sanitizeSnapshotLabel,
+  snapshotPathFor
+} from './snapshot.ts'
 
 const tempDirs: string[] = []
 
@@ -332,7 +343,7 @@ describe('scan snapshot persistence and diff', () => {
 
     const prev = buildScanSnapshot(scan1)
     const next = buildScanSnapshot(scan2)
-    const changes = diffScanSnapshots(prev, next)
+    const changes = diffScanSnapshots(prev, next, scan2.inventory.groups)
 
     expect(changes.sinceAt).toBe('2026-11-20T12:00:00.000Z')
     expect(changes.gameVersion).toEqual({ from: '1.128.10.1030', to: '1.129.39.1030' })
@@ -351,8 +362,8 @@ describe('scan snapshot persistence and diff', () => {
       { groupId: 'dir:zebra-bytes', label: 'Zebra Bytes', hasScript: false }
     ])
     expect(changes.removed).toEqual([
-      { groupId: 'dir:removed-script', label: 'Zed Script', hasScript: true },
-      { groupId: 'dir:removed-cc', label: 'Aardvark Hair', hasScript: false }
+      { groupId: `removed:${groupFingerprint('dir:removed-script').slice(0, 16)}`, label: 'Zed Script', hasScript: true },
+      { groupId: `removed:${groupFingerprint('dir:removed-cc').slice(0, 16)}`, label: 'Aardvark Hair', hasScript: false }
     ])
   })
 
@@ -502,6 +513,176 @@ describe('scan snapshot persistence and diff', () => {
       added: [{ groupId: 'dir:second', label: 'Second Mod', hasScript: false }],
       updated: [],
       removed: []
+    })
+  })
+
+  it('skips writing and returns null when recording a scan older than the persisted snapshot', async () => {
+    const { simsDir, modsDir, stateDir, ctx, gateRequests } = await makeEnv()
+    const expectedHash = folderFingerprint(simsDir)
+
+    const gNew = makeModGroup({ id: 'dir:newer', label: 'Newer Mod' })
+    const gOld = makeModGroup({ id: 'dir:older', label: 'Older Mod' })
+
+    const newerScan = sampleScan({
+      at: '2026-11-24T12:00:00.000Z',
+      folder: { path: simsDir, inOneDrive: false, newestFileAt: new Date('2026-11-24T11:00:00.000Z') },
+      inventory: makeInventory(modsDir, [gNew])
+    })
+    const olderScan = sampleScan({
+      at: '2026-11-20T12:00:00.000Z',
+      folder: { path: simsDir, inOneDrive: false, newestFileAt: new Date('2026-11-20T11:00:00.000Z') },
+      inventory: makeInventory(modsDir, [gOld])
+    })
+
+    expect(await recordScanSnapshot(ctx.gate, stateDir, newerScan)).toBeNull()
+    expect(gateRequests).toHaveLength(1)
+    gateRequests.length = 0
+
+    const staleChanges = await recordScanSnapshot(ctx.gate, stateDir, olderScan)
+    expect(staleChanges).toBeNull()
+    expect(gateRequests).toHaveLength(0)
+
+    const persisted = await readScanSnapshot(stateDir, expectedHash)
+    expect(persisted?.at).toBe('2026-11-24T12:00:00.000Z')
+    expect(persisted?.groups).toHaveLength(1)
+  })
+
+  it('skips writing a snapshot over 2 MB while still returning changes and keeping the prior baseline intact', async () => {
+    expect(MAX_SNAPSHOT_BYTES).toBe(2 * 1024 * 1024)
+    const { simsDir, modsDir, stateDir, ctx, gateRequests } = await makeEnv()
+    const expectedHash = folderFingerprint(simsDir)
+
+    const gBase = makeModGroup({ id: 'dir:base', label: 'Base Mod' })
+    const scan1 = sampleScan({
+      at: '2026-11-20T12:00:00.000Z',
+      folder: { path: simsDir, inOneDrive: false, newestFileAt: new Date('2026-11-20T11:00:00.000Z') },
+      inventory: makeInventory(modsDir, [gBase])
+    })
+
+    expect(await recordScanSnapshot(ctx.gate, stateDir, scan1)).toBeNull()
+    expect(gateRequests).toHaveLength(1)
+    gateRequests.length = 0
+
+    // Construct a snapshot whose serialized UTF-8 byte length exceeds 2 MiB
+    const longLabel = 'M'.repeat(450)
+    const hugeEntries = [gBase]
+    for (let i = 0; i < 4_500; i += 1) {
+      hugeEntries.push(makeModGroup({ id: `dir:bulk-${i}`, label: `${longLabel}-${i}` }))
+    }
+    const scan2 = sampleScan({
+      at: '2026-11-21T12:00:00.000Z',
+      folder: { path: simsDir, inOneDrive: false, newestFileAt: new Date('2026-11-21T11:00:00.000Z') },
+      inventory: makeInventory(modsDir, hugeEntries)
+    })
+
+    const changes = await recordScanSnapshot(ctx.gate, stateDir, scan2)
+    expect(gateRequests).toHaveLength(0)
+    expect(changes).not.toBeNull()
+    expect(changes?.sinceAt).toBe('2026-11-20T12:00:00.000Z')
+    expect(changes?.added).toHaveLength(4_500)
+    expect(changes?.removed).toEqual([])
+
+    const persisted = await readScanSnapshot(stateDir, expectedHash)
+    expect(persisted?.at).toBe('2026-11-20T12:00:00.000Z')
+    expect(persisted?.groups).toHaveLength(1)
+
+    // Also verify custom maxBytes cap skips writing while preserving baseline
+    const gSmall = makeModGroup({ id: 'dir:small-added', label: 'Small Added' })
+    const scan3 = sampleScan({
+      at: '2026-11-22T12:00:00.000Z',
+      folder: { path: simsDir, inOneDrive: false, newestFileAt: new Date('2026-11-22T11:00:00.000Z') },
+      inventory: makeInventory(modsDir, [gBase, gSmall])
+    })
+    const cappedChanges = await recordScanSnapshot(ctx.gate, stateDir, scan3, { maxBytes: 100 })
+    expect(gateRequests).toHaveLength(0)
+    expect(cappedChanges?.added).toEqual([{ groupId: 'dir:small-added', label: 'Small Added', hasScript: false }])
+    expect((await readScanSnapshot(stateDir, expectedHash))?.at).toBe('2026-11-20T12:00:00.000Z')
+  })
+
+  it('sanitizeSnapshotLabel preserves normal mod names while redacting usernames and emails', () => {
+    const redact = makeRedactor({ USERNAME: 'Lila', USERPROFILE: 'C:\\Users\\Lila' })
+    expect(sanitizeSnapshotLabel('Wicked Wardrobe', redact)).toBe('Wicked Wardrobe')
+    expect(sanitizeSnapshotLabel('MCCC', redact)).toBe('MCCC')
+    expect(sanitizeSnapshotLabel('Cozy Hair', redact)).toBe('Cozy Hair')
+    expect(sanitizeSnapshotLabel('Lilac Hair', redact)).toBe('Lilac Hair')
+    expect(sanitizeSnapshotLabel("Lila's Backup", redact)).toBe("<user>'s Backup")
+    expect(sanitizeSnapshotLabel('Lila_CC_Pack', redact)).toBe('<user>_CC_Pack')
+    expect(sanitizeSnapshotLabel('Custom by Lila (lila.sims@example.com)', redact)).toBe('Custom by <user> (<email>)')
+  })
+
+  it('hashes group IDs and strips usernames and emails from persisted snapshots while diffing cleanly', async () => {
+    const { simsDir, modsDir, stateDir, ctx, setInventory, setNow } = await makeEnv()
+    const handlers = scanHandlers(ctx)
+
+    const normalMod = makeModGroup({ id: 'dir:wicked wardrobe', label: 'Wicked Wardrobe' })
+    const personalDirMod = makeModGroup({
+      id: 'dir:lila mods (lila.sims@example.com)',
+      label: 'Lila Mods (lila.sims@example.com)',
+      files: [{ relPath: 'Lila Mods/hair.package', bytes: 1024, modifiedAt: '2026-11-20T10:00:00.000Z' }]
+    })
+    const personalFileMod = makeModGroup({
+      id: 'file:custom by lila - lila.sims@example.com.package',
+      label: 'Custom by Lila - lila.sims@example.com',
+      files: [{ relPath: 'Custom by Lila - lila.sims@example.com.package', bytes: 512, modifiedAt: '2026-11-20T10:00:00.000Z' }]
+    })
+
+    setNow('2026-11-20T12:00:00.000Z')
+    setInventory(makeInventory(modsDir, [normalMod, personalDirMod, personalFileMod]))
+    const first = await handlers['scan:run']({ folderPath: simsDir, symptom: 'closes' })
+    expect(first.status).toBe('done')
+
+    const snapPath = snapshotPathFor(stateDir, folderFingerprint(simsDir))
+    const raw = await readFile(snapPath, 'utf8')
+    expect(raw.toLowerCase()).not.toContain('lila')
+    expect(raw).not.toContain('lila.sims@example.com')
+    expect(raw).not.toContain('dir:')
+    expect(raw).not.toContain('file:')
+    expect(raw).toContain('Wicked Wardrobe')
+    expect(raw).toContain('<user>')
+    expect(raw).toContain('<email>')
+
+    const parsed = JSON.parse(raw) as { groups: Array<Record<string, unknown>> }
+    for (const g of parsed.groups) {
+      expect(typeof g['idHash']).toBe('string')
+      expect(g['idHash']).toMatch(/^[0-9a-f]{64}$/)
+      expect(g['id']).toBeUndefined()
+    }
+
+    // Second scan: update personalDirMod, remove personalFileMod, add Cozy Hair
+    const personalDirModUpdated = makeModGroup({
+      id: 'dir:lila mods (lila.sims@example.com)',
+      label: 'Lila Mods (lila.sims@example.com)',
+      files: [{ relPath: 'Lila Mods/hair.package', bytes: 2048, modifiedAt: '2026-11-21T10:00:00.000Z' }]
+    })
+    const addedMod = makeModGroup({ id: 'dir:cozy hair', label: 'Cozy Hair' })
+
+    setNow('2026-11-21T12:00:00.000Z')
+    setInventory(makeInventory(modsDir, [normalMod, personalDirModUpdated, addedMod]))
+    const second = await handlers['scan:run']({ folderPath: simsDir, symptom: 'closes' })
+    expect(second.status).toBe('done')
+    if (second.status !== 'done') return
+
+    const removedHash = createHash('sha256')
+      .update('file:custom by lila - lila.sims@example.com.package')
+      .digest('hex')
+    expect(second.scan.changes).toEqual({
+      sinceAt: '2026-11-20T12:00:00.000Z',
+      gameVersion: null,
+      added: [{ groupId: 'dir:cozy hair', label: 'Cozy Hair', hasScript: false }],
+      updated: [
+        {
+          groupId: 'dir:lila mods (lila.sims@example.com)',
+          label: 'Lila Mods (lila.sims@example.com)',
+          hasScript: false
+        }
+      ],
+      removed: [
+        {
+          groupId: `removed:${removedHash.slice(0, 16)}`,
+          label: 'Custom by <user> - <email>',
+          hasScript: false
+        }
+      ]
     })
   })
 })

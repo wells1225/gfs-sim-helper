@@ -1,17 +1,18 @@
 import { createHash } from 'node:crypto'
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import type { ChangedModItem, IsoTime, ModFile, Scan, ScanChanges } from '../../shared/model.ts'
+import type { ChangedModItem, IsoTime, ModFile, ModGroup, Scan, ScanChanges } from '../../shared/model.ts'
 import type { Gate } from '../ports.ts'
 import { normalizePathForCompare } from './index.ts'
 
 const SNAPSHOT_FORMAT = 1
-const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
+export const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
 const MAX_SNAPSHOT_GROUPS = 50_000
 const SHA256_HEX = /^[0-9a-f]{64}$/
+const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
 
 export interface SnapshotGroup {
-  id: string
+  idHash: string
   label: string
   hasScript: boolean
   fileCount: number
@@ -30,12 +31,83 @@ export interface ScanSnapshot {
   groups: SnapshotGroup[]
 }
 
+export interface RecordScanSnapshotOptions {
+  redact?: (text: string) => string
+  maxBytes?: number
+}
+
 export function folderFingerprint(folderPath: string): string {
   return createHash('sha256').update(normalizePathForCompare(folderPath)).digest('hex')
 }
 
+export function groupFingerprint(groupId: string): string {
+  return createHash('sha256').update(groupId).digest('hex')
+}
+
 export function snapshotPathFor(stateDir: string, folderHash: string): string {
   return join(stateDir, `last-scan-${folderHash.slice(0, 16)}.json`)
+}
+
+function redactSegment(segment: string, redact: (text: string) => string): string {
+  if (segment.length === 0) return segment
+  let out = ''
+  let i = 0
+  while (i < segment.length) {
+    const cp = segment.codePointAt(i)!
+    const charLen = cp > 0xffff ? 2 : 1
+    const ch = segment.slice(i, i + charLen)
+    if (!/[\p{L}\p{M}\p{N}]/u.test(ch)) {
+      out += ch
+      i += charLen
+      continue
+    }
+
+    const tail = segment.slice(i)
+    const redactedTail = redact(tail)
+    if (
+      redactedTail !== tail &&
+      redactedTail.startsWith('<user>') &&
+      tail.endsWith(redactedTail.slice('<user>'.length)) &&
+      redactedTail.length - '<user>'.length < tail.length
+    ) {
+      const consumed = tail.length - (redactedTail.length - '<user>'.length)
+      out += '<user>'
+      i += consumed
+      continue
+    }
+
+    const wordMatch = /^[\p{L}\p{M}\p{N}]+/u.exec(tail)
+    const word = wordMatch ? wordMatch[0] : ch
+    out += redact(word)
+    i += word.length
+  }
+  return out
+}
+
+function redactChunk(chunk: string, redact?: (text: string) => string): string {
+  if (!redact || chunk.length === 0) return chunk
+  return chunk
+    .split(/([\\/]+)/)
+    .map((piece, idx) => (idx % 2 === 1 ? piece : redactSegment(piece, redact)))
+    .join('')
+}
+
+export function sanitizeSnapshotLabel(label: string, redact?: (text: string) => string): string {
+  const parts: string[] = []
+  let lastIndex = 0
+  EMAIL_PATTERN.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = EMAIL_PATTERN.exec(label)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(redactChunk(label.slice(lastIndex, match.index), redact))
+    }
+    parts.push('<email>')
+    lastIndex = match.index + match[0].length
+  }
+  if (lastIndex < label.length) {
+    parts.push(redactChunk(label.slice(lastIndex), redact))
+  }
+  return parts.join('')
 }
 
 function compareCodeUnits(a: string, b: string): number {
@@ -69,7 +141,7 @@ function latestModifiedAt(files: readonly ModFile[]): IsoTime | null {
   return latest
 }
 
-export function buildScanSnapshot(scan: Scan): ScanSnapshot {
+export function buildScanSnapshot(scan: Scan, redact?: (text: string) => string): ScanSnapshot {
   const filesByGroup = new Map<string, ModFile[]>()
   for (const file of scan.inventory.files) {
     const list = filesByGroup.get(file.groupId)
@@ -84,8 +156,8 @@ export function buildScanSnapshot(scan: Scan): ScanSnapshot {
     .map((group) => {
       const groupFiles = filesByGroup.get(group.id) ?? []
       return {
-        id: group.id,
-        label: group.label,
+        idHash: groupFingerprint(group.id),
+        label: sanitizeSnapshotLabel(group.label, redact),
         hasScript: group.hasScript,
         fileCount: groupFiles.length,
         bytes: group.bytes,
@@ -95,7 +167,7 @@ export function buildScanSnapshot(scan: Scan): ScanSnapshot {
         filesDigest: computeFilesDigest(groupFiles)
       }
     })
-    .sort((a, b) => compareCodeUnits(a.id, b.id))
+    .sort((a, b) => compareCodeUnits(a.idHash, b.idHash))
 
   return {
     format: SNAPSHOT_FORMAT,
@@ -114,7 +186,7 @@ function parseSnapshotGroup(value: unknown): SnapshotGroup | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const obj = value as Record<string, unknown>
 
-  const id = obj['id']
+  const idHash = obj['idHash']
   const label = obj['label']
   const hasScript = obj['hasScript']
   const fileCount = obj['fileCount']
@@ -124,7 +196,7 @@ function parseSnapshotGroup(value: unknown): SnapshotGroup | null {
   const fileDate = obj['fileDate']
   const filesDigest = obj['filesDigest']
 
-  if (typeof id !== 'string' || id.length === 0) return null
+  if (typeof idHash !== 'string' || !SHA256_HEX.test(idHash)) return null
   if (typeof label !== 'string') return null
   if (typeof hasScript !== 'boolean') return null
   if (typeof fileCount !== 'number' || !Number.isInteger(fileCount) || fileCount < 0) return null
@@ -135,7 +207,7 @@ function parseSnapshotGroup(value: unknown): SnapshotGroup | null {
   if (typeof filesDigest !== 'string' || !SHA256_HEX.test(filesDigest)) return null
 
   return {
-    id,
+    idHash,
     label,
     hasScript,
     fileCount,
@@ -172,8 +244,8 @@ export function parseScanSnapshot(raw: string, expectedHash: string): ScanSnapsh
   const seenIds = new Set<string>()
   for (const item of rawGroups) {
     const group = parseSnapshotGroup(item)
-    if (group === null || seenIds.has(group.id)) return null
-    seenIds.add(group.id)
+    if (group === null || seenIds.has(group.idHash)) return null
+    seenIds.add(group.idHash)
     groups.push(group)
   }
 
@@ -227,31 +299,46 @@ function groupChanged(prev: SnapshotGroup, next: SnapshotGroup): boolean {
   )
 }
 
-export function diffScanSnapshots(prev: ScanSnapshot, next: ScanSnapshot): ScanChanges {
+export function diffScanSnapshots(
+  prev: ScanSnapshot,
+  next: ScanSnapshot,
+  currentGroups?: readonly ModGroup[]
+): ScanChanges {
   const gameVersion =
     prev.gameVersion !== null && next.gameVersion !== null && prev.gameVersion !== next.gameVersion
       ? { from: prev.gameVersion, to: next.gameVersion }
       : null
 
-  const prevById = new Map(prev.groups.map((group) => [group.id, group]))
-  const nextById = new Map(next.groups.map((group) => [group.id, group]))
+  const prevById = new Map(prev.groups.map((group) => [group.idHash, group]))
+  const nextById = new Map(next.groups.map((group) => [group.idHash, group]))
+  const liveByHash = new Map((currentGroups ?? []).map((group) => [groupFingerprint(group.id), group]))
 
   const added: ChangedModItem[] = []
   const updated: ChangedModItem[] = []
   const removed: ChangedModItem[] = []
 
   for (const nextGroup of next.groups) {
-    const prevGroup = prevById.get(nextGroup.id)
+    const prevGroup = prevById.get(nextGroup.idHash)
+    const liveGroup = liveByHash.get(nextGroup.idHash)
+    const item: ChangedModItem = {
+      groupId: liveGroup?.id ?? nextGroup.idHash,
+      label: liveGroup?.label ?? nextGroup.label,
+      hasScript: nextGroup.hasScript
+    }
     if (!prevGroup) {
-      added.push({ groupId: nextGroup.id, label: nextGroup.label, hasScript: nextGroup.hasScript })
+      added.push(item)
     } else if (groupChanged(prevGroup, nextGroup)) {
-      updated.push({ groupId: nextGroup.id, label: nextGroup.label, hasScript: nextGroup.hasScript })
+      updated.push(item)
     }
   }
 
   for (const prevGroup of prev.groups) {
-    if (!nextById.has(prevGroup.id)) {
-      removed.push({ groupId: prevGroup.id, label: prevGroup.label, hasScript: prevGroup.hasScript })
+    if (!nextById.has(prevGroup.idHash)) {
+      removed.push({
+        groupId: `removed:${prevGroup.idHash.slice(0, 16)}`,
+        label: prevGroup.label,
+        hasScript: prevGroup.hasScript
+      })
     }
   }
 
@@ -268,29 +355,48 @@ export function diffScanSnapshots(prev: ScanSnapshot, next: ScanSnapshot): ScanC
   }
 }
 
-export async function writeScanSnapshot(gate: Gate, stateDir: string, snapshot: ScanSnapshot): Promise<void> {
+export async function writeScanSnapshot(
+  gate: Gate,
+  stateDir: string,
+  snapshot: ScanSnapshot,
+  opts?: { maxBytes?: number }
+): Promise<boolean> {
+  const maxBytes = opts?.maxBytes ?? MAX_SNAPSHOT_BYTES
+  const data = `${JSON.stringify(snapshot)}\n`
+  if (Buffer.byteLength(data, 'utf8') > maxBytes || snapshot.groups.length > MAX_SNAPSHOT_GROUPS) {
+    return false
+  }
   const path = snapshotPathFor(stateDir, snapshot.folderHash)
   await gate.run({
     reason: 'state',
     folderPath: null,
     ops: [
       { op: 'mkdir', path: stateDir },
-      { op: 'write', path, data: `${JSON.stringify(snapshot)}\n`, mode: 'replace' }
+      { op: 'write', path, data, mode: 'replace' }
     ]
   })
+  return true
 }
 
 export async function recordScanSnapshot(
   gate: Gate,
   stateDir: string,
-  scan: Scan
+  scan: Scan,
+  opts?: RecordScanSnapshotOptions
 ): Promise<ScanChanges | null> {
   try {
-    const next = buildScanSnapshot(scan)
+    const next = buildScanSnapshot(scan, opts?.redact)
     const prev = await readScanSnapshot(stateDir, next.folderHash)
-    const changes = prev ? diffScanSnapshots(prev, next) : null
+    if (prev !== null) {
+      const prevMs = Date.parse(prev.at)
+      const nextMs = Date.parse(next.at)
+      if (Number.isFinite(prevMs) && Number.isFinite(nextMs) && prevMs > nextMs) {
+        return null
+      }
+    }
+    const changes = prev ? diffScanSnapshots(prev, next, scan.inventory.groups) : null
     try {
-      await writeScanSnapshot(gate, stateDir, next)
+      await writeScanSnapshot(gate, stateDir, next, { maxBytes: opts?.maxBytes })
     } catch {
       // Best-effort save: never fail a check-up if saving the snapshot fails or is refused.
     }
