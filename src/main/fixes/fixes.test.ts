@@ -1235,4 +1235,37 @@ describe('a part-way stop after a refusal says why in plain words', () => {
       expect(result.detail).toContain('put back')
     })
   }
+
+  it('gives a next step for not-a-sims-folder, backup-folder-in-onedrive, and sims-folder-missing', async () => {
+    const cases: { refusal: FixRefusal; expectedStep: string }[] = [
+      {
+        refusal: { why: 'gate', refusal: { reason: 'not-a-sims-folder', path: secretPath } },
+        expectedStep: 'Go back and pick your Sims 4 folder again, then try again.'
+      },
+      {
+        refusal: { why: 'backup', reason: 'backup-folder-in-onedrive' },
+        expectedStep: 'Tell Tyler so he can move it out of OneDrive.'
+      },
+      {
+        refusal: { why: 'backup', reason: 'sims-folder-missing' },
+        expectedStep: 'Make sure the folder is still there, or pick it again.'
+      }
+    ]
+
+    for (const { refusal, expectedStep } of cases) {
+      let call = 0
+      const base = makeFakeSafety()
+      const safety = makeFakeSafety({
+        async runAction(plan, onProgress) {
+          call += 1
+          if (call === 1) return base.runAction(plan, onProgress)
+          return { status: 'refused', refusal }
+        }
+      })
+      const result = await setAside(makeDeps(safety), folderPath, groups, { by: 'fix' })
+      expect(result.status).toBe('stopped-part-way')
+      if (result.status !== 'stopped-part-way') continue
+      expect(result.detail).toContain(expectedStep)
+    }
+  })
 })

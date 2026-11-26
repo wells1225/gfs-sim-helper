@@ -124,6 +124,17 @@ describe('FIXES_READY and words', () => {
     expect(
       refusalMessage({ why: 'gate', refusal: { reason: 'saves-or-tray', path: '/saves' } }).detail
     ).toBe('Your saves and households are never touched, so nothing was changed.')
+    expect(
+      refusalMessage({ why: 'gate', refusal: { reason: 'not-a-sims-folder', path: '/bad' } }).detail
+    ).toBe(
+      'That folder no longer looks like a Sims 4 folder, so nothing was changed. Go back and pick your Sims 4 folder again, then try again.'
+    )
+    expect(refusalMessage({ why: 'backup', reason: 'backup-folder-in-onedrive' }).detail).toBe(
+      'Your safety copy folder is synced by OneDrive, which can interrupt backups. Nothing in your Sims folder was changed. Tell Tyler so he can move it out of OneDrive.'
+    )
+    expect(refusalMessage({ why: 'backup', reason: 'sims-folder-missing' }).detail).toBe(
+      'Your Sims 4 folder could not be found right now, so nothing was changed. Make sure the folder is still there, or pick it again.'
+    )
   })
 })
 
