@@ -1269,3 +1269,162 @@ describe('a part-way stop after a refusal says why in plain words', () => {
     }
   })
 })
+
+describe('batch progress reporting for setAside and putBack', () => {
+  const folderPath = '/sims/The Sims 4'
+  const movableGroups: ModGroup[] = [
+    { id: 'dir:a', label: 'Mod A', source: 'folder', files: ['A/a1.package', 'A/a2.package'], bytes: 100, hasScript: false, curseForge: null },
+    { id: 'dir:empty', label: 'Empty Mod', source: 'folder', files: [], bytes: 0, hasScript: false, curseForge: null },
+    { id: 'dir:b', label: 'Mod B', source: 'folder', files: ['B/b1.package'], bytes: 200, hasScript: true, curseForge: null },
+    { id: 'dir:c', label: 'Mod C', source: 'folder', files: ['C/c1.package', 'C/c2.package', 'C/c3.package'], bytes: 300, hasScript: false, curseForge: null }
+  ]
+
+  it('setAside emits group-level fix/moving progress across movable groups without inner per-file resets', async () => {
+    const base = makeFakeSafety()
+    const safety = makeFakeSafety({
+      async runAction(plan, onProgress) {
+        onProgress?.({ task: 'fix', stage: 'moving', done: 0, total: plan.steps.length })
+        onProgress?.({ task: 'fix', stage: 'moving', done: plan.steps.length, total: plan.steps.length })
+        return base.runAction(plan, onProgress)
+      }
+    })
+    const events: Progress[] = []
+    const res = await setAside(
+      makeDeps(safety),
+      folderPath,
+      movableGroups,
+      { by: 'fifty-fifty', sessionId: 'ff-1', round: 1 },
+      (p) => events.push(p)
+    )
+    expect(res.status).toBe('done')
+    expect(events).toEqual([
+      { task: 'fix', stage: 'moving', done: 0, total: 3 },
+      { task: 'fix', stage: 'moving', done: 1, total: 3 },
+      { task: 'fix', stage: 'moving', done: 2, total: 3 },
+      { task: 'fix', stage: 'moving', done: 3, total: 3 }
+    ])
+  })
+
+  it('setAside forwards backup progress untouched and resumes group-level moving progress', async () => {
+    let call = 0
+    const base = makeFakeSafety()
+    const safety = makeFakeSafety({
+      async runAction(plan, onProgress) {
+        call += 1
+        if (call === 1) {
+          onProgress?.({ task: 'backup', stage: 'copying', done: 10, total: 50 })
+          onProgress?.({ task: 'backup', stage: 'checking', done: 50, total: 50 })
+        }
+        onProgress?.({ task: 'fix', stage: 'moving', done: 0, total: plan.steps.length })
+        onProgress?.({ task: 'fix', stage: 'moving', done: plan.steps.length, total: plan.steps.length })
+        return base.runAction(plan, onProgress)
+      }
+    })
+    const events: Progress[] = []
+    const res = await setAside(
+      makeDeps(safety),
+      folderPath,
+      movableGroups,
+      { by: 'fifty-fifty', sessionId: 'ff-1', round: 1 },
+      (p) => events.push(p)
+    )
+    expect(res.status).toBe('done')
+    expect(events.filter((e) => e.task === 'backup')).toEqual([
+      { task: 'backup', stage: 'copying', done: 10, total: 50 },
+      { task: 'backup', stage: 'checking', done: 50, total: 50 }
+    ])
+    const fixEvents = events.filter((e) => e.task === 'fix')
+    expect(fixEvents.every((e) => e.stage === 'moving' && e.total === 3)).toBe(true)
+    expect(fixEvents.at(-1)).toEqual({ task: 'fix', stage: 'moving', done: 3, total: 3 })
+    for (let i = 1; i < fixEvents.length; i += 1) {
+      expect(fixEvents[i]!.done).toBeGreaterThanOrEqual(fixEvents[i - 1]!.done)
+    }
+    // After backup finishes, moving progress is emitted before group 1 completes.
+    const lastBackupIdx = events.findLastIndex((e) => e.task === 'backup')
+    expect(events.slice(lastBackupIdx + 1)).toEqual([
+      { task: 'fix', stage: 'moving', done: 0, total: 3 },
+      { task: 'fix', stage: 'moving', done: 1, total: 3 },
+      { task: 'fix', stage: 'moving', done: 2, total: 3 },
+      { task: 'fix', stage: 'moving', done: 3, total: 3 }
+    ])
+  })
+
+  it('setAside emits nothing when all groups are empty', async () => {
+    const safety = makeFakeSafety()
+    const events: Progress[] = []
+    const res = await setAside(
+      makeDeps(safety),
+      folderPath,
+      [{ id: 'dir:empty', label: 'Empty', source: 'folder', files: [], bytes: 0, hasScript: false, curseForge: null }],
+      { by: 'fix' },
+      (p) => events.push(p)
+    )
+    expect(res).toEqual({ status: 'done', entries: [] })
+    expect(events).toEqual([])
+  })
+
+  it('putBack emits group-level fix/moving progress for matching disabled groups and forwards backup progress', async () => {
+    const journal: JournalEntry[] = [
+      sampleJournalEntry({ id: 'e-a', action: 'disable-group', folderPath, groupId: 'dir:a', status: 'done' }),
+      sampleJournalEntry({ id: 'e-b', action: 'disable-group', folderPath, groupId: 'dir:b', status: 'done' }),
+      sampleJournalEntry({ id: 'e-undone', action: 'disable-group', folderPath, groupId: 'dir:gone', status: 'undone' })
+    ]
+    let undoCall = 0
+    const safety = makeFakeSafety({
+      async listJournal() {
+        return journal
+      },
+      async undo(entryId, onProgress) {
+        undoCall += 1
+        if (undoCall === 1) {
+          onProgress?.({ task: 'backup', stage: 'copying', done: 4, total: 20 })
+        }
+        onProgress?.({ task: 'fix', stage: 'moving', done: 0, total: 1 })
+        onProgress?.({ task: 'fix', stage: 'moving', done: 1, total: 1 })
+        return { status: 'done', entry: sampleJournalEntry({ id: entryId, status: 'undone' }) }
+      }
+    })
+    const events: Progress[] = []
+    // Duplicates and missing/already-undone groups are skipped from total.
+    const res = await putBack(makeDeps(safety), folderPath, ['dir:a', 'dir:a', 'dir:gone', 'dir:missing', 'dir:b'], (p) =>
+      events.push(p)
+    )
+    expect(res.status).toBe('done')
+    expect(events.filter((e) => e.task === 'backup')).toEqual([{ task: 'backup', stage: 'copying', done: 4, total: 20 }])
+    const lastBackupIdx = events.findLastIndex((e) => e.task === 'backup')
+    expect(events.slice(lastBackupIdx + 1)).toEqual([
+      { task: 'fix', stage: 'moving', done: 0, total: 2 },
+      { task: 'fix', stage: 'moving', done: 1, total: 2 },
+      { task: 'fix', stage: 'moving', done: 2, total: 2 }
+    ])
+  })
+
+  it('putBack emits clean 0..N progress without backup and nothing when no groups match', async () => {
+    const journal: JournalEntry[] = [
+      sampleJournalEntry({ id: 'e-a', action: 'disable-group', folderPath, groupId: 'dir:a', status: 'done' }),
+      sampleJournalEntry({ id: 'e-b', action: 'disable-group', folderPath, groupId: 'dir:b', status: 'done' })
+    ]
+    const safety = makeFakeSafety({
+      async listJournal() {
+        return journal
+      },
+      async undo(entryId, onProgress) {
+        onProgress?.({ task: 'fix', stage: 'moving', done: 0, total: 1 })
+        onProgress?.({ task: 'fix', stage: 'moving', done: 1, total: 1 })
+        return { status: 'done', entry: sampleJournalEntry({ id: entryId, status: 'undone' }) }
+      }
+    })
+    const events: Progress[] = []
+    await putBack(makeDeps(safety), folderPath, ['dir:a', 'dir:b'], (p) => events.push(p))
+    expect(events).toEqual([
+      { task: 'fix', stage: 'moving', done: 0, total: 2 },
+      { task: 'fix', stage: 'moving', done: 1, total: 2 },
+      { task: 'fix', stage: 'moving', done: 2, total: 2 }
+    ])
+
+    const emptyEvents: Progress[] = []
+    const emptyRes = await putBack(makeDeps(safety), folderPath, ['dir:none'], (p) => emptyEvents.push(p))
+    expect(emptyRes).toEqual({ status: 'done', entries: [] })
+    expect(emptyEvents).toEqual([])
+  })
+})

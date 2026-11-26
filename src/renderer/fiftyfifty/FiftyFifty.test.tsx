@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -828,5 +828,104 @@ describe('a damaged progress file', () => {
     expect(await screen.findByRole('button', { name: 'Start the 50/50 test' })).toBeInTheDocument()
     expect(screen.queryByText(TITLE)).not.toBeInTheDocument()
     expect(channels(api)).not.toContain('fifty:start')
+  })
+})
+
+describe('live move and backup progress', () => {
+  it('shows fallback busy copy with a progress bar, updates on backup and moving events, and clears when done', async () => {
+    let finishBegin!: (result: FiftyResult) => void
+    const { api, user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': round({ phase: 'close-curseforge' }),
+      'fifty:begin-round': () => new Promise<FiftyResult>((resolve) => (finishBegin = resolve))
+    })
+
+    await user.click(await screen.findByRole('button', { name: 'CurseForge is closed' }))
+
+    // Falls back cleanly to the busy text before any progress event arrives.
+    const main = screen.getByRole('main')
+    const status = within(main).getByRole('status')
+    expect(within(status).getByText('Setting aside mods and clearing the cache…')).toBeInTheDocument()
+    expect(within(status).getByRole('progressbar')).toBeInTheDocument()
+
+    // Backup progress events: counting, copying, checking.
+    act(() => {
+      api.emitProgress({ task: 'backup', stage: 'counting', done: 0, total: null })
+    })
+    expect(within(status).getByText('Making a safety copy first…')).toBeInTheDocument()
+    expect(within(status).getByText('Counting files to protect…')).toBeInTheDocument()
+
+    act(() => {
+      api.emitProgress({ task: 'backup', stage: 'copying', done: 1240, total: 5300 })
+    })
+    expect(within(status).getByText('Making a safety copy first…')).toBeInTheDocument()
+    expect(within(status).getByText('Copying 1,240 of 5,300 files')).toBeInTheDocument()
+    expect(within(status).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '23')
+
+    act(() => {
+      api.emitProgress({ task: 'backup', stage: 'checking', done: 5300, total: 5300 })
+    })
+    expect(within(status).getByText('Checking 5,300 of 5,300 files')).toBeInTheDocument()
+    expect(within(status).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100')
+
+    // Moving mods progress events: live count, clamping, tabular-nums, no em/en dashes.
+    act(() => {
+      api.emitProgress({ task: 'fix', stage: 'moving', done: 5, total: 16 })
+    })
+    const movingText = within(status).getByText('Moving mod 5 of 16…')
+    expect(movingText).toBeInTheDocument()
+    expect(movingText.className).toContain('tabular-nums')
+    expect(within(status).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '31')
+    expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+
+    // Clamps done > total.
+    act(() => {
+      api.emitProgress({ task: 'fix', stage: 'moving', done: 20, total: 16 })
+    })
+    expect(within(status).getByText('Moving mod 16 of 16…')).toBeInTheDocument()
+    expect(within(status).getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100')
+
+    // Ignores unrelated tasks.
+    act(() => {
+      api.emitProgress({ task: 'scan', stage: 'mods', done: 1, total: 2 })
+    })
+    expect(within(status).getByText('Moving mod 16 of 16…')).toBeInTheDocument()
+
+    // Clears progress when busy finishes.
+    await act(async () => {
+      finishBegin(ok(round()))
+    })
+    expect(await screen.findByRole('button', { name: "I've tested it" })).toBeInTheDocument()
+    expect(within(main).queryByRole('status')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Moving mod/)).not.toBeInTheDocument()
+  })
+
+  it('clears stale progress before a second busy action starts', async () => {
+    let finishFirst!: (result: FiftyResult) => void
+    let finishSecond!: (result: FiftyResult) => void
+    const { api, user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': round({ phase: 'close-curseforge' }),
+      'fifty:begin-round': () => new Promise<FiftyResult>((resolve) => (finishFirst = resolve)),
+      'fifty:answer': () => new Promise<FiftyResult>((resolve) => (finishSecond = resolve))
+    })
+
+    await user.click(await screen.findByRole('button', { name: 'CurseForge is closed' }))
+    act(() => {
+      api.emitProgress({ task: 'fix', stage: 'moving', done: 8, total: 8 })
+    })
+    expect(screen.getByText('Moving mod 8 of 8…')).toBeInTheDocument()
+
+    await act(async () => {
+      finishFirst(ok(round()))
+    })
+    await user.click(await screen.findByRole('button', { name: "I've tested it" }))
+    await user.click(screen.getByRole('button', { name: 'No crash, it worked!' }))
+
+    expect(screen.getByText('Getting the next round ready…')).toBeInTheDocument()
+    expect(screen.queryByText('Moving mod 8 of 8…')).not.toBeInTheDocument()
+
+    await act(async () => {
+      finishSecond(ok(round({ round: 2 })))
+    })
+    expect(await screen.findByText(/Round 3 of about 3/)).toBeInTheDocument()
   })
 })

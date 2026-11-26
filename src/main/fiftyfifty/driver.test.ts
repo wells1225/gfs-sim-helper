@@ -11,11 +11,12 @@ import type {
   JournalEntry,
   JournalOrigin,
   ModGroup,
+  Progress,
   Scan
 } from '../../shared/model.ts'
 import { sampleJournalEntry, sampleScan } from '../../shared/testing/sample.ts'
 import type { Host } from '../locate/host.ts'
-import type { AppPaths, Fixes, Gate, GateResult, GroupsOutcome, Safety, WriteRequest } from '../ports.ts'
+import type { AppPaths, Fixes, Gate, GateResult, GroupsOutcome, OnProgress, Safety, WriteRequest } from '../ports.ts'
 import {
   beginRound,
   finish,
@@ -42,6 +43,8 @@ class FakeFixes implements Fixes {
   /** The next setAside throws once this many groups are set aside, as runAction can on a later group. */
   throwAfter: number | null = null
   cacheOutcome: FixOutcome | null = null
+  /** Queued backup progress events emitted at the start of the next setAside/putBack call. */
+  backupEvents: Progress[] = []
   /** What safety.listJournal answers; null makes it throw. */
   journal: JournalEntry[] | null = []
   private n = 0
@@ -57,11 +60,22 @@ class FakeFixes implements Fixes {
     return { status: 'refused', refusal }
   }
 
-  async setAside(folderPath: string, groups: ModGroup[], origin: JournalOrigin): Promise<GroupsOutcome> {
+  private emitBackup(onProgress?: OnProgress): void {
+    if (!onProgress || this.backupEvents.length === 0) return
+    const queued = this.backupEvents.splice(0, this.backupEvents.length)
+    for (const p of queued) onProgress(p)
+  }
+
+  async setAside(folderPath: string, groups: ModGroup[], origin: JournalOrigin, onProgress?: OnProgress): Promise<GroupsOutcome> {
     expect(folderPath).toBe(FOLDER)
     this.calls.push({ method: 'setAside', ids: groups.map((g) => g.id), origin })
     const refused = this.takeRefusal()
     if (refused) return refused
+    const movable = groups.filter((g) => g.files.length > 0)
+    const total = movable.length
+    let done = 0
+    if (total > 0) onProgress?.({ task: 'fix', stage: 'moving', done: 0, total })
+    this.emitBackup(onProgress)
     const entries = []
     for (const [i, g] of groups.entries()) {
       if (this.partWayAfter === i) {
@@ -76,15 +90,23 @@ class FakeFixes implements Fixes {
       const entryId = `e${++this.n}`
       this.aside.set(g.id, { groupId: g.id, label: g.label, entryId, at: '2026-11-24T12:00:00.000Z', origin: origin.by })
       entries.push(sampleJournalEntry({ id: entryId, groupId: g.id, origin }))
+      if (g.files.length > 0) {
+        done += 1
+        onProgress?.({ task: 'fix', stage: 'moving', done, total })
+      }
     }
     return { status: 'done', entries }
   }
 
-  async putBack(folderPath: string, groupIds: string[]): Promise<GroupsOutcome> {
+  async putBack(folderPath: string, groupIds: string[], onProgress?: OnProgress): Promise<GroupsOutcome> {
     expect(folderPath).toBe(FOLDER)
     this.calls.push({ method: 'putBack', ids: [...groupIds] })
     const refused = this.takeRefusal()
     if (refused) return refused
+    const total = groupIds.length
+    let done = 0
+    if (total > 0) onProgress?.({ task: 'fix', stage: 'moving', done: 0, total })
+    this.emitBackup(onProgress)
     const entries = []
     for (const [i, id] of groupIds.entries()) {
       if (this.partWayAfter === i) {
@@ -93,6 +115,8 @@ class FakeFixes implements Fixes {
       }
       if (!this.aside.delete(id)) throw new Error(`putBack of a group not aside: ${id}`)
       entries.push(sampleJournalEntry({ groupId: id }))
+      done += 1
+      onProgress?.({ task: 'fix', stage: 'moving', done, total })
     }
     return { status: 'done', entries }
   }
@@ -1003,5 +1027,72 @@ describe('a part-way detail is plain words, never a raw error or a path', () => 
     if (result.status !== 'stopped-part-way') return
     expectPlain(result.detail)
     expect(result.detail).toBe('The 50/50 test could not save its progress. Try again in a moment.')
+  })
+})
+
+describe('live progress reporting via deps.emit', () => {
+  it('combines put-back and set-aside in one round into one monotonic fix/moving sequence and forwards backup progress', async () => {
+    const events: Progress[] = []
+    const deps: FiftyDeps = { ...makeDeps(), emit: (p) => events.push(p) }
+    await start(deps, scanWith(makeGroups(8)))
+    // Round 0: sets aside all 8 groups
+    stateOf(await beginRound(deps))
+    // Round 1: puts 4 groups back (g4..g7), leaving g0..g3 parked
+    stateOf(await giveAnswer(deps, 'worked'))
+
+    events.length = 0
+    fixes.backupEvents = [
+      { task: 'backup', stage: 'copying', done: 100, total: 500 },
+      { task: 'backup', stage: 'checking', done: 500, total: 500 }
+    ]
+
+    // Round 1 crashed -> bad mod is in g4..g7. Round 2 puts g0..g3 back (4) AND sets g4..g5 aside (2) = 6 total.
+    stateOf(await giveAnswer(deps, 'crashed'))
+
+    expect(events.filter((e) => e.task === 'backup')).toEqual([
+      { task: 'backup', stage: 'copying', done: 100, total: 500 },
+      { task: 'backup', stage: 'checking', done: 500, total: 500 }
+    ])
+    const fixEvents = events.filter((e) => e.task === 'fix')
+    expect(fixEvents).toEqual([
+      { task: 'fix', stage: 'moving', done: 0, total: 6 },
+      { task: 'fix', stage: 'moving', done: 1, total: 6 },
+      { task: 'fix', stage: 'moving', done: 2, total: 6 },
+      { task: 'fix', stage: 'moving', done: 3, total: 6 },
+      { task: 'fix', stage: 'moving', done: 4, total: 6 },
+      { task: 'fix', stage: 'moving', done: 5, total: 6 },
+      { task: 'fix', stage: 'moving', done: 6, total: 6 }
+    ])
+  })
+
+  it('forwards progress through stopDamaged when putting mods back from a damaged progress file', async () => {
+    const file = join(paths.stateDir, 'fiftyfifty.json')
+    await mkdir(paths.stateDir, { recursive: true })
+    await writeFile(file, '{"phase": "awaiting')
+    for (const id of ['dir:g0', 'dir:g1', 'dir:g2']) {
+      fixes.aside.set(id, { groupId: id, label: id, entryId: `j-${id}`, at: '2026-11-24T12:00:00.000Z', origin: 'fifty-fifty' })
+    }
+    fixes.journal = ['dir:g0', 'dir:g1', 'dir:g2'].map((groupId) =>
+      sampleJournalEntry({
+        id: `j-${groupId}`,
+        action: 'disable-group',
+        groupId,
+        folderPath: FOLDER,
+        origin: { by: 'fifty-fifty', sessionId: 's1', round: 1 }
+      })
+    )
+    fixes.backupEvents = [{ task: 'backup', stage: 'copying', done: 1, total: 10 }]
+
+    const events: Progress[] = []
+    const deps: FiftyDeps = { ...makeDeps(), emit: (p) => events.push(p) }
+    expect(await stop(deps)).toEqual({ status: 'ok', state: null })
+
+    expect(events.filter((e) => e.task === 'backup')).toEqual([{ task: 'backup', stage: 'copying', done: 1, total: 10 }])
+    expect(events.filter((e) => e.task === 'fix')).toEqual([
+      { task: 'fix', stage: 'moving', done: 0, total: 3 },
+      { task: 'fix', stage: 'moving', done: 1, total: 3 },
+      { task: 'fix', stage: 'moving', done: 2, total: 3 },
+      { task: 'fix', stage: 'moving', done: 3, total: 3 }
+    ])
   })
 })

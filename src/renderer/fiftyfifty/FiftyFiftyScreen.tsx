@@ -1,16 +1,26 @@
 import { LoaderCircle, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { FiftyAnswer, FiftyFifty, FiftyStopResult } from '../../shared/model.ts'
+import type { FiftyAnswer, FiftyFifty, FiftyStopResult, Progress } from '../../shared/model.ts'
 import { useApi } from '../api.tsx'
 import { Alert, AlertDescription } from '../components/ui/alert.tsx'
 import { Button } from '../components/ui/button.tsx'
+import { Progress as ProgressBar } from '../components/ui/progress.tsx'
 import { useNav } from '../nav.tsx'
 import { useSession } from '../session.tsx'
 import { checkBack, checkFound, type BackCheck, type FoundCheck } from './back-check.tsx'
 import { DamagedProgress } from './DamagedProgress.tsx'
 import { AnswerStep, CloseCurseForgeStep, Ended, FoundStep, Intro, ReadyStep, TestStep, type EndedHow } from './steps.tsx'
 import { StopDialog } from './StopDialog.tsx'
-import { CURSEFORGE_OPEN, groupLabel, isNotModsResult, isProgressDamaged, NOT_COUNTED, PART_WAY, refusalWords } from './words.ts'
+import {
+  CURSEFORGE_OPEN,
+  fiftyProgressCopy,
+  groupLabel,
+  isNotModsResult,
+  isProgressDamaged,
+  NOT_COUNTED,
+  PART_WAY,
+  refusalWords
+} from './words.ts'
 
 type View =
   | { kind: 'loading' }
@@ -30,10 +40,29 @@ export function FiftyFiftyScreen() {
   const [view, setView] = useState<View>({ kind: 'loading' })
   const [step, setStep] = useState<'test' | 'answer'>('test')
   const [busy, setBusy] = useState<string | null>(null)
+  const [progress, setProgress] = useState<Progress | null>(null)
   const [notice, setNotice] = useState<Notice | null>(null)
   const [asking, setAsking] = useState(false)
   const [foundCheck, setFoundCheck] = useState<FoundCheck | null>(null)
   const busyRef = useRef(false)
+
+  useEffect(() => {
+    if (!busy) {
+      setProgress(null)
+      return
+    }
+    setProgress(null)
+    let live = true
+    const unsubscribe = api.onProgress((next) => {
+      if (live && (next.task === 'backup' || next.task === 'fix')) {
+        setProgress(next)
+      }
+    })
+    return () => {
+      live = false
+      unsubscribe()
+    }
+  }, [api, busy])
 
   // The found card asks History each time the session is read (every read makes a new `view`), so it never
   // says more than History shows.
@@ -90,6 +119,7 @@ export function FiftyFiftyScreen() {
   ) => {
     if (busyRef.current) return
     busyRef.current = true
+    setProgress(null)
     setBusy(working)
     setNotice(null)
     try {
@@ -106,6 +136,7 @@ export function FiftyFiftyScreen() {
       setNotice({ text: 'Something went wrong. Please try again.', retry: retryFor(current) })
     } finally {
       busyRef.current = false
+      setProgress(null)
       setBusy(null)
     }
   }
@@ -230,7 +261,7 @@ export function FiftyFiftyScreen() {
     <main className="flex flex-col gap-4">
       {noticeBox}
       {body}
-      {busy && <Working text={busy} />}
+      {busy && <MoveProgress fallback={busy} progress={progress} />}
       {inProgress && (
         <div>
           <Button variant="link" className="h-auto p-0 text-muted-foreground" onClick={() => setAsking(true)} disabled={locked}>
@@ -240,6 +271,26 @@ export function FiftyFiftyScreen() {
       )}
       <StopDialog open={asking} onOpenChange={setAsking} onConfirm={() => state && stopTest(state)} busy={locked} />
     </main>
+  )
+}
+
+function MoveProgress({ fallback, progress }: { fallback: string; progress: Progress | null }) {
+  const copy = fiftyProgressCopy(progress, fallback)
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex flex-col gap-2 rounded-xl border border-border bg-card px-4 py-3.5 shadow-xs"
+    >
+      <div className="flex items-center justify-between gap-2 text-sm font-medium text-foreground">
+        <span className="flex items-center gap-2 tabular-nums">
+          <LoaderCircle className="size-4 shrink-0 animate-spin text-muted-foreground" strokeWidth={1.75} aria-hidden />
+          {copy.heading}
+        </span>
+        {copy.detail && <span className="tabular-nums text-muted-foreground">{copy.detail}</span>}
+      </div>
+      <ProgressBar value={copy.percent} aria-label={copy.heading} />
+    </div>
   )
 }
 
