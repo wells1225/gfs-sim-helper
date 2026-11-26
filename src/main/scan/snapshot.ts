@@ -9,7 +9,8 @@ const SNAPSHOT_FORMAT = 1
 export const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
 const MAX_SNAPSHOT_GROUPS = 50_000
 const SHA256_HEX = /^[0-9a-f]{64}$/
-const EMAIL_PATTERN = /[^\s@<>'"`()[\]{},;:]+@[^\s@<>'"`()[\]{},;:.]+(?:\.[^\s@<>'"`()[\]{},;:.]+)+/gu
+const EMAIL_DELIMITER = /[\s@<>'"`()[\]{},;:]/
+const UNICODE_LETTER = /\p{L}/u
 
 export interface SnapshotGroup {
   idHash: string
@@ -92,22 +93,67 @@ function redactChunk(chunk: string, redact?: (text: string) => string): string {
     .join('')
 }
 
-export function sanitizeSnapshotLabel(label: string, redact?: (text: string) => string): string {
-  const parts: string[] = []
-  let lastIndex = 0
-  EMAIL_PATTERN.lastIndex = 0
-  let match: RegExpExecArray | null
-  while ((match = EMAIL_PATTERN.exec(label)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(redactChunk(label.slice(lastIndex, match.index), redact))
+function isValidEmailDomain(domain: string): boolean {
+  const parts = domain.split('.')
+  if (parts.length < 2) return false
+  for (const part of parts) {
+    if (part.length === 0) return false
+  }
+  const tld = parts[parts.length - 1]!
+  return tld.length >= 2 && UNICODE_LETTER.test(tld)
+}
+
+function maskEmails(text: string, transform?: (chunk: string) => string): string {
+  if (!text.includes('@')) {
+    return transform ? transform(text) : text
+  }
+
+  const out: string[] = []
+  let outFrom = 0
+  let cursor = 0
+
+  while (cursor < text.length) {
+    const at = text.indexOf('@', cursor)
+    if (at === -1) break
+
+    let left = at
+    while (left > cursor && !EMAIL_DELIMITER.test(text[left - 1]!)) {
+      left -= 1
     }
-    parts.push('<email>')
-    lastIndex = match.index + match[0].length
+
+    let right = at + 1
+    while (right < text.length && !EMAIL_DELIMITER.test(text[right]!)) {
+      right += 1
+    }
+
+    let domainEnd = right
+    while (domainEnd > at + 1 && text[domainEnd - 1] === '.') {
+      domainEnd -= 1
+    }
+
+    if (left < at && at + 1 < domainEnd && isValidEmailDomain(text.slice(at + 1, domainEnd))) {
+      if (left > outFrom) {
+        const chunk = text.slice(outFrom, left)
+        out.push(transform ? transform(chunk) : chunk)
+      }
+      out.push('<email>')
+      outFrom = domainEnd
+      cursor = domainEnd
+    } else {
+      cursor = right > at + 1 ? right : at + 1
+    }
   }
-  if (lastIndex < label.length) {
-    parts.push(redactChunk(label.slice(lastIndex), redact))
+
+  if (outFrom < text.length) {
+    const tail = text.slice(outFrom)
+    out.push(transform ? transform(tail) : tail)
   }
-  return parts.join('')
+
+  return out.join('')
+}
+
+export function sanitizeSnapshotLabel(label: string, redact?: (text: string) => string): string {
+  return maskEmails(label, redact ? (chunk) => redactChunk(chunk, redact) : undefined)
 }
 
 function compareCodeUnits(a: string, b: string): number {

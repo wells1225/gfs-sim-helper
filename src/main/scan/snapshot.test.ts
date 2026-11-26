@@ -611,6 +611,21 @@ describe('scan snapshot persistence and diff', () => {
     expect(sanitizeSnapshotLabel('Custom by Lila (lila.sims@example.com)', redact)).toBe('Custom by <user> (<email>)')
     expect(sanitizeSnapshotLabel('user@sub.example.co.uk', redact)).toBe('<email>')
     expect(sanitizeSnapshotLabel('Mod@2', redact)).toBe('Mod@2')
+    expect(sanitizeSnapshotLabel('Mod@2.0', redact)).toBe('Mod@2.0')
+    expect(sanitizeSnapshotLabel('Mod@1.2.3', redact)).toBe('Mod@1.2.3')
+  })
+
+  it('sanitizeSnapshotLabel scans emails in linear time on long non-email inputs', () => {
+    const longNoAt = 'a'.repeat(50_000)
+    const longTrailingAt = `${'a'.repeat(50_000)}@`
+    const repeatedAt = 'a@'.repeat(25_000)
+
+    const start = performance.now()
+    expect(sanitizeSnapshotLabel(longNoAt)).toBe(longNoAt)
+    expect(sanitizeSnapshotLabel(longTrailingAt)).toBe(longTrailingAt)
+    expect(sanitizeSnapshotLabel(repeatedAt)).toBe(repeatedAt)
+    const elapsedMs = performance.now() - start
+    expect(elapsedMs).toBeLessThan(50)
   })
 
   it('redacts usernames with leading punctuation and Unicode email addresses in persisted snapshot labels', () => {
