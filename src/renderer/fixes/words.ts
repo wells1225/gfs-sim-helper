@@ -66,7 +66,8 @@ function gateRefusalMessage(refusal: GateRefusal): RefusalCopy {
     case 'not-a-sims-folder':
       return {
         title: 'Sims 4 folder not recognized',
-        detail: 'That folder no longer looks like a Sims 4 folder, so nothing was changed.',
+        detail:
+          'That folder no longer looks like a Sims 4 folder, so nothing was changed. Go back and pick your Sims 4 folder again, then try again.',
         canRetry: false,
         tone: 'destructive'
       }
@@ -108,7 +109,7 @@ function backupRefusalMessage(reason: BackupRefusal | 'backup-failed'): RefusalC
       return {
         title: 'Safety copy folder is inside OneDrive',
         detail:
-          'Your safety copy folder is synced by OneDrive, which can interrupt backups. Nothing in your Sims folder was changed.',
+          'Your safety copy folder is synced by OneDrive, which can interrupt backups. Nothing in your Sims folder was changed. Tell Tyler so he can move it out of OneDrive.',
         canRetry: false,
         tone: 'warn'
       }
@@ -131,7 +132,8 @@ function backupRefusalMessage(reason: BackupRefusal | 'backup-failed'): RefusalC
     case 'sims-folder-missing':
       return {
         title: 'Could not find your Sims 4 folder',
-        detail: 'Your Sims 4 folder could not be found right now, so nothing was changed.',
+        detail:
+          'Your Sims 4 folder could not be found right now, so nothing was changed. Make sure the folder is still there, or pick it again.',
         canRetry: true,
         tone: 'warn'
       }

@@ -65,7 +65,7 @@ function refusalReasonWords(refusal: FixRefusal): string {
         case 'link-escape':
           return 'Skipped a linked folder that points outside your Sims 4 folder.'
         case 'not-a-sims-folder':
-          return 'That folder no longer looks like a Sims 4 folder.'
+          return 'That folder no longer looks like a Sims 4 folder. Go back and pick your Sims 4 folder again, then try again.'
         case 'check-failed':
           return 'A safety check did not finish. Try again in a moment.'
         case 'no-verified-backup':
@@ -78,13 +78,13 @@ function refusalReasonWords(refusal: FixRefusal): string {
         case 'game-state-unknown':
           return 'We could not tell whether The Sims 4 is open. Make sure the game is closed, then try again.'
         case 'backup-folder-in-onedrive':
-          return 'Your safety copy folder is synced by OneDrive, which can interrupt backups.'
+          return 'Your safety copy folder is synced by OneDrive, which can interrupt backups. Tell Tyler so he can move it out of OneDrive.'
         case 'backup-folder-in-sims-folder':
           return 'The safety copy cannot be kept inside your Sims 4 folder. Tell Tyler so he can fix the setup.'
         case 'not-enough-space':
           return 'There is not enough free disk space to make a safety copy first. Free up a little space, then try again.'
         case 'sims-folder-missing':
-          return 'Your Sims 4 folder could not be found right now.'
+          return 'Your Sims 4 folder could not be found right now. Make sure the folder is still there, or pick it again.'
         case 'backup-already-running':
           return 'A safety copy is already running. Wait a moment for it to finish, then try again.'
         case 'backup-failed':
