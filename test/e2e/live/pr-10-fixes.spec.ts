@@ -60,6 +60,13 @@ async function findSimsFolder(fixtureRoot: string): Promise<string> {
   return join(eaDir, folder.name)
 }
 
+/** The finding card with this title. */
+function findingCard(page: Page, title: string) {
+  return page
+    .locator('main [data-slot="card"]')
+    .filter({ has: page.getByRole('heading', { name: title, exact: true }) })
+}
+
 async function runCheckUp(page: Page): Promise<void> {
   await expect(page.getByRole('heading', { name: 'Welcome to Sims Helper' })).toBeVisible({ timeout: 20_000 })
   await page.getByRole('button', { name: "Let's take a look" }).click()
@@ -145,7 +152,10 @@ test.describe('live fixes with undo on Windows', () => {
 
       await runCheckUp(running.page)
 
-      await running.page.getByRole('button', { name: 'Move it up a folder' }).click()
+      // nested-scripts also has deep packages, whose card offers the same button label.
+      await findingCard(running.page, '2 script mods are buried too deep in folders')
+        .getByRole('button', { name: 'Move it up a folder' })
+        .click()
       await expect(
         running.page.locator('main').getByText('Moved 2 script mods up a folder', { exact: true })
       ).toBeVisible({ timeout: 30_000 })
@@ -156,6 +166,38 @@ test.describe('live fixes with undo on Windows', () => {
       expect(relPaths).toContain('Mods/ScriptMods/cool_mod.ts4script')
       expect(relPaths).not.toContain('Mods/Gameplay/Tweaks/DeepMod/deep_mod.ts4script')
       expect(relPaths).not.toContain('Mods/ScriptMods/CoolMod/cool_mod.ts4script')
+
+      await undoAllInHistory(running.page, 1)
+
+      expect(await snapshotTree(simsDir)).toEqual(before)
+      expect(running.consoleErrors).toEqual([])
+    } finally {
+      await running.close()
+    }
+  })
+
+  test('live: nested-scripts move packages up and undo restores tree byte for byte', async () => {
+    test.setTimeout(90_000)
+    const running = await launchApp({ fixture: 'nested-scripts' })
+    try {
+      const simsDir = await findSimsFolder(running.fixtureRoot!)
+      const before = await snapshotTree(simsDir)
+
+      await runCheckUp(running.page)
+
+      await findingCard(running.page, '2 CC files are too deep in folders to load')
+        .getByRole('button', { name: 'Move it up a folder' })
+        .click()
+      await expect(
+        running.page.locator('main').getByText('Moved 2 package files up within the folder limit', { exact: true })
+      ).toBeVisible({ timeout: 30_000 })
+
+      // Her Resource.cfg loads 3 folders deep, so both keep their first 3 folders.
+      const relPaths = (await snapshotTree(simsDir)).files.map((f) => f.relPath)
+      expect(relPaths).toContain('Mods/CAS/Outfits/Formal/too_deep_for_cfg.package')
+      expect(relPaths).toContain('Mods/CAS/Outfits/Formal/too_deep_for_default.package')
+      expect(relPaths).not.toContain('Mods/CAS/Outfits/Formal/Winter/too_deep_for_cfg.package')
+      expect(relPaths).not.toContain('Mods/CAS/Outfits/Formal/Winter/Coats/Wool/too_deep_for_default.package')
 
       await undoAllInHistory(running.page, 1)
 

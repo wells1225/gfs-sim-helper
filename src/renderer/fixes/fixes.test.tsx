@@ -60,6 +60,7 @@ describe('FIXES_READY and words', () => {
     expect(FIXES_READY).toBe(true)
     expect(FIX_BUTTON_LABEL['turn-mods-on']).toBe('Turn mods back on')
     expect(FIX_BUTTON_LABEL['move-script-up']).toBe('Move it up a folder')
+    expect(FIX_BUTTON_LABEL['move-package-up']).toBe('Move it up a folder')
     expect(FIX_BUTTON_LABEL['set-aside-files']).toBe('Set aside')
     expect(FIX_BUTTON_LABEL['clear-caches']).toBe('Clear temporary cache')
 
@@ -144,6 +145,7 @@ describe('FindingActions', () => {
     const cases = [
       { fix: { fix: 'turn-mods-on' as const }, label: 'Turn mods back on' },
       { fix: { fix: 'move-script-up' as const, files: ['A/B/x.ts4script'] }, label: 'Move it up a folder' },
+      { fix: { fix: 'move-package-up' as const, files: ['A/B/C/D/E/F/x.package'] }, label: 'Move it up a folder' },
       { fix: { fix: 'set-aside-files' as const, files: ['a.zip'] }, label: 'Set aside' },
       { fix: { fix: 'clear-caches' as const }, label: 'Clear temporary cache' }
     ]
@@ -164,6 +166,40 @@ describe('FindingActions', () => {
       </Harness>
     )
     expect(container.querySelector('button')).toBeNull()
+  })
+
+  it('sends move-package-up for a package-too-deep card when she clicks Move it up a folder', async () => {
+    const user = userEvent.setup()
+    const entry = sampleJournalEntry({
+      id: 'entry-pkg-1',
+      action: 'move-package-up',
+      summary: 'Moved 1 package file up within the folder limit',
+      undo: 'can-undo'
+    })
+    const api = fakeApi({ 'fix:apply': () => ({ status: 'done', entry }) })
+    const files = ['CAS/a/b/c/d/e/six.package']
+    render(
+      <Harness api={api} initialScan={sampleScan()}>
+        <FindingActions
+          finding={sampleFinding({
+            id: 'package-too-deep',
+            rule: 'package-too-deep',
+            severity: 'warn',
+            files,
+            fixes: [{ fix: 'move-package-up', files }]
+          })}
+        />
+      </Harness>
+    )
+
+    await user.click(screen.getByRole('button', { name: 'Move it up a folder' }))
+
+    await waitFor(() =>
+      expect(api.calls.filter((c) => c.channel === 'fix:apply').map((c) => c.req)).toEqual([
+        { via: 'finding', findingId: 'package-too-deep', fix: 'move-package-up' }
+      ])
+    )
+    expect((await screen.findAllByText('Moved 1 package file up within the folder limit')).length).toBeGreaterThan(0)
   })
 
   it('shows backup progress, then done state with Check again and toast Undo', async () => {

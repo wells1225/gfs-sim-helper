@@ -55,6 +55,7 @@ const FIX_IDS: readonly string[] = [
   'turn-mods-on',
   'clear-caches',
   'move-script-up',
+  'move-package-up',
   'set-aside-files',
   'disable-group',
   'enable-group'

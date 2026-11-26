@@ -195,6 +195,33 @@ describe('fixHandlers', () => {
     )
   })
 
+  it('accepts move-package-up from a package-too-deep finding and passes its files to fixes.apply', async () => {
+    const applySpy = vi.fn<Fixes['apply']>(async () => ({ status: 'done', entry: sampleJournalEntry() }))
+    const { ctx } = await makeContext({ fixes: { apply: applySpy } })
+    const base = sampleScan()
+    const files = ['CAS/a/b/c/d/e/six.package']
+    const scan = {
+      ...base,
+      findings: [
+        ...base.findings,
+        {
+          ...base.findings[0]!,
+          id: 'package-too-deep',
+          rule: 'package-too-deep' as const,
+          files,
+          fixes: [{ fix: 'move-package-up' as const, files }]
+        }
+      ]
+    }
+    ctx.session.scan = scan
+    const handlers = fixHandlers(ctx)
+
+    const res = await handlers['fix:apply']({ via: 'finding', findingId: 'package-too-deep', fix: 'move-package-up' })
+
+    expect(res.status).toBe('done')
+    expect(applySpy).toHaveBeenCalledWith(scan, { fix: 'move-package-up', files }, expect.any(Function))
+  })
+
   it('refuses fix:apply when fiftyfifty.json holds an active phase, and allows found or stopped', async () => {
     const { ctx } = await makeContext()
     ctx.session.scan = sampleScan()
