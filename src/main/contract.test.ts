@@ -1051,10 +1051,10 @@ describe('stage review integration invariants', () => {
     expect(await rejectMsg('journal:list')).toBe('A file operation failed')
     expect(await rejectMsg('locate:run')).toBe('A file operation failed')
     expect(await rejectMsg('game:check')).toBe('A file operation failed')
-    expect(await rejectMsg('settings:get')).toBe('Could not read <path>.')
+    expect(await rejectMsg('settings:get')).toBe('A file operation failed')
   })
 
-  it('sanitizeIpcError redacts fs errors and embedded paths while preserving plain handler errors', () => {
+  it('sanitizeIpcError collapses fs errors and any path-bearing error fail-closed while preserving plain handler errors', () => {
     const ctx = createContext({
       host: makeFakeHost(),
       paths: appPaths({
@@ -1144,7 +1144,7 @@ describe('stage review integration invariants', () => {
       expect(sanitizeIpcError(new Error(`${code}: fs failure`), ctx.redact).message, code).toBe('A file operation failed')
     }
 
-    // Non-filesystem syscalls and errno codes must not falsely claim 'A file operation failed', while still redacting paths
+    // Non-filesystem syscalls and errno codes without paths pass through; any embedded path still collapses fail-closed
     expect(
       sanitizeIpcError(
         Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:443'), { code: 'ECONNREFUSED', syscall: 'connect' }),
@@ -1174,128 +1174,47 @@ describe('stage review integration invariants', () => {
         }),
         ctx.redact
       ).message
-    ).toBe('connect ECONNREFUSED <path>')
+    ).toBe('A file operation failed')
 
     expect(sanitizeIpcError(null, ctx.redact).message).toBe('Something went wrong')
     expect(sanitizeIpcError({ code: 42 }, ctx.redact).message).toBe('Something went wrong')
 
-    const redactedCases: [string, string][] = [
-      [
-        'Could not read C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4\\Options.ini',
-        'Could not read <path>'
-      ],
-      [
-        'Could not read C:\\Games\\Private  Profile\\Options.ini',
-        'Could not read <path>'
-      ],
-      [
-        'Failed on /Users/Lila/Private  Profile/The  Sims  4/Options.ini.',
-        'Failed on <path>.'
-      ],
-      [
-        'C:\\Users\\Lila\\My Cool Mod.package',
-        '<path>'
-      ],
-      [
-        'Corrupt mod at C:\\Users\\Lila\\Mods\\My  Cool  Mod.package',
-        'Corrupt mod at <path>'
-      ],
-      [
-        'Could not read C:\\Games\\Mods — please check Options.ini later',
-        'Could not read <path> — please check Options.ini later'
-      ],
-      [
-        'Failed at C:\\Games\\Mods and then read Options.ini',
-        'Failed at <path>'
-      ],
-      [
-        'Failed at C:\\Games\\Mods, please check Options.ini',
-        'Failed at <path>, please check Options.ini'
-      ],
-      [
-        'Failed at C:\\Games\\Mods please check Options.ini',
-        'Failed at <path>'
-      ],
-      [
-        'Failed at C:\\Games\\The Sims 4 please check Options.ini',
-        'Failed at <path>'
-      ],
-      [
-        'Failed at C:\\Games\\Mods (see Options.ini)',
-        'Failed at <path> (see Options.ini)'
-      ],
-      [
-        'Failed at C:\\Games\\Mods (please check Options.ini later)',
-        'Failed at <path> (please check Options.ini later)'
-      ],
-      [
-        'Could not open C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4 because it is locked.',
-        'Could not open <path> because it is locked.'
-      ],
-      [
-        'Failed on D:/Games/The Sims 4/Mods/Wicked Wardrobe/mod.package!',
-        'Failed on <path>!'
-      ],
-      [
-        'Locked \\\\?\\C:\\Users\\Lila\\AppData\\Local\\SimsHelper\\journal\\e1.json',
-        'Locked <path>'
-      ],
-      [
-        'Device \\\\.\\C:\\Users\\Lila\\AppData\\file.dat failed',
-        'Device <path> failed'
-      ],
-      [
-        'JSON payload {"file":"C:\\\\Users\\\\Lila\\\\Documents\\\\Electronic Arts\\\\Options.ini"}',
-        'JSON payload {"file":"<path>"}'
-      ],
-      [
-        'Unquoted escaped C:\\\\Users\\\\Lila\\\\Documents\\\\The Sims 4\\\\Options.ini.',
-        'Unquoted escaped <path>.'
-      ],
-      [
-        'Share error at \\\\NAS\\Shared Saves\\The Sims 4\\Slot_00000002.save, retry later',
-        'Share error at <path>, retry later'
-      ],
-      [
-        'Share error at //nas/shared/The Sims 4/Slot_00000002.save.',
-        'Share error at <path>.'
-      ],
-      [
-        'Cannot open file:///C:/Users/Lila/Documents/Electronic%20Arts/Options.ini.',
-        'Cannot open <path>.'
-      ],
-      [
-        'Unreadable ~/Documents/Electronic Arts/The Sims 4/Options.ini',
-        'Unreadable <path>'
-      ],
-      [
-        'Unreadable %LOCALAPPDATA%\\SimsHelper\\journal\\entry.json',
-        'Unreadable <path>'
-      ],
-      [
-        'Unreadable $HOME/.config/sims-helper/settings.json',
-        'Unreadable <path>'
-      ],
-      [
-        'Unix home /Users/Lila/Documents/Electronic Arts/The Sims 4/Options.ini failed',
-        'Unix home <path> failed'
-      ],
-      [
-        'Folder /Users/Lila/Documents/Electronic Arts/The Sims 4 in 50/50 test and/or 11/25/2026',
-        'Folder <path> in 50/50 test and/or 11/25/2026'
-      ],
-      [
-        'Temp path (/private/var/folders/xy/z123/T/sims-helper/Mods/a.package) missing',
-        'Temp path (<path>) missing'
-      ],
-      [
-        "That didn't work at 'C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4' or \"/Users/Lila/Mods\"",
-        "That didn't work at '<path>' or \"<path>\""
-      ]
+    const pathBearingMessages = [
+      'Could not read C:\\Games\\Save and Restore, Options.ini',
+      'Could not read C:\\Games\\Save.v2 and Restore Options.ini',
+      'Could not read C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4\\Options.ini',
+      'Could not read C:\\Games\\Private  Profile\\Options.ini',
+      'Failed on /Users/Lila/Private  Profile/The  Sims  4/Options.ini.',
+      'Locked \\\\?\\C:\\Users\\Lila\\AppData\\Local\\SimsHelper\\journal\\e1.json',
+      'Device \\\\.\\C:\\Users\\Lila\\AppData\\file.dat failed',
+      'JSON payload {"file":"C:\\\\Users\\\\Lila\\\\Documents\\\\Options.ini"}',
+      'Unquoted escaped C:\\\\Users\\\\Lila\\\\Documents\\\\The Sims 4\\\\Options.ini.',
+      'Share error at \\\\NAS\\Shared Saves\\The Sims 4\\Slot_00000002.save, retry later',
+      'Share error at \\\\Lila\\Shared Saves\\The Sims 4\\Slot_00000002.save',
+      'Share error at //nas/shared/The Sims 4/Slot_00000002.save.',
+      'Cannot open file:///C:/Users/Lila/Documents/Options.ini.',
+      'Read %LOCALAPPDATA%\\SimsHelper\\settings.json failed',
+      'Read ~/Documents/The Sims 4/Options.ini failed',
+      'Read $HOME/Documents/file.txt failed',
+      'Read ${HOME}/.config/sims-helper/settings.json failed',
+      'Read $env:LOCALAPPDATA\\SimsHelper\\settings.json failed',
+      'Relative ./Mods/Wicked Wardrobe.package failed',
+      'Relative ../Saves/Slot_00000002.save failed',
+      'connect ECONNREFUSED C:\\Users\\Lila\\AppData\\Local\\pipe.sock',
+      'Failed on D:/Games/The Sims 4/Mods/Wicked Wardrobe/mod.package!',
+      'Folder /Users/Lila/Documents/Electronic Arts/The Sims 4 in 50/50 test and/or 11/25/2026',
+      'Temp path (/private/var/folders/xy/z123/T/sims-helper/Mods/a.package) missing',
+      'Single root file /Options.ini missing',
+      'Single versioned root file /Save.v2.ini missing',
+      'Fake root /fake/LocalAppData/SimsHelper failed',
+      'Sims root /sims/Mods/a.package failed',
+      "That didn't work at 'C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4' or \"/Users/Lila/Mods\"",
+      'Failed at C:\\Games\\Mods, please check Secret_Save_Name.ini',
+      'Failed at C:\\Games\\Mods — please check Options.ini later'
     ]
-    for (const [input, expected] of redactedCases) {
-      expect(sanitizeIpcError(new Error(input), ctx.redact).message, input).toBe(expected)
-      expect(sanitizeIpcError(new Error(input)).message, `without redact: ${input}`).toBe(expected)
+    for (const input of pathBearingMessages) {
+      expect(sanitizeIpcError(new Error(input), ctx.redact).message, input).toBe('A file operation failed')
+      expect(sanitizeIpcError(new Error(input)).message, `without redact: ${input}`).toBe('A file operation failed')
     }
 
     const preserved = [
@@ -1315,14 +1234,19 @@ describe('stage review integration invariants', () => {
       expect(sanitizeIpcError(new Error(msg), ctx.redact).message, msg).toBe(msg)
     }
 
+    // Username redaction still runs on plain non-path errors
+    expect(sanitizeIpcError(new Error('Lila cannot use that setting'), ctx.redact).message).toBe(
+      '<user> cannot use that setting'
+    )
+
     // Linear-time guard against catastrophic backtracking on long inputs
     const longText = `Could not parse ${'word '.repeat(10_000)}C:\\Users\\Lila\\Options.ini`
     const t0 = performance.now()
-    expect(sanitizeIpcError(new Error(longText), ctx.redact).message.endsWith('<path>')).toBe(true)
-    expect(performance.now() - t0).toBeLessThan(250)
+    expect(sanitizeIpcError(new Error(longText), ctx.redact).message).toBe('A file operation failed')
+    expect(performance.now() - t0).toBeLessThan(100)
   })
 
-  it('sanitizeIpcError strips trailing brackets in linear time without leaking path segments', () => {
+  it('sanitizeIpcError handles 50k parens and 50k dots in linear time (< 100 ms) without leaking path fragments', () => {
     const ctx = makeContext()
 
     const closingParens = ')'.repeat(50_000)
@@ -1331,18 +1255,14 @@ describe('stage review integration invariants', () => {
     const balancedMsg = sanitizeIpcError(new Error(balancedInput), ctx.redact).message
     const elapsedBalanced = performance.now() - t0
     expect(elapsedBalanced).toBeLessThan(100)
-    expect(balancedMsg).toBe(`Could not read <path> ${closingParens}a`)
-    expect(balancedMsg).not.toContain('Lila')
-    expect(balancedMsg).not.toContain('Users')
-    expect(balancedMsg).not.toContain('Mods')
+    expect(balancedMsg).toBe('A file operation failed')
 
     const unbalancedInput = `Could not read C:\\Users\\Lila\\Mods ${closingParens}a`
     const t1 = performance.now()
     const unbalancedMsg = sanitizeIpcError(new Error(unbalancedInput), ctx.redact).message
     const elapsedUnbalanced = performance.now() - t1
     expect(elapsedUnbalanced).toBeLessThan(100)
-    expect(unbalancedMsg).toBe(`Could not read <path> ${closingParens}a`)
-    expect(unbalancedMsg).not.toContain('Lila')
+    expect(unbalancedMsg).toBe('A file operation failed')
 
     const trailingDotsInput = `/${'.'.repeat(50_000)}`
     const t2 = performance.now()
@@ -1350,61 +1270,25 @@ describe('stage review integration invariants', () => {
     expect(performance.now() - t2).toBeLessThan(100)
   })
 
-  it('sanitizeIpcError redacts multi-word filenames containing any English words fail-closed while preserving punctuated prose', () => {
+  it('sanitizeIpcError collapses ambiguous multi-word filenames with commas, dots, spaces, and words fail-closed', () => {
     const ctx = makeContext()
 
-    const cases: [string, string][] = [
-      ['Could not read C:\\Games\\Save and Restore Options.ini', 'Could not read <path>'],
-      ['Could not read C:\\Games\\save and restore options.ini', 'Could not read <path>'],
-      ['Could not read C:\\Users\\Lila\\Mods\\Check Mail and Make Tea.package', 'Could not read <path>'],
-      ['Could not read C:\\Games\\Save and Exit.ini', 'Could not read <path>'],
-      ['Could not read C:\\Users\\Lila\\Better Build and Buy.package', 'Could not read <path>'],
-      ['Could not read C:\\Users\\Lila\\Mods\\Slice of Life.package', 'Could not read <path>'],
-      ['Could not read C:\\Users\\Lila\\Mods\\Walk to School in the Rain.package', 'Could not read <path>'],
-      ['Could not read C:\\Users\\Lila\\Mods\\Made for Sims with Pets by Lila.package', 'Could not read <path>'],
-      ['Could not read C:\\Users\\Lila\\Mods\\Please Try While You Wait.package', 'Could not read <path>'],
-      ['Could not read C:\\Users\\Lila\\Mods\\please try while you wait.package', 'Could not read <path>'],
-      ['Could not read C:\\Users\\Lila\\Mods\\MCCC (fix).package', 'Could not read <path>'],
-      ['Could not read C:\\Users\\Lila\\Mods\\MCCC (check and restore).package', 'Could not read <path>'],
-      ['Could not read C:\\Users\\Lila\\Mods\\[LittleMsSam Mods] Check Mail.package', 'Could not read <path>'],
-      [
-        'Could not read C:\\Games\\Mods — please check Options.ini later',
-        'Could not read <path> — please check Options.ini later'
-      ],
-      [
-        'Could not read C:\\Games\\Mods – please check Options.ini later',
-        'Could not read <path> – please check Options.ini later'
-      ],
-      ['Failed at C:\\Games\\Mods, please check Options.ini', 'Failed at <path>, please check Options.ini'],
-      ['Failed at C:\\Games\\Mods; restart Options.ini', 'Failed at <path>; restart Options.ini'],
-      ['Failed at C:\\Games\\Mods: contact support', 'Failed at <path>: contact support'],
-      [
-        'Could not open C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4 because it is locked.',
-        'Could not open <path> because it is locked.'
-      ],
-      ['Failed at C:\\Games\\Mods and then read Options.ini', 'Failed at <path>'],
-      ['Failed at C:\\Games\\Mods please check Options.ini', 'Failed at <path>'],
-      ['Failed at C:\\Games\\Mods make sure Options.ini is valid', 'Failed at <path> is valid'],
-      ['Failed at C:\\Games\\Mods reopen Options.ini', 'Failed at <path>'],
-      ['Failed at C:\\Games\\Mods (see Options.ini)', 'Failed at <path> (see Options.ini)']
-    ]
-    for (const [input, expected] of cases) {
-      expect(sanitizeIpcError(new Error(input), ctx.redact).message, input).toBe(expected)
-      expect(sanitizeIpcError(new Error(input)).message, `without redact: ${input}`).toBe(expected)
-    }
-
-    for (const unpunctuated of [
+    for (const input of [
+      'Could not read C:\\Games\\Save and Restore, Options.ini',
+      'Could not read C:\\Games\\Save.v2 and Restore Options.ini',
+      'Could not read C:\\Games\\Save and Restore Options.ini',
+      'Could not read C:\\Games\\save and restore options.ini',
+      'Could not read C:\\Users\\Lila\\Mods\\Check Mail and Make Tea.package',
+      'Could not read C:\\Users\\Lila\\Mods\\MCCC (check, save, and restore).package',
+      'Could not read C:\\Users\\Lila\\Mods\\[LittleMsSam Mods] Check Mail, v2.package',
+      'Failed at C:\\Games\\Mods, please check Options.ini',
+      'Failed at C:\\Games\\Mods; restart Options.ini',
+      'Failed at C:\\Games\\Mods: contact support',
       'Failed at C:\\Games\\Mods and then read Options.ini',
-      'Failed at C:\\Games\\Mods please check Options.ini',
-      'Failed at C:\\Games\\The Sims 4 please check Options.ini',
-      'Failed at C:\\Games\\Mods make sure Options.ini is valid',
-      'Failed at C:\\Games\\Mods reopen Options.ini'
+      'Failed at C:\\Games\\Mods please check Options.ini'
     ]) {
-      const sanitized = sanitizeIpcError(new Error(unpunctuated), ctx.redact).message
-      expect(sanitized, unpunctuated).not.toContain('Games')
-      expect(sanitized, unpunctuated).not.toContain('Mods')
-      expect(sanitized, unpunctuated).not.toContain('Sims')
-      expect(sanitized, unpunctuated).not.toContain('Options.ini')
+      expect(sanitizeIpcError(new Error(input), ctx.redact).message, input).toBe('A file operation failed')
+      expect(sanitizeIpcError(new Error(input)).message, `without redact: ${input}`).toBe('A file operation failed')
     }
   })
 
@@ -1445,7 +1329,7 @@ describe('stage review integration invariants', () => {
         }),
         ctx.redact
       ).message
-    ).toBe('read ECONNRESET at <path>')
+    ).toBe('A file operation failed')
 
     expect(
       sanitizeIpcError(
