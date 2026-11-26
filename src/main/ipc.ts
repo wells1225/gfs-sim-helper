@@ -134,7 +134,8 @@ const ENV_OR_HOME_PATH =
   /(?:^|[\s'"`(\[{=,:;])(?:(?:~|%[A-Za-z_][A-Za-z0-9_()]*%|\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|(?:env:)?[A-Za-z_][A-Za-z0-9_]*))[\\/]|\.\.?[\\/](?:<user>|[A-Za-z0-9_.-]))/i
 const UNIX_ABS_PATH =
   /(?:^|[\s'"`(\[{=,:;])\/(?!\/)(?:(?:Users|Volumes|Applications|Library|System|private|home|root|etc|var|tmp|opt|usr|bin|sbin|dev|proc|sys|run|mnt|media|srv|nix|snap|fake|sims|<user>)(?:$|[\s/'"`)\]}.,;:!?])|(?:<user>|[^\s\\/:*?"'`<>|])+\/(?:<user>|[^\s\\/:*?"'`<>|])|\.?(?:<user>|[A-Za-z0-9_-])(?:<user>|[^\s\\/:*?"'`<>|])*\.[A-Za-z][A-Za-z0-9]{0,11}(?:$|[\s'"`)\]}.,;:!?]))/
-const WEB_URL = /https?:\/\/(?:<user>|[^\s'"`()<>])+/gi
+const WEB_URL =
+  /https?:\/\/(?:<user>|[^\s'"`()<>[\]{},;:/])+(?::\d{1,5})?(?:\/(?:<user>|[^\s'"`()<>[\]{},;:])*)?/gi
 
 function containsFilePath(text: string): boolean {
   if (

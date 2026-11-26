@@ -1346,36 +1346,39 @@ describe('stage review integration invariants', () => {
   it('sanitizeIpcError preserves http(s) URLs with slash query values while still failing closed on leaked paths', () => {
     const ctx = makeContext()
 
-    expect(
-      sanitizeIpcError(new Error('Request failed at https://example.com/?next=/api/status'), ctx.redact).message
-    ).toBe('Request failed at https://example.com/?next=/api/status')
-    expect(
-      sanitizeIpcError(
-        new Error('Redirect http://localhost:3000/callback?returnTo=/settings/profile&tab=/mods'),
-        ctx.redact
-      ).message
-    ).toBe('Redirect http://localhost:3000/callback?returnTo=/settings/profile&tab=/mods')
-    expect(
-      sanitizeIpcError(new Error('Request failed at HTTPS://example.com/?next=/Users/status'), ctx.redact).message
-    ).toBe('Request failed at HTTPS://example.com/?next=/Users/status')
+    for (const preservedUrl of [
+      'https://example.com/?next=/api/status',
+      'https://example.com:8443/v1/check?next=/api/status',
+      'https://www.curseforge.com/sims4/mods/mccc',
+      'Request failed at https://example.com/?next=/api/status',
+      'Request failed at https://example.com:8443/v1/check?next=/api/status',
+      'Redirect http://localhost:3000/callback?returnTo=/settings/profile&tab=/mods',
+      'Request failed at HTTPS://example.com/?next=/Users/status'
+    ]) {
+      expect(sanitizeIpcError(new Error(preservedUrl), ctx.redact).message, preservedUrl).toBe(preservedUrl)
+    }
     expect(
       sanitizeIpcError(new Error('Request failed at https://Lila.example.com/?next=/api/status'), ctx.redact).message
     ).toBe('Request failed at https://<user>.example.com/?next=/api/status')
 
-    expect(
-      sanitizeIpcError(new Error('Request failed at https://example.com/?path=C:\\Users\\Lila\\Options.ini'), ctx.redact)
-        .message
-    ).toBe('A file operation failed')
-    expect(
-      sanitizeIpcError(
-        new Error('Request failed at https://example.com/?file=file:///Users/Lila/Options.ini'),
-        ctx.redact
-      ).message
-    ).toBe('A file operation failed')
-    expect(
-      sanitizeIpcError(new Error('See https://example.com/?next=/api/status and /Users/Lila/Options.ini'), ctx.redact)
-        .message
-    ).toBe('A file operation failed')
+    for (const leaked of [
+      'https://example.com/?next=/api/status;/Users/Lila/Options.ini',
+      'https://example.com/?next=/api/status,/Users/Lila/Options.ini',
+      'https://example.com/?next=/api/status:/Users/Lila/Options.ini',
+      'https://example.com/a[/Users/Lila/Options.ini]',
+      'https://example.com/a{/Users/Lila/Options.ini}',
+      'Request failed at https://example.com/?path=C:\\Users\\Lila\\Options.ini',
+      'Request failed at https://example.com/?file=file:///Users/Lila/Options.ini',
+      'See https://example.com/?next=/api/status and /Users/Lila/Options.ini'
+    ]) {
+      expect(sanitizeIpcError(new Error(leaked), ctx.redact).message, leaked).toBe('A file operation failed')
+      expect(sanitizeIpcError(new Error(leaked)).message, `without redact: ${leaked}`).toBe('A file operation failed')
+    }
+
+    const longUrlLeak = `https://example.com:8443/${'a'.repeat(50_000)};/Users/Lila/Options.ini`
+    const t0 = performance.now()
+    expect(sanitizeIpcError(new Error(longUrlLeak), ctx.redact).message).toBe('A file operation failed')
+    expect(performance.now() - t0).toBeLessThan(100)
   })
 
   it('sanitizeIpcError does not misclassify non-filesystem syscalls with EACCES/EPERM as file errors without a path', () => {
