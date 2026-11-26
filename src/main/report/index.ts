@@ -46,6 +46,16 @@ function fileBasename(filePath: string): string {
   return parts[parts.length - 1] ?? ''
 }
 
+/** Keeps redacted ZIP entry names valid on Windows Explorer (which forbids <>:"|?*). */
+function safeZipEntryName(rawName: string, redact?: (text: string) => string): string {
+  return sanitizeSnapshotLabel(rawName, redact)
+    .replaceAll('<user>', 'user')
+    .replaceAll('<email>', 'email')
+    .replace(/[<>:"|?*]/g, '_')
+    .replaceAll('\\', '/')
+    .replace(/^\/+/, '')
+}
+
 function redactJsonValue(value: unknown, redact: (text: string) => string): unknown {
   if (typeof value === 'string') {
     return sanitizeSnapshotLabel(value, redact)
@@ -158,7 +168,7 @@ function makePathScrubber(scan: Scan): (text: string) => string {
   }
 }
 
-/** The plain-language summary Tyler reads first. Callers must still run it through redact. */
+/** The plain-language summary Tyler reads first. Pass deps.redact so every dynamic value is redacted without rewriting fixed headings. */
 export function buildReadme(scan: Scan, redact?: (text: string) => string): string {
   const lines: string[] = []
   const inv = scan.inventory
@@ -166,10 +176,10 @@ export function buildReadme(scan: Scan, redact?: (text: string) => string): stri
   const clean = (text: string): string => sanitizeSnapshotLabel(scrub(text), redact)
 
   lines.push('Sims Helper report')
-  lines.push(`Check-up time: ${scan.at}`)
+  lines.push(`Check-up time: ${clean(scan.at)}`)
   lines.push('')
   lines.push(`What she picked: ${SYMPTOM_TEXT[scan.symptom] ?? 'Not sure'}`)
-  lines.push(`Game version: ${scan.game?.version ?? 'Unknown'}`)
+  lines.push(`Game version: ${scan.game ? clean(scan.game.version) : 'Unknown'}`)
   lines.push(`Game was running: ${runningText(scan.gameRunning)}`)
   lines.push('')
 
@@ -206,9 +216,9 @@ export function buildReadme(scan: Scan, redact?: (text: string) => string): stri
     changes &&
     (changes.gameVersion || changes.added.length > 0 || changes.updated.length > 0 || changes.removed.length > 0)
   ) {
-    lines.push(`What changed since the last check-up (${changes.sinceAt})`)
+    lines.push(`What changed since the last check-up (${clean(changes.sinceAt)})`)
     if (changes.gameVersion) {
-      lines.push(`- Game updated from ${changes.gameVersion.from} to ${changes.gameVersion.to}`)
+      lines.push(`- Game updated from ${clean(changes.gameVersion.from)} to ${clean(changes.gameVersion.to)}`)
     }
     if (changes.added.length > 0) {
       lines.push(`- Added ${plural(changes.added.length, 'mod', 'mods')}: ${changedNames(changes.added, clean)}`)
@@ -246,7 +256,8 @@ export function buildReadme(scan: Scan, redact?: (text: string) => string): stri
     lines.push('No readable crash or exception logs found.')
   } else {
     for (const log of scan.logs) {
-      lines.push(`- ${clean(fileBasename(log.file))} (${LOG_KIND_TEXT[log.kind] ?? log.kind}, ${log.fileModifiedAt})`)
+      const logName = safeZipEntryName(fileBasename(log.file), redact)
+      lines.push(`- ${logName} (${LOG_KIND_TEXT[log.kind] ?? clean(log.kind)}, ${clean(log.fileModifiedAt)})`)
     }
   }
   lines.push('')
@@ -265,7 +276,7 @@ export function planReport(
   const seenNames = new Set<string>()
 
   const addEntry = (rawName: string, source: { file: string } | { json: unknown }): void => {
-    const name = sanitizeSnapshotLabel(rawName, redact).replaceAll('\\', '/').replace(/^\/+/, '')
+    const name = safeZipEntryName(rawName, redact)
     const key = name.toLowerCase()
     if (!name || seenNames.has(key)) return
     seenNames.add(key)
@@ -305,7 +316,7 @@ export async function buildReport(
     const skippedLines: string[] = []
 
     // First entry, so it is the first thing Tyler sees when he opens the zip.
-    zipEntries[README_NAME] = strToU8(deps.redact(buildReadme(scan, deps.redact)))
+    zipEntries[README_NAME] = strToU8(buildReadme(scan, deps.redact))
 
     for (const entry of planned) {
       if (entry.name.toLowerCase() === README_NAME.toLowerCase()) continue

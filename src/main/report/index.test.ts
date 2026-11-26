@@ -396,9 +396,16 @@ describe('buildReport', () => {
     expect(readme.toLowerCase()).not.toContain('lila')
   })
 
-  it('redacts usernames and emails inside changed mod labels, findings, and log names in Read me.txt and scan.json', async () => {
+  it('redacts usernames and emails inside changed mod labels, findings, and log names with Windows-safe zip entries and intact headings', async () => {
+    const root = await makeTempDir()
+    const simsDir = join(root, 'The Sims 4')
+    await mkdir(simsDir, { recursive: true })
+    await writeFile(join(simsDir, 'Lila_lastException.txt'), '<root>from C:\\Users\\Lila\\Mods</root>', 'utf8')
+
     const base = sampleScan()
     const scan = sampleScan({
+      folder: { ...base.folder, path: simsDir },
+      inventory: { ...base.inventory, modsDir: join(simsDir, 'Mods'), curseForge: { status: 'not-found' } },
       findings: [
         {
           ...base.findings[0]!,
@@ -436,17 +443,34 @@ describe('buildReport', () => {
     const op = requests[0]!.ops[0]!
     if (op.op !== 'write') throw new Error('expected a write')
     const unzipped = unzipSync(op.data as Uint8Array)
+    const entryNames = Object.keys(unzipped)
+    expect(entryNames).toContain('user_lastException.txt')
+    for (const name of entryNames) {
+      expect(name.toLowerCase()).not.toContain('lila')
+      expect(name).not.toMatch(/[<>:"|?*]/)
+    }
+
     const readme = strFromU8(unzipped['Read me.txt']!)
     const scanJson = strFromU8(unzipped['scan.json']!)
 
     expect(readme).toContain('Added 1 mod: <user>.private')
     expect(readme).toContain('Updated 1 mod: Custom by <user> (<email>)')
-    expect(readme).toContain('<user>_lastException.txt')
+    expect(readme).toContain('user_lastException.txt')
     expect(readme.toLowerCase()).not.toContain('lila')
     expect(readme).not.toContain('lila.sims@example.com')
 
     expect(scanJson.toLowerCase()).not.toContain('lila')
     expect(scanJson).not.toContain('lila.sims@example.com')
+
+    // Fixed headings stay intact even when the Windows username matches a word in the heading.
+    requests.length = 0
+    const simsRedact = makeRedactor({ USERNAME: 'Sims', USERPROFILE: 'C:\\Users\\Sims' })
+    const simsRes = await buildReport({ gate, paths, clock, redact: simsRedact }, scan)
+    expect(simsRes.result.status).toBe('saved')
+    const simsOp = requests[0]!.ops[0]!
+    if (simsOp.op !== 'write') throw new Error('expected a write')
+    const simsReadme = strFromU8(unzipSync(simsOp.data as Uint8Array)['Read me.txt']!)
+    expect(simsReadme.startsWith('Sims Helper report\n')).toBe(true)
   })
 
   it('returns write-refused when the gate refuses', async () => {
