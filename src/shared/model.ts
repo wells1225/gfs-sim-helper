@@ -164,6 +164,7 @@ export type FixRequest =
   | { fix: 'turn-mods-on' }
   | { fix: 'clear-caches' }
   | { fix: 'move-script-up'; files: RelPath[] }
+  | { fix: 'move-package-up'; files: RelPath[] }
   | { fix: 'set-aside-files'; files: RelPath[] }
   | { fix: 'disable-group'; groupId: string }
   | { fix: 'enable-group'; groupId: string }

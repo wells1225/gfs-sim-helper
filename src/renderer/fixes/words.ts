@@ -11,6 +11,7 @@ import type {
 export const FIX_BUTTON_LABEL: Record<FixId, string> = {
   'turn-mods-on': 'Turn mods back on',
   'move-script-up': 'Move it up a folder',
+  'move-package-up': 'Move it up a folder',
   'set-aside-files': 'Set aside',
   'clear-caches': 'Clear temporary cache',
   'disable-group': 'Set aside',

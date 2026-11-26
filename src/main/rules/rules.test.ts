@@ -246,7 +246,12 @@ describe('package-too-deep', () => {
     const scan = withFiles(files)
     const at3 = { ...scan, inventory: { ...scan.inventory, resourceCfg: { status: 'ok', maxPackageDepth: 3 } as const } }
     const [finding] = only(at3, 'package-too-deep')
-    expect(finding).toMatchObject({ severity: 'warn', certainty: 'file-problem', fixes: [], next: 'none' })
+    expect(finding).toMatchObject({
+      severity: 'warn',
+      certainty: 'file-problem',
+      fixes: [{ fix: 'move-package-up', files: ['CAS/a/b/c/four.package', 'CAS/a/b/c/d/e/six.package'] }],
+      next: 'none'
+    })
     expect(finding!.files).toEqual(['CAS/a/b/c/four.package', 'CAS/a/b/c/d/e/six.package'])
     expect(finding!.detail).toContain('3 folders down')
   })
@@ -254,7 +259,9 @@ describe('package-too-deep', () => {
   it('counts a missing Resource.cfg as 5, and skips the rule when it is unreadable', () => {
     const scan = withFiles(files)
     const missing = { ...scan, inventory: { ...scan.inventory, resourceCfg: { status: 'missing' } as const } }
-    expect(only(missing, 'package-too-deep')[0]!.files).toEqual(['CAS/a/b/c/d/e/six.package'])
+    const [finding] = only(missing, 'package-too-deep')
+    expect(finding!.files).toEqual(['CAS/a/b/c/d/e/six.package'])
+    expect(finding!.fixes).toEqual([{ fix: 'move-package-up', files: ['CAS/a/b/c/d/e/six.package'] }])
     const unreadable = { ...scan, inventory: { ...scan.inventory, resourceCfg: { status: 'unreadable', detail: 'EACCES' } as const } }
     expect(only(unreadable, 'package-too-deep')).toEqual([])
   })

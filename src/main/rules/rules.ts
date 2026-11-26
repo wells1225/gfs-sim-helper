@@ -23,7 +23,7 @@ const RULE_KIND: Record<RuleId, { severity: Severity; certainty: Certainty }> = 
   'crash-without-cause': { severity: 'warn', certainty: 'worth-testing' }
 }
 
-const DEFAULT_PACKAGE_DEPTH = 5 // what the game writes into a fresh Resource.cfg
+export const DEFAULT_PACKAGE_DEPTH = 5 // what the game writes into a fresh Resource.cfg
 
 function finding(
   rule: RuleId,
@@ -174,6 +174,7 @@ export const packageTooDeep: Rule = (scan) => {
   const maxDepth = cfg.status === 'ok' ? cfg.maxPackageDepth : DEFAULT_PACKAGE_DEPTH
   const deep = scan.inventory.files.filter((f) => f.kind === 'package' && f.depth > maxDepth)
   if (deep.length === 0) return []
+  const files = deep.map((f) => f.relPath)
   return [
     finding('package-too-deep', words.packageTooDeepWords({ count: deep.length, maxDepth }), {
       evidence: [
@@ -182,8 +183,9 @@ export const packageTooDeep: Rule = (scan) => {
           : `Resource.cfg is missing; the game's default is ${maxDepth} folders deep`,
         ...deep.map(depthNote)
       ],
-      files: deep.map((f) => f.relPath),
-      groupIds: groupIdsOf(deep)
+      files,
+      groupIds: groupIdsOf(deep),
+      fixes: [{ fix: 'move-package-up', files }]
     })
   ]
 }
