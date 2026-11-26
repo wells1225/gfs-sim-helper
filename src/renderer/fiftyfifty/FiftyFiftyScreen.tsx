@@ -203,7 +203,15 @@ export function FiftyFiftyScreen() {
     return <Working text="Loading…" />
   }
   if (view.kind === 'ended') {
-    return <Ended how={view.how} label={view.label} back={view.back} onCheckAgain={checkAgain} />
+    return (
+      <Ended
+        how={view.how}
+        label={view.label}
+        back={view.back}
+        onCheckAgain={checkAgain}
+        onSendReport={() => go({ screen: 'send-to-tyler' })}
+      />
+    )
   }
   if (view.kind === 'damaged') {
     return (
@@ -249,7 +257,12 @@ export function FiftyFiftyScreen() {
       step === 'test' ? (
         <TestStep state={state} onTested={() => setStep('answer')} locked={locked} symptom={scan?.symptom} />
       ) : (
-        <AnswerStep state={state} onAnswer={(answer) => giveAnswer(answer, state.round)} locked={locked} />
+        <AnswerStep
+          state={state}
+          onAnswer={(answer) => giveAnswer(answer, state.round)}
+          locked={locked}
+          symptom={scan?.symptom}
+        />
       )
   } else {
     const label = groupLabel(state, state.culprit)
