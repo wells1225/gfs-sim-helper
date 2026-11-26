@@ -11,7 +11,8 @@ const MAX_SNAPSHOT_GROUPS = 50_000
 const SHA256_HEX = /^[0-9a-f]{64}$/
 const EMAIL_DELIMITER = /[\s@<>'"`()[\]{},;:]/
 const UNICODE_LETTER = /\p{L}/u
-const WRAPPER_PUNCT = new Set(['(', ')', '[', ']', '{', '}', '"', "'"])
+const LEADING_NON_WORD = /^[^\p{L}\p{M}\p{N}_]+/u
+const NON_WORD_CHAR = /[^\p{L}\p{M}\p{N}_]/u
 
 export interface SnapshotGroup {
   idHash: string
@@ -50,20 +51,56 @@ export function snapshotPathFor(stateDir: string, folderHash: string): string {
   return join(stateDir, `last-scan-${folderHash.slice(0, 16)}.json`)
 }
 
+function redactUnderscoreParts(piece: string, redact: (text: string) => string): string {
+  if (!piece.includes('_')) return piece
+  return piece
+    .split(/(_+)/)
+    .map((sub, subIdx) => (subIdx % 2 === 1 || sub.length === 0 ? sub : redact(sub)))
+    .join('')
+}
+
+function redactDotOrUnderscorePiece(piece: string, redact: (text: string) => string): string {
+  const redacted = redact(piece)
+  if (redacted !== piece) return redacted
+  if (piece.includes('.')) {
+    return piece
+      .split(/(\.+)/)
+      .map((part, idx) => {
+        if (idx % 2 === 1 || part.length === 0) return part
+        const redactedPart = redact(part)
+        if (redactedPart !== part) return redactedPart
+        return redactUnderscoreParts(part, redact)
+      })
+      .join('')
+  }
+  return redactUnderscoreParts(piece, redact)
+}
+
 function redactToken(tok: string, redact: (text: string) => string): string {
   if (tok.length === 0) return tok
 
   const direct = redact(tok)
   if (direct !== tok) return direct
 
-  let start = 0
-  while (start < tok.length && WRAPPER_PUNCT.has(tok[start]!)) {
-    start += 1
-  }
+  const leadMatch = LEADING_NON_WORD.exec(tok)
+  const start = leadMatch ? leadMatch[0].length : 0
+  if (start === tok.length) return tok
+
   let end = tok.length
-  while (end > start && WRAPPER_PUNCT.has(tok[end - 1]!)) {
-    end -= 1
+  while (end > start) {
+    const code = tok.charCodeAt(end - 1)
+    const step =
+      code >= 0xdc00 &&
+      code <= 0xdfff &&
+      end - 2 >= start &&
+      tok.charCodeAt(end - 2) >= 0xd800 &&
+      tok.charCodeAt(end - 2) <= 0xdbff
+        ? 2
+        : 1
+    if (!NON_WORD_CHAR.test(tok.slice(end - step, end))) break
+    end -= step
   }
+
   if (end > start && end - start < tok.length) {
     const core = tok.slice(start, end)
     const inner = redact(core)
@@ -73,16 +110,10 @@ function redactToken(tok: string, redact: (text: string) => string): string {
   }
 
   return tok
-    .split(/([^\p{L}\p{M}\p{N}_]+)/u)
+    .split(/([^\p{L}\p{M}\p{N}_.]+)/u)
     .map((piece, idx) => {
       if (idx % 2 === 1 || piece.length === 0) return piece
-      const redactedWord = redact(piece)
-      if (redactedWord !== piece) return redactedWord
-      if (!piece.includes('_')) return piece
-      return piece
-        .split(/(_+)/)
-        .map((sub, subIdx) => (subIdx % 2 === 1 || sub.length === 0 ? sub : redact(sub)))
-        .join('')
+      return redactDotOrUnderscorePiece(piece, redact)
     })
     .join('')
 }
@@ -127,7 +158,7 @@ function maskEmails(text: string, transform?: (chunk: string) => string): string
     if (at === -1) break
 
     let left = at
-    while (left > cursor && !EMAIL_DELIMITER.test(text[left - 1]!)) {
+    while (left > outFrom && !EMAIL_DELIMITER.test(text[left - 1]!)) {
       left -= 1
     }
 
@@ -153,6 +184,8 @@ function maskEmails(text: string, transform?: (chunk: string) => string): string
       out.push('<email>')
       outFrom = domainEnd
       cursor = domainEnd
+    } else if (text[right] === '@') {
+      cursor = at + 1
     } else {
       cursor = right > at + 1 ? right : at + 1
     }

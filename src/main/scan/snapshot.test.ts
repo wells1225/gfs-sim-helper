@@ -608,9 +608,12 @@ describe('scan snapshot persistence and diff', () => {
     expect(sanitizeSnapshotLabel('(Lila)', redact)).toBe('(<user>)')
     expect(sanitizeSnapshotLabel("Lila's Backup", redact)).toBe("<user>'s Backup")
     expect(sanitizeSnapshotLabel('Lila_CC_Pack', redact)).toBe('<user>_CC_Pack')
+    expect(sanitizeSnapshotLabel('foo.Lila', redact)).toBe('foo.<user>')
     expect(sanitizeSnapshotLabel('Custom by Lila (lila.sims@example.com)', redact)).toBe('Custom by <user> (<email>)')
     expect(sanitizeSnapshotLabel('user@sub.example.co.uk', redact)).toBe('<email>')
     expect(sanitizeSnapshotLabel('user@example.com...more', redact)).toBe('<email>...more')
+    expect(sanitizeSnapshotLabel('Pack@user@example.com', redact)).toBe('Pack@<email>')
+    expect(sanitizeSnapshotLabel('a@b@c@user@example.com', redact)).toBe('a@b@c@<email>')
     expect(sanitizeSnapshotLabel('Mod@2', redact)).toBe('Mod@2')
     expect(sanitizeSnapshotLabel('Mod@2.0', redact)).toBe('Mod@2.0')
     expect(sanitizeSnapshotLabel('Mod@1.2.3', redact)).toBe('Mod@1.2.3')
@@ -632,9 +635,13 @@ describe('scan snapshot persistence and diff', () => {
     const longParens = `${'('.repeat(50_000)}Lila`
     const longPunct = `${'-!'.repeat(25_000)}Lila`
 
+    const dotRedact = makeRedactor({ USERNAME: 'lila.smith' })
+    const longPunctDot = `${'-!'.repeat(25_000)}lila.smith`
+
     const redactStart = performance.now()
     expect(sanitizeSnapshotLabel(longParens, redact)).toBe(`${'('.repeat(50_000)}<user>`)
     expect(sanitizeSnapshotLabel(longPunct, redact)).toBe(`${'-!'.repeat(25_000)}<user>`)
+    expect(sanitizeSnapshotLabel(longPunctDot, dotRedact)).toBe(`${'-!'.repeat(25_000)}<user>`)
     const redactElapsedMs = performance.now() - redactStart
     expect(redactElapsedMs).toBeLessThan(50)
   })
@@ -649,6 +656,8 @@ describe('scan snapshot persistence and diff', () => {
     const dotRedact = makeRedactor({ USERNAME: 'lila.smith' })
     expect(sanitizeSnapshotLabel('lila.smith Mods', dotRedact)).toBe('<user> Mods')
     expect(sanitizeSnapshotLabel('(lila.smith)', dotRedact)).toBe('(<user>)')
+    expect(sanitizeSnapshotLabel('-!lila.smith', dotRedact)).toBe('-!<user>')
+    expect(sanitizeSnapshotLabel('foo-lila.smith', dotRedact)).toBe('foo-<user>')
 
     const shortRedact = makeRedactor({ USERNAME: 'Ann' })
     expect(sanitizeSnapshotLabel('Annabelle', shortRedact)).toBe('Annabelle')
