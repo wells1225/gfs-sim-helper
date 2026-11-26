@@ -1,6 +1,6 @@
 {
   "name": "sims-helper",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Desktop helper for diagnosing Sims 4 crashes and managing mods",
   "author": "Tyler",
