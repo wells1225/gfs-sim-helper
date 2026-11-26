@@ -168,6 +168,7 @@ export function sampleScan(overrides: Partial<Scan> = {}): Scan {
       }
     ],
     findings,
+    changes: null,
     ...overrides
   }
 }

@@ -138,6 +138,31 @@ test('captures light and dark screenshots of all PR 7 read-only screens', async 
     await expect(page.getByRole('button', { name: 'Send to Tyler' })).toBeVisible()
     await shoot(page, SLUG, 'check-up-one-save')
 
+    // 7c. Check-up (what changed since last check-up)
+    await stubIpc(app, {
+      'settings:get': { welcome: 'seen', folderPath: scan.folder.path },
+      'scan:run': {
+        status: 'done',
+        scan: sampleScan({
+          changes: {
+            sinceAt: '2026-11-20T12:00:00.000Z',
+            gameVersion: { from: '1.128.10.1030', to: '1.129.39.1030' },
+            added: [
+              { groupId: 'cf:990011', label: 'MC Command Center', hasScript: true },
+              { groupId: 'dir:cozy-sweaters', label: 'Cozy Sweaters', hasScript: false }
+            ],
+            updated: [{ groupId: 'cf:901234', label: 'Wicked Wardrobe', hasScript: true }],
+            removed: [{ groupId: 'dir:winter-hair', label: 'Winter Hair', hasScript: false }]
+          }
+        })
+      }
+    })
+    await page.getByRole('button', { name: /closes by itself/i }).click()
+    await expect(page.getByText('What changed since your last check-up')).toBeVisible()
+    await page.getByRole('button', { name: /see changed mods/i }).click()
+    await expect(page.getByText('MC Command Center')).toBeVisible()
+    await shoot(page, SLUG, 'check-up-changes')
+
     // 8. About
     await page.getByRole('button', { name: 'About' }).click()
     await expect(page.getByText('Built by Tyler, for Lila.')).toBeVisible()

@@ -188,6 +188,20 @@ export interface Finding {
 // ── Scan (PR 7)
 export type Symptom = 'closes' | 'freezes' | 'wont-load' | 'one-save-or-lot' | 'not-sure'
 
+export interface ChangedModItem {
+  groupId: string
+  label: string
+  hasScript: boolean
+}
+
+export interface ScanChanges {
+  sinceAt: IsoTime
+  gameVersion: { from: string; to: string } | null
+  added: ChangedModItem[]
+  updated: ChangedModItem[]
+  removed: ChangedModItem[]
+}
+
 export interface Scan {
   id: string
   at: IsoTime
@@ -201,6 +215,7 @@ export interface Scan {
   inventory: Inventory
   logs: LogReport[]
   findings: Finding[]
+  changes?: ScanChanges | null
 }
 
 export type ScanResult =
