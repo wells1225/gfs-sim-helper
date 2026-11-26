@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { APP_TITLE } from '../shared/app.ts'
 import { createAppHost, desktopDir } from './app-host.ts'
+import { appIconPath } from './app-icon.ts'
 import { appPaths } from './app-paths.ts'
 import { registerIpc } from './ipc.ts'
 import { createContext, updaterKeepOutOf } from './services.ts'
@@ -70,6 +71,7 @@ function createWindow(): BrowserWindow {
     minHeight: 520,
     show: false,
     backgroundColor: themeBackgroundColor(),
+    icon: appIconPath(__dirname),
     title: APP_TITLE,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
