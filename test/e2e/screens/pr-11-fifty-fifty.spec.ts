@@ -186,3 +186,33 @@ test('entry-on-check-up', async () => {
   await expect(page.getByRole('heading', { name: 'Not sure which mod it is?' })).toBeInViewport()
   await shoot(page, SLUG, 'entry-on-check-up')
 })
+
+test('moving-mods', async () => {
+  const page = await enterAt(midSession({ phase: 'ready-to-test' }))
+  await running.app.evaluate(({ ipcMain, BrowserWindow }) => {
+    ipcMain.removeHandler('fifty:begin-round')
+    ipcMain.handle('fifty:begin-round', () => {
+      setTimeout(() => {
+        const win = BrowserWindow.getAllWindows()[0]
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('progress', {
+            task: 'fix',
+            stage: 'moving',
+            done: 11,
+            total: 24
+          })
+        }
+      }, 50)
+      return new Promise(() => {
+        // Held open so the screenshot captures the in-progress moving state
+      })
+    })
+  })
+
+  await page.getByRole('button', { name: 'Set up round 3' }).click()
+  const status = page.locator('main').getByRole('status')
+  await expect(status.getByText('Moving mod 11 of 24…')).toBeVisible()
+  await expect(status.getByRole('progressbar')).toBeVisible()
+  await expect(status.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '46')
+  await shoot(page, SLUG, 'moving-mods')
+})

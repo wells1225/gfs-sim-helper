@@ -8,14 +8,15 @@ import type {
   FixRefusal,
   Scan
 } from '../../shared/model.ts'
-import type { AppContext, GroupsOutcome } from '../ports.ts'
+import type { AppContext, GroupsOutcome, OnProgress } from '../ports.ts'
 import { answer, begin } from './machine.ts'
 import { clearState, loadState, readSaved, saveState } from './store.ts'
 
 export { answer, begin } from './machine.ts'
 export { loadState } from './store.ts'
 
-export type FiftyDeps = Pick<AppContext, 'fixes' | 'safety' | 'gate' | 'paths' | 'clock' | 'newId' | 'host'>
+export type FiftyDeps = Pick<AppContext, 'fixes' | 'safety' | 'gate' | 'paths' | 'clock' | 'newId' | 'host'> &
+  Partial<Pick<AppContext, 'emit'>>
 
 /** A step that did not finish: the caller adds the state it was working on. */
 export type Problem =
@@ -77,6 +78,32 @@ async function arrangedAsSaved(deps: FiftyDeps, state: FiftyFifty): Promise<bool
 }
 
 /**
+ * Combines put-back and set-aside group counts into one smooth monotonic fix/moving progression across a step,
+ * while passing backup progress events straight through.
+ */
+function makeMoveProgress(emit: AppContext['emit'] | undefined, total: number) {
+  let lastDone = -1
+  let inBackup = false
+  return (offset: number): OnProgress | undefined => {
+    if (!emit || total <= 0) return undefined
+    return (progress) => {
+      if (progress.task === 'backup') {
+        inBackup = true
+        emit(progress)
+        return
+      }
+      if (progress.task === 'fix' && progress.stage === 'moving') {
+        const done = Math.max(lastDone, Math.min(offset + progress.done, total))
+        if (done === lastDone && !inBackup) return
+        inBackup = false
+        lastDone = done
+        emit({ task: 'fix', stage: 'moving', done, total })
+      }
+    }
+  }
+}
+
+/**
  * Makes the disk match the wish: exactly `want` of this session's groups set aside, the rest in Mods.
  * It compares with what fixes reports as set aside, so running it twice moves nothing the second time.
  * Groups set aside before the test started are not in `state.groups` and are never touched.
@@ -86,16 +113,21 @@ async function arrange(deps: FiftyDeps, state: FiftyFifty, want: string[]): Prom
   const wanted = new Set(want)
 
   const toPutBack = [...aside].filter((id) => !wanted.has(id))
+  const byId = new Map(state.groups.map((g) => [g.id, g]))
+  const toSetAside = want.filter((id) => !aside.has(id)).flatMap((id) => byId.get(id) ?? [])
+  const movableSetAside = toSetAside.filter((g) => g.files.length > 0).length
+  const phaseProgress = makeMoveProgress(deps.emit, toPutBack.length + movableSetAside)
+
   if (toPutBack.length > 0) {
-    const problem = await moveProblem(() => deps.fixes.putBack(state.folderPath, toPutBack))
+    const problem = await moveProblem(() => deps.fixes.putBack(state.folderPath, toPutBack, phaseProgress(0)))
     if (problem) return problem
   }
 
-  const byId = new Map(state.groups.map((g) => [g.id, g]))
-  const toSetAside = want.filter((id) => !aside.has(id)).flatMap((id) => byId.get(id) ?? [])
   if (toSetAside.length > 0) {
     const origin = { by: 'fifty-fifty', sessionId: state.id, round: state.round } as const
-    const problem = await moveProblem(() => deps.fixes.setAside(state.folderPath, toSetAside, origin))
+    const problem = await moveProblem(() =>
+      deps.fixes.setAside(state.folderPath, toSetAside, origin, phaseProgress(toPutBack.length))
+    )
     if (problem) return problem
   }
   return null
@@ -134,7 +166,7 @@ async function stopDamaged(deps: FiftyDeps, savedFolder: string | null): Promise
   for (const folderPath of folders) {
     const off = await deps.fixes.disabledGroups(folderPath)
     const ours = off.filter((d) => d.origin === 'fifty-fifty').map((d) => d.groupId)
-    const moved = ours.length > 0 ? await moveProblem(() => deps.fixes.putBack(folderPath, ours)) : null
+    const moved = ours.length > 0 ? await moveProblem(() => deps.fixes.putBack(folderPath, ours, deps.emit)) : null
     const problem = moved ?? (await clearCachesProblem(deps, folderPath))
     if (problem) return damagedProblem(deps, folders, problem)
   }
@@ -264,17 +296,23 @@ async function makeHers(deps: FiftyDeps, state: FiftyFifty, culprit: string): Pr
   const others = await arrange(deps, state, ofTest.has(culprit) ? [culprit] : [])
   if (others) return others
 
-  if (ofTest.has(culprit)) {
-    const back = await moveProblem(() => deps.fixes.putBack(state.folderPath, [culprit]))
+  const group = state.groups.find((g) => g.id === culprit)
+  const hasPutBack = ofTest.has(culprit)
+  const hasSetAside = !!group && group.files.length > 0
+  const phaseProgress = makeMoveProgress(deps.emit, (hasPutBack ? 1 : 0) + (hasSetAside ? 1 : 0))
+
+  if (hasPutBack) {
+    const back = await moveProblem(() => deps.fixes.putBack(state.folderPath, [culprit], phaseProgress(0)))
     if (back) return back
   }
 
   const now = (await deps.fixes.disabledGroups(state.folderPath)).find((d) => d.groupId === culprit)
   if (now?.origin === 'fix') return null
   if (now) return { status: 'stopped-part-way', detail: 'The mod is still set aside by the 50/50 test.' }
-  const group = state.groups.find((g) => g.id === culprit)
   if (!group) return null
-  return moveProblem(() => deps.fixes.setAside(state.folderPath, [group], { by: 'fix' }))
+  return moveProblem(() =>
+    deps.fixes.setAside(state.folderPath, [group], { by: 'fix' }, phaseProgress(hasPutBack ? 1 : 0))
+  )
 }
 
 export async function stop(deps: FiftyDeps): Promise<FiftyStopResult> {

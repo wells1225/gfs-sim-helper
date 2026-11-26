@@ -528,6 +528,20 @@ export async function applyFix(
   return outcome
 }
 
+function forwardBackupOnly(onProgress: OnProgress | undefined, onResumeMoving?: () => void): OnProgress | undefined {
+  if (!onProgress) return undefined
+  let sawBackup = false
+  return (progress) => {
+    if (progress.task === 'backup') {
+      sawBackup = true
+      onProgress(progress)
+    } else if (sawBackup && progress.task === 'fix') {
+      sawBackup = false
+      onResumeMoving?.()
+    }
+  }
+}
+
 export async function setAside(
   deps: FixDeps,
   folderPath: string,
@@ -535,21 +549,29 @@ export async function setAside(
   origin: JournalOrigin,
   onProgress?: OnProgress
 ): Promise<GroupsOutcome> {
-  if (groups.length === 0) {
+  const movable = groups.filter((g) => g.files.length > 0)
+  if (movable.length === 0) {
     return { status: 'done', entries: [] }
   }
 
   const modsDir = join(folderPath, 'Mods')
   const entries: JournalEntry[] = []
+  const total = movable.length
+  let done = 0
+  const emitMoving = () => onProgress?.({ task: 'fix', stage: 'moving', done, total })
+  emitMoving()
 
-  for (const group of groups) {
-    if (group.files.length === 0) continue
-
+  for (const group of movable) {
     const at = { modsDir, holdingDir: deps.paths.holdingDir, entryId: deps.newId() }
-    const outcome = await deps.safety.runAction(groupPlan(group, at, origin, folderPath), onProgress)
+    const outcome = await deps.safety.runAction(
+      groupPlan(group, at, origin, folderPath),
+      forwardBackupOnly(onProgress, emitMoving)
+    )
 
     if (outcome.status === 'done') {
       entries.push(outcome.entry)
+      done += 1
+      emitMoving()
       continue
     }
 
@@ -564,7 +586,7 @@ export async function setAside(
       }
     }
 
-    const rolled = await rollBackHalfDone(deps, outcome, onProgress)
+    const rolled = await rollBackHalfDone(deps, outcome, forwardBackupOnly(onProgress))
     if (rolled === 'rolled-back') {
       // The half-moved group is fully back; only whole groups before it stay set aside.
       if (entries.length === 0) return { status: 'refused', refusal: NOT_STARTED }
@@ -603,15 +625,29 @@ export async function putBack(
   }
 
   const seenGroups = new Set<string>()
-  const undoneEntries: JournalEntry[] = []
-
+  const work: JournalEntry[][] = []
   for (const groupId of groupIds) {
     if (seenGroups.has(groupId)) continue
     seenGroups.add(groupId)
+    const matching = entriesByGroup.get(groupId)
+    if (matching && matching.length > 0) {
+      work.push(matching)
+    }
+  }
 
-    const matching = entriesByGroup.get(groupId) ?? []
+  if (work.length === 0) {
+    return { status: 'done', entries: [] }
+  }
+
+  const undoneEntries: JournalEntry[] = []
+  const total = work.length
+  let done = 0
+  const emitMoving = () => onProgress?.({ task: 'fix', stage: 'moving', done, total })
+  emitMoving()
+
+  for (const matching of work) {
     for (const entry of matching) {
-      const outcome = await deps.safety.undo(entry.id, onProgress)
+      const outcome = await deps.safety.undo(entry.id, forwardBackupOnly(onProgress, emitMoving))
       if (outcome.status === 'done') {
         undoneEntries.push(outcome.entry)
         continue
@@ -635,6 +671,8 @@ export async function putBack(
         detail: outcome.detail
       }
     }
+    done += 1
+    emitMoving()
   }
 
   return { status: 'done', entries: undoneEntries }

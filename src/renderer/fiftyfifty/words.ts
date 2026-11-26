@@ -1,4 +1,4 @@
-import type { FiftyDamaged, FiftyFifty, FiftyGet, FixRefusal, JournalEntry } from '../../shared/model.ts'
+import type { FiftyDamaged, FiftyFifty, FiftyGet, FixRefusal, JournalEntry, Progress } from '../../shared/model.ts'
 
 export function groupsWord(n: number): string {
   return n === 1 ? '1 mod group' : `${n} mod groups`
@@ -166,4 +166,39 @@ export function refusalWords(refusal: FixRefusal, again = 'click Try again'): st
     case 'fifty-fifty-running':
       return 'A 50/50 test is already running.'
   }
+}
+
+export function fiftyProgressCopy(
+  progress: Progress | null,
+  fallback: string
+): {
+  heading: string
+  detail: string | null
+  percent: number | null
+} {
+  if (!progress) {
+    return { heading: fallback, detail: null, percent: null }
+  }
+  if (progress.task === 'backup') {
+    const heading = 'Making a safety copy first…'
+    if (progress.total === null || progress.total <= 0) {
+      return { heading, detail: 'Counting files to protect…', percent: null }
+    }
+    const done = Math.min(Math.max(0, progress.done), progress.total)
+    const verb = progress.stage === 'checking' ? 'Checking' : 'Copying'
+    return {
+      heading,
+      detail: `${verb} ${done.toLocaleString()} of ${progress.total.toLocaleString()} files`,
+      percent: Math.round((done / progress.total) * 100)
+    }
+  }
+  if (progress.task === 'fix' && progress.stage === 'moving' && progress.total !== null && progress.total > 0) {
+    const done = Math.min(Math.max(0, progress.done), progress.total)
+    return {
+      heading: `Moving mod ${done.toLocaleString()} of ${progress.total.toLocaleString()}…`,
+      detail: null,
+      percent: Math.round((done / progress.total) * 100)
+    }
+  }
+  return { heading: fallback, detail: null, percent: null }
 }
