@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { toast } from 'sonner'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { FixOutcome, FixRefusal, JournalEntry, Scan } from '../../shared/model.ts'
+import type { BackupPruneResult, BackupSummary, FixOutcome, FixRefusal, JournalEntry, Scan } from '../../shared/model.ts'
 import { sampleFinding, sampleJournalEntry, sampleScan } from '../../shared/testing/sample.ts'
 import { ApiProvider } from '../api.tsx'
 import { Toaster } from '../components/ui/sonner.tsx'
@@ -1435,5 +1435,206 @@ describe('History drops a row quietly on nothing-to-do only for an in-progress e
 
     expect(await screen.findByText('Already taken care of')).toBeInTheDocument()
     expect(screen.getByText('Set aside Hair')).toBeInTheDocument()
+  })
+})
+
+describe('HistoryScreen SafetyCopiesCard (PR 23)', () => {
+  const prunableSummary: BackupSummary = {
+    status: { state: 'verified', backupId: 'b4', at: '2026-11-24T12:20:00.000Z' },
+    verifiedCount: 4,
+    totalBytes: 120 * 1024 * 1024,
+    reclaimableBytes: Math.round(45.2 * 1024 * 1024),
+    reclaimableBackups: 2,
+    canPrune: true
+  }
+
+  const cleanedSummary: BackupSummary = {
+    status: { state: 'verified', backupId: 'b4', at: '2026-11-24T12:20:00.000Z' },
+    verifiedCount: 2,
+    totalBytes: Math.round(74.8 * 1024 * 1024),
+    reclaimableBytes: 0,
+    reclaimableBackups: 0,
+    canPrune: false
+  }
+
+  it('shows "No safety copy taken yet" when none exists and hides the clear button', async () => {
+    const api = fakeApi({
+      'journal:list': [],
+      'backup:summary': {
+        status: { state: 'none' },
+        verifiedCount: 0,
+        totalBytes: 0,
+        reclaimableBytes: 0,
+        reclaimableBackups: 0,
+        canPrune: false
+      }
+    })
+
+    const { container } = render(
+      <Harness api={api} initialRoute={{ screen: 'history' }}>
+        <HistoryScreen />
+      </Harness>
+    )
+
+    expect(await screen.findByText(/No safety copy taken yet/)).toBeInTheDocument()
+    expect(screen.getByText(/0 verified copies kept/)).toBeInTheDocument()
+    expect(screen.getByText(/0 B used/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Clear old safety copies' })).toBeNull()
+    expect(container.textContent).not.toMatch(/[—–]/)
+  })
+
+  it('renders safety copy summary, opens inline confirmation, cancels or prunes with toast and refreshed totals', async () => {
+    const user = userEvent.setup()
+    let resolvePrune!: (res: BackupPruneResult) => void
+
+    const api = fakeApi({
+      'journal:list': [],
+      'backup:summary': prunableSummary,
+      'backup:prune': () =>
+        new Promise<BackupPruneResult>((resolve) => {
+          resolvePrune = resolve
+        })
+    })
+
+    const { container } = render(
+      <Harness api={api} initialRoute={{ screen: 'history' }}>
+        <HistoryScreen />
+      </Harness>
+    )
+
+    expect(await screen.findByText('Safety copies')).toBeInTheDocument()
+    expect(screen.getByText(/Last verified safety copy/)).toBeInTheDocument()
+    expect(screen.getByText(/4 verified copies kept/)).toBeInTheDocument()
+    expect(screen.getByText(/120\.0 MB used/)).toBeInTheDocument()
+    expect(screen.getByText(/Free 45\.2 MB from 2 older safety copies/)).toBeInTheDocument()
+
+    // Open inline confirmation, then Cancel
+    await user.click(screen.getByRole('button', { name: 'Clear old safety copies' }))
+    expect(
+      screen.getByText('Keeps your newest safety copies and everything needed for Undo. Your saves and mods are not touched.')
+    ).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(
+      screen.queryByText(
+        'Keeps your newest safety copies and everything needed for Undo. Your saves and mods are not touched.'
+      )
+    ).toBeNull()
+    expect(api.calls.filter((c) => c.channel === 'backup:prune')).toHaveLength(0)
+
+    // Open again and confirm prune
+    await user.click(screen.getByRole('button', { name: 'Clear old safety copies' }))
+    await user.click(screen.getByRole('button', { name: 'Clear old copies' }))
+
+    // Controls disabled while pruning
+    expect(screen.getByRole('button', { name: /Clearing/ })).toBeDisabled()
+
+    await act(async () => {
+      resolvePrune({
+        status: 'done',
+        freedBytes: prunableSummary.reclaimableBytes,
+        removedBackups: 2,
+        summary: cleanedSummary
+      })
+    })
+
+    expect(await screen.findByText('Cleared old safety copies')).toBeInTheDocument()
+    expect(screen.getByText(/2 verified copies kept/)).toBeInTheDocument()
+    expect(screen.getByText(/74\.8 MB used/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Clear old safety copies' })).toBeNull()
+    expect(container.textContent).not.toMatch(/[—–]/)
+  })
+
+  it('disables Clear old safety copies while an Undo is running', async () => {
+    const user = userEvent.setup()
+    let resolveUndo!: (outcome: FixOutcome) => void
+    const entry = sampleJournalEntry({ id: 'e-u1', summary: 'Set aside Hair', status: 'done', undo: 'can-undo' })
+
+    const api = fakeApi({
+      'journal:list': [entry],
+      'backup:summary': prunableSummary,
+      'journal:undo': () =>
+        new Promise<FixOutcome>((resolve) => {
+          resolveUndo = resolve
+        })
+    })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'history' }}>
+        <HistoryScreen />
+      </Harness>
+    )
+
+    const clearBtn = await screen.findByRole('button', { name: 'Clear old safety copies' })
+    expect(clearBtn).not.toBeDisabled()
+
+    await user.click(screen.getByRole('button', { name: 'Undo' }))
+    expect(screen.getByRole('button', { name: 'Clear old safety copies' })).toBeDisabled()
+
+    await act(async () => {
+      resolveUndo({ status: 'done', entry: { ...entry, status: 'undone', undoneAt: '2026-11-24T12:30:00.000Z' } })
+    })
+    expect(screen.getByRole('button', { name: 'Clear old safety copies' })).not.toBeDisabled()
+  })
+
+  it.each([
+    ['busy', { status: 'refused', why: 'busy' } as BackupPruneResult, /A safety copy is running right now/],
+    [
+      'fifty-fifty-running',
+      { status: 'refused', why: 'fifty-fifty-running' } as BackupPruneResult,
+      /A 50\/50 test is in progress/
+    ],
+    [
+      'unsafe-state',
+      { status: 'refused', why: 'unsafe-state' } as BackupPruneResult,
+      /Could not safely clear copies right now/
+    ],
+    ['nothing-to-prune', { status: 'refused', why: 'nothing-to-prune' } as BackupPruneResult, /Nothing left to clear/],
+    ['failed', { status: 'failed', detail: 'disk error' } as BackupPruneResult, /Could not finish clearing old copies/]
+  ])('shows plain-English notice with zero em/en dashes when backup:prune returns %s', async (_name, outcome, expected) => {
+    const user = userEvent.setup()
+    const api = fakeApi({
+      'journal:list': [],
+      'backup:summary': prunableSummary,
+      'backup:prune': () => outcome
+    })
+
+    const { container } = render(
+      <Harness api={api} initialRoute={{ screen: 'history' }}>
+        <HistoryScreen />
+      </Harness>
+    )
+
+    await user.click(await screen.findByRole('button', { name: 'Clear old safety copies' }))
+    await user.click(screen.getByRole('button', { name: 'Clear old copies' }))
+
+    expect(await screen.findByText(expected)).toBeInTheDocument()
+    expect(container.textContent).not.toMatch(/[—–]/)
+  })
+
+  it('fails calmly when backup:summary rejects without breaking History Undo list', async () => {
+    const user = userEvent.setup()
+    const entry = sampleJournalEntry({ id: 'e-ok', summary: 'Set aside Hair', status: 'done', undo: 'can-undo' })
+    const api = fakeApi({
+      'backup:summary': () => Promise.reject(new Error('C:\\Users\\Lila\\AppData\\boom')),
+      'journal:list': [entry],
+      'journal:undo': () => ({
+        status: 'done',
+        entry: { ...entry, status: 'undone', undoneAt: '2026-11-24T12:35:00.000Z' }
+      })
+    })
+
+    const { container } = render(
+      <Harness api={api} initialRoute={{ screen: 'history' }}>
+        <HistoryScreen />
+      </Harness>
+    )
+
+    expect(await screen.findByText('Set aside Hair')).toBeInTheDocument()
+    expect(container.textContent).not.toContain('Lila')
+    expect(container.textContent).not.toMatch(/[—–]/)
+
+    await user.click(screen.getByRole('button', { name: 'Undo' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull())
+    expect(screen.getAllByText('Undone').length).toBeGreaterThanOrEqual(1)
   })
 })

@@ -1,7 +1,9 @@
 import type {
   ActionKind,
+  BackupPruneResult,
   BackupResult,
   BackupStatus,
+  BackupSummary,
   DisabledGroup,
   FixOutcome,
   FixRefusal,
@@ -122,6 +124,8 @@ export type OnProgress = (progress: Progress) => void
 export interface Safety {
   // PR 9
   backupStatus(folderPath: string): Promise<BackupStatus>
+  backupSummary(folderPath: string | null): Promise<BackupSummary>
+  pruneBackups(folderPath: string | null): Promise<BackupPruneResult>
   createBackup(folderPath: string, onProgress?: OnProgress): Promise<BackupResult>
   // runAction and undo make a backup first when the last one is not 'verified', so every way into Mods is covered
   runAction(plan: ActionPlan, onProgress?: OnProgress): Promise<FixOutcome>

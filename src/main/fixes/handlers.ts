@@ -8,6 +8,8 @@ import { disabledGroupOf } from './index.ts'
 
 export type FixChannel =
   | 'backup:status'
+  | 'backup:summary'
+  | 'backup:prune'
   | 'fix:apply'
   | 'journal:list'
   | 'journal:recovery'
@@ -102,6 +104,27 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
         return { state: 'none' }
       }
       return ctx.safety.backupStatus(folderPath)
+    },
+
+    async 'backup:summary'() {
+      await recovery()
+      const folderPath = ctx.session.scan?.folder.path ?? (await readSavedFolderPath(ctx.paths.stateDir))
+      return ctx.safety.backupSummary(folderPath)
+    },
+
+    'backup:prune'() {
+      return oneAtATime(ctx, async () => {
+        await recovery()
+        if (await isFiftyFiftyRunning(ctx.paths.stateDir)) {
+          return { status: 'refused', why: 'fifty-fifty-running' }
+        }
+        const folderPath = ctx.session.scan?.folder.path ?? (await readSavedFolderPath(ctx.paths.stateDir))
+        try {
+          return await ctx.safety.pruneBackups(folderPath)
+        } catch {
+          return { status: 'failed', detail: 'Could not finish clearing old safety copies.' }
+        }
+      })
     },
 
     'fix:apply'(call: FixCall) {

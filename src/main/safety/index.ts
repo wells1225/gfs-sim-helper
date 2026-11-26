@@ -1,13 +1,23 @@
-import type { BackupResult, BackupStatus, FixOutcome, JournalEntry } from '../../shared/model.ts'
+import type { BackupPruneResult, BackupResult, BackupStatus, BackupSummary, FixOutcome, JournalEntry } from '../../shared/model.ts'
 import type { ActionPlan, OnProgress, SafetyDeps } from '../ports.ts'
 import { recoverNow, runActionNow, undoNow } from './actions.ts'
 import { backupInFlight, backupStatus as checkBackup, makeBackup, tracked } from './backup.ts'
 import { listEntries } from './journal.ts'
 import { oneAtATime } from './lock.ts'
+import { pruneBackupsNow, readBackupSummary } from './prune.ts'
 
 // backupStatus never waits for the lock: the gate asks it in the middle of runAction and undo.
 export async function backupStatus(deps: SafetyDeps, folderPath: string): Promise<BackupStatus> {
   return await checkBackup(deps, folderPath)
+}
+
+export async function backupSummary(deps: SafetyDeps, folderPath: string | null): Promise<BackupSummary> {
+  return await readBackupSummary(deps, folderPath)
+}
+
+export async function pruneBackups(deps: SafetyDeps, folderPath: string | null): Promise<BackupPruneResult> {
+  if (backupInFlight(deps)) return { status: 'refused', why: 'busy' }
+  return await oneAtATime(deps, () => pruneBackupsNow(deps, folderPath))
 }
 
 export async function createBackup(deps: SafetyDeps, folderPath: string, onProgress?: OnProgress): Promise<BackupResult> {

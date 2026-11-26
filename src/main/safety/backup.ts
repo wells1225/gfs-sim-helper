@@ -67,7 +67,7 @@ const STORED_AT_ONCE = 32
  * Whether every line of the list still has its stored copy, with its size. A list can point into an older backup
  * (`storedIn`), so deleting an old backup folder by hand takes the bytes away from the newest one too.
  */
-async function storedCopiesInPlace(backupsDir: string, lines: ManifestFile[]): Promise<boolean> {
+export async function storedCopiesInPlace(backupsDir: string, lines: ManifestFile[]): Promise<boolean> {
   for (let start = 0; start < lines.length; start += STORED_AT_ONCE) {
     const found = await Promise.all(
       lines.slice(start, start + STORED_AT_ONCE).map(async (line) => {

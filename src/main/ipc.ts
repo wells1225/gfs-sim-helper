@@ -65,6 +65,8 @@ export const CHANGING_CHANNELS = {
   'report:build': true,
   'report:reveal': false,
   'backup:status': false,
+  'backup:summary': false,
+  'backup:prune': true,
   'fix:apply': true,
   'journal:list': false, // reads only; waits for the start-up recovery
   'journal:recovery': false,

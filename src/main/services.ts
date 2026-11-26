@@ -42,8 +42,10 @@ import { createShare } from './share/index.ts'
 import { safeWebLink } from './share/links.ts'
 import {
   backupStatus,
+  backupSummary,
   createBackup,
   listJournal,
+  pruneBackups,
   recover,
   runAction,
   undo
@@ -250,6 +252,8 @@ export function createContext(input: CreateContextInput): AppContext {
 
   const safety: Safety = {
     backupStatus: counted((folderPath: string) => backupStatus(safetyDeps, folderPath)),
+    backupSummary: counted((folderPath: string | null) => backupSummary(safetyDeps, folderPath)),
+    pruneBackups: counted((folderPath: string | null) => pruneBackups(safetyDeps, folderPath)),
     createBackup: counted((folderPath: string, onProgress?: OnProgress) => createBackup(safetyDeps, folderPath, onProgress)),
     runAction: counted((plan: ActionPlan, onProgress?: OnProgress) => runAction(safetyDeps, plan, onProgress)),
     undo: counted((entryId: string, onProgress?: OnProgress) => undo(safetyDeps, entryId, onProgress)),

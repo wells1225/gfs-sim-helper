@@ -62,7 +62,7 @@ function isMissing(err: unknown): boolean {
 
 const TIME_ID = /^\d{8}-\d{6}-/
 
-function isNewer(a: Manifest, b: Manifest): boolean {
+export function isNewer(a: Manifest, b: Manifest): boolean {
   if (a.record.at !== b.record.at) return a.record.at > b.record.at
   return a.record.id > b.record.id
 }
