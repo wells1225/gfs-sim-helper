@@ -6,6 +6,7 @@ import {
   Home,
   MonitorOff,
   PauseCircle,
+  RefreshCw,
   type LucideIcon
 } from 'lucide-react'
 import type { Symptom } from '../../shared/model.ts'
@@ -99,6 +100,23 @@ export function WhatHappened() {
           )
         })}
       </div>
+
+      <button
+        type="button"
+        onClick={() => go({ screen: 'patch-day' })}
+        className="group flex w-full cursor-pointer items-center gap-3.5 rounded-xl border border-dashed border-border bg-transparent px-4 py-3 text-left hover:border-primary/50 hover:bg-accent/30"
+      >
+        <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+          <RefreshCw className="size-5" strokeWidth={1.75} />
+        </span>
+        <span className="flex flex-1 flex-col gap-0.5">
+          <span className="text-[0.9375rem] font-medium text-foreground">The Sims 4 just updated</span>
+          <span className="text-sm text-muted-foreground">
+            Set aside script mods safely before opening your save. Your custom content and saves stay untouched.
+          </span>
+        </span>
+        <ChevronRight className="size-5 shrink-0 text-muted-foreground" strokeWidth={1.75} />
+      </button>
 
       <div className="flex justify-end">
         <Button variant="ghost" size="sm" onClick={() => go({ screen: 'pick-folder' })}>

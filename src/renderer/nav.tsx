@@ -17,6 +17,7 @@ export type Route =
   | { screen: 'share-setup' }
   | { screen: 'share-old-saves' }
   | { screen: 'share-settings' }
+  | { screen: 'patch-day' }
 
 export interface NavContextValue {
   route: Route
