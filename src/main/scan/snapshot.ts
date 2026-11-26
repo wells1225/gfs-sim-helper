@@ -11,6 +11,7 @@ const MAX_SNAPSHOT_GROUPS = 50_000
 const SHA256_HEX = /^[0-9a-f]{64}$/
 const EMAIL_DELIMITER = /[\s@<>'"`()[\]{},;:]/
 const UNICODE_LETTER = /\p{L}/u
+const WRAPPER_PUNCT = new Set(['(', ')', '[', ']', '{', '}', '"', "'"])
 
 export interface SnapshotGroup {
   idHash: string
@@ -49,40 +50,49 @@ export function snapshotPathFor(stateDir: string, folderHash: string): string {
   return join(stateDir, `last-scan-${folderHash.slice(0, 16)}.json`)
 }
 
+function redactToken(tok: string, redact: (text: string) => string): string {
+  if (tok.length === 0) return tok
+
+  const direct = redact(tok)
+  if (direct !== tok) return direct
+
+  let start = 0
+  while (start < tok.length && WRAPPER_PUNCT.has(tok[start]!)) {
+    start += 1
+  }
+  let end = tok.length
+  while (end > start && WRAPPER_PUNCT.has(tok[end - 1]!)) {
+    end -= 1
+  }
+  if (end > start && end - start < tok.length) {
+    const core = tok.slice(start, end)
+    const inner = redact(core)
+    if (inner !== core) {
+      return `${tok.slice(0, start)}${inner}${tok.slice(end)}`
+    }
+  }
+
+  return tok
+    .split(/([^\p{L}\p{M}\p{N}_]+)/u)
+    .map((piece, idx) => {
+      if (idx % 2 === 1 || piece.length === 0) return piece
+      const redactedWord = redact(piece)
+      if (redactedWord !== piece) return redactedWord
+      if (!piece.includes('_')) return piece
+      return piece
+        .split(/(_+)/)
+        .map((sub, subIdx) => (subIdx % 2 === 1 || sub.length === 0 ? sub : redact(sub)))
+        .join('')
+    })
+    .join('')
+}
+
 function redactSegment(segment: string, redact: (text: string) => string): string {
   if (segment.length === 0) return segment
-  let out = ''
-  let i = 0
-  while (i < segment.length) {
-    const tail = segment.slice(i)
-    const redactedTail = redact(tail)
-    if (
-      redactedTail !== tail &&
-      redactedTail.startsWith('<user>') &&
-      tail.endsWith(redactedTail.slice('<user>'.length)) &&
-      redactedTail.length - '<user>'.length < tail.length
-    ) {
-      const consumed = tail.length - (redactedTail.length - '<user>'.length)
-      out += '<user>'
-      i += consumed
-      continue
-    }
-
-    const cp = segment.codePointAt(i)!
-    const charLen = cp > 0xffff ? 2 : 1
-    const ch = segment.slice(i, i + charLen)
-    if (!/[\p{L}\p{M}\p{N}]/u.test(ch)) {
-      out += ch
-      i += charLen
-      continue
-    }
-
-    const wordMatch = /^[\p{L}\p{M}\p{N}]+/u.exec(tail)
-    const word = wordMatch ? wordMatch[0] : ch
-    out += redact(word)
-    i += word.length
-  }
-  return out
+  return segment
+    .split(/(\s+)/)
+    .map((piece, idx) => (idx % 2 === 1 ? piece : redactToken(piece, redact)))
+    .join('')
 }
 
 function redactChunk(chunk: string, redact?: (text: string) => string): string {
@@ -122,7 +132,11 @@ function maskEmails(text: string, transform?: (chunk: string) => string): string
     }
 
     let right = at + 1
-    while (right < text.length && !EMAIL_DELIMITER.test(text[right]!)) {
+    while (
+      right < text.length &&
+      !EMAIL_DELIMITER.test(text[right]!) &&
+      !(text[right] === '.' && text[right + 1] === '.')
+    ) {
       right += 1
     }
 

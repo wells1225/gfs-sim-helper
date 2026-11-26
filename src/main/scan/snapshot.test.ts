@@ -610,12 +610,13 @@ describe('scan snapshot persistence and diff', () => {
     expect(sanitizeSnapshotLabel('Lila_CC_Pack', redact)).toBe('<user>_CC_Pack')
     expect(sanitizeSnapshotLabel('Custom by Lila (lila.sims@example.com)', redact)).toBe('Custom by <user> (<email>)')
     expect(sanitizeSnapshotLabel('user@sub.example.co.uk', redact)).toBe('<email>')
+    expect(sanitizeSnapshotLabel('user@example.com...more', redact)).toBe('<email>...more')
     expect(sanitizeSnapshotLabel('Mod@2', redact)).toBe('Mod@2')
     expect(sanitizeSnapshotLabel('Mod@2.0', redact)).toBe('Mod@2.0')
     expect(sanitizeSnapshotLabel('Mod@1.2.3', redact)).toBe('Mod@1.2.3')
   })
 
-  it('sanitizeSnapshotLabel scans emails in linear time on long non-email inputs', () => {
+  it('sanitizeSnapshotLabel scans emails and redacts punctuation-heavy labels in linear time', () => {
     const longNoAt = 'a'.repeat(50_000)
     const longTrailingAt = `${'a'.repeat(50_000)}@`
     const repeatedAt = 'a@'.repeat(25_000)
@@ -626,14 +627,32 @@ describe('scan snapshot persistence and diff', () => {
     expect(sanitizeSnapshotLabel(repeatedAt)).toBe(repeatedAt)
     const elapsedMs = performance.now() - start
     expect(elapsedMs).toBeLessThan(50)
+
+    const redact = makeRedactor({ USERNAME: 'Lila' })
+    const longParens = `${'('.repeat(50_000)}Lila`
+    const longPunct = `${'-!'.repeat(25_000)}Lila`
+
+    const redactStart = performance.now()
+    expect(sanitizeSnapshotLabel(longParens, redact)).toBe(`${'('.repeat(50_000)}<user>`)
+    expect(sanitizeSnapshotLabel(longPunct, redact)).toBe(`${'-!'.repeat(25_000)}<user>`)
+    const redactElapsedMs = performance.now() - redactStart
+    expect(redactElapsedMs).toBeLessThan(50)
   })
 
-  it('redacts usernames with leading punctuation and Unicode email addresses in persisted snapshot labels', () => {
+  it('redacts usernames with leading punctuation, dots, and Unicode email addresses in persisted snapshot labels', () => {
     const redact = makeRedactor({ USERNAME: '_Lila', USERPROFILE: 'C:\\Users\\_Lila' })
     expect(sanitizeSnapshotLabel('_Lila Mods', redact)).toBe('<user> Mods')
     expect(sanitizeSnapshotLabel('(_Lila)', redact)).toBe('(<user>)')
     expect(sanitizeSnapshotLabel('李@example.com', redact)).toBe('<email>')
     expect(sanitizeSnapshotLabel('Custom by 李@example.com', redact)).toBe('Custom by <email>')
+
+    const dotRedact = makeRedactor({ USERNAME: 'lila.smith' })
+    expect(sanitizeSnapshotLabel('lila.smith Mods', dotRedact)).toBe('<user> Mods')
+    expect(sanitizeSnapshotLabel('(lila.smith)', dotRedact)).toBe('(<user>)')
+
+    const shortRedact = makeRedactor({ USERNAME: 'Ann' })
+    expect(sanitizeSnapshotLabel('Annabelle', shortRedact)).toBe('Annabelle')
+    expect(sanitizeSnapshotLabel('_Ann Mods', shortRedact)).toBe('_<user> Mods')
 
     const simsDir = 'C:\\Users\\_Lila\\Documents\\Electronic Arts\\The Sims 4'
     const modsDir = `${simsDir}\\Mods`
