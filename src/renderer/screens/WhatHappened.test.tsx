@@ -48,4 +48,25 @@ describe('WhatHappened', () => {
     expect(screen.getByTestId('symptom')).toHaveTextContent('freezes')
     expect(screen.getByTestId('has-scan')).toHaveTextContent('no')
   })
+
+  it('offers a calm patch-day entry that opens the script check without starting a check-up', async () => {
+    const user = userEvent.setup()
+
+    render(
+      <SessionProvider initialScan={sampleScan()} initialSymptom="not-sure">
+        <NavProvider initial={{ screen: 'what-happened' }}>
+          <Harness />
+        </NavProvider>
+      </SessionProvider>
+    )
+
+    const entry = screen.getByRole('button', { name: /just updated/i })
+    expect(entry).toHaveTextContent(/custom content and saves stay untouched/i)
+    expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+
+    await user.click(entry)
+
+    expect(screen.getByTestId('route')).toHaveTextContent('patch-day')
+    expect(screen.getByTestId('has-scan')).toHaveTextContent('yes')
+  })
 })

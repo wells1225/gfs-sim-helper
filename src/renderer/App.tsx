@@ -16,6 +16,7 @@ import { ModsScreen } from './fixes/ModsScreen.tsx'
 import { useOptionalApi } from './fixes/optional-api.ts'
 import { RecoveryNotice } from './fixes/RecoveryNotice.tsx'
 import { NavProvider, useNav, type Route } from './nav.tsx'
+import { PatchDayScreen } from './patchday/PatchDayScreen.tsx'
 import { CheckUp } from './screens/CheckUp.tsx'
 import { PickFolder } from './screens/PickFolder.tsx'
 import { SendToTyler } from './screens/SendToTyler.tsx'
@@ -73,6 +74,8 @@ function renderScreen(route: Route, hasApi: boolean) {
       return <OldSavesScreen />
     case 'share-settings':
       return <SharingSettingsScreen />
+    case 'patch-day':
+      return <PatchDayScreen />
   }
 }
 
