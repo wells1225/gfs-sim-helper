@@ -30,6 +30,14 @@ function firstRunApi() {
     },
     'game:check': 'not-running',
     'backup:status': { state: 'none' },
+    'backup:summary': {
+      status: { state: 'none' },
+      verifiedCount: 0,
+      totalBytes: 0,
+      reclaimableBytes: 0,
+      reclaimableBackups: 0,
+      canPrune: false
+    },
     'journal:list': [],
     'groups:disabled': [],
     'fifty:get': null,

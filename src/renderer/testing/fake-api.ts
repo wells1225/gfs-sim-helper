@@ -1,5 +1,5 @@
 import type { IpcInvoke, SimsHelperApi } from '../../shared/ipc.ts'
-import type { Progress, ShareView, StartupRecovery, UpdateState } from '../../shared/model.ts'
+import type { BackupSummary, Progress, ShareView, StartupRecovery, UpdateState } from '../../shared/model.ts'
 
 export type FakeAnswer<K extends keyof IpcInvoke> =
   | IpcInvoke[K]['res']
@@ -23,6 +23,15 @@ const UPDATES_OFF: UpdateState = { state: 'off', why: 'switched-off', current: '
 
 const NOTHING_RECOVERED: StartupRecovery = { status: 'finished', touched: [] }
 
+const NO_BACKUPS_SUMMARY: BackupSummary = {
+  status: { state: 'none' },
+  verifiedCount: 0,
+  totalBytes: 0,
+  reclaimableBytes: 0,
+  reclaimableBackups: 0,
+  canPrune: false
+}
+
 const SHARE_NOT_SET_UP: ShareView = {
   link: { state: 'no-role' },
   settings: { role: null, folderLabel: null, keepOld: 5, keepInDrive: 3 },
@@ -32,12 +41,14 @@ const SHARE_NOT_SET_UP: ShareView = {
 
 /**
  * Every test gets these unless it passes its own: no update banner, and the About row shows the version and a note
- * saying why updates are off; a start-up recovery that touched nothing; Share saves not set up, with empty lists.
+ * saying why updates are off; a start-up recovery that touched nothing; no safety copies yet; Share saves not set up,
+ * with empty lists.
  */
 const DEFAULT_ANSWERS: FakeApiAnswers = {
   'update:get': UPDATES_OFF,
   'update:check': UPDATES_OFF,
   'journal:recovery': NOTHING_RECOVERED,
+  'backup:summary': NO_BACKUPS_SUMMARY,
   'share:get': SHARE_NOT_SET_UP,
   'share:local-saves': [],
   'share:old-saves': []

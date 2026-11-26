@@ -272,6 +272,15 @@ describe('applyFix move-package-up', () => {
   function realSafety(ws: Workspace): Safety {
     return {
       backupStatus: (folderPath) => backupStatus(ws.deps, folderPath),
+      backupSummary: async () => ({
+        status: { state: 'none' },
+        verifiedCount: 0,
+        totalBytes: 0,
+        reclaimableBytes: 0,
+        reclaimableBackups: 0,
+        canPrune: false
+      }),
+      pruneBackups: async () => ({ status: 'refused', why: 'nothing-to-prune' }),
       createBackup: (folderPath, onProgress) => createBackup(ws.deps, folderPath, onProgress),
       runAction: (plan, onProgress) => runAction(ws.deps, plan, onProgress),
       undo: (entryId, onProgress) => undo(ws.deps, entryId, onProgress),

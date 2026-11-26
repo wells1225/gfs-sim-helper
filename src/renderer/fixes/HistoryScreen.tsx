@@ -21,6 +21,7 @@ import { Separator } from '../components/ui/separator.tsx'
 import { useNav } from '../nav.tsx'
 import { groupHistoryEntries, type HistoryRow } from './history-groups.ts'
 import { useOptionalApi } from './optional-api.ts'
+import { SafetyCopiesCard } from './SafetyCopiesCard.tsx'
 import {
   LOAD_FAILED_COPY,
   UNEXPECTED_COPY,
@@ -40,6 +41,8 @@ export function HistoryScreen() {
   const headingRef = useRef<HTMLHeadingElement>(null)
   const focusHeadingRef = useRef(false)
   const [undoingId, setUndoingId] = useState<string | null>(null)
+  const [pruningBackups, setPruningBackups] = useState(false)
+  const [backupRefreshKey, setBackupRefreshKey] = useState(0)
   const [progress, setProgress] = useState<Progress | null>(null)
   const [expandedSessions, setExpandedSessions] = useState<Record<string, boolean>>({})
   const [errorState, setErrorState] = useState<{
@@ -124,7 +127,7 @@ export function HistoryScreen() {
 
   const handleUndo = useCallback(
     async (entry: JournalEntry) => {
-      if (!api) return
+      if (!api || undoingId !== null || pruningBackups) return
       setErrorState(null)
       setPartWayMessage(null)
       setProgress(null)
@@ -144,6 +147,7 @@ export function HistoryScreen() {
 
         if (outcome.status === 'done') {
           setEntries((prev) => prev.map((e) => (e.id === entry.id ? outcome.entry : e)))
+          setBackupRefreshKey((n) => n + 1)
           setFocusEntryId(entry.id)
           toast('Undone', { description: `Put everything back for: ${entry.summary}` })
           return
@@ -155,6 +159,7 @@ export function HistoryScreen() {
             entry.status === 'in-progress' && entry.steps.every((s) => s.state === 'pending')
           if (outcome.refusal.why === 'out-of-date' && outcome.refusal.detail === 'nothing-to-do' && neverRan) {
             setEntries((prev) => prev.filter((e) => e.id !== entry.id))
+            setBackupRefreshKey((n) => n + 1)
             setFocusEntryId(entry.id)
             return
           }
@@ -163,6 +168,7 @@ export function HistoryScreen() {
         }
 
         setEntries((prev) => prev.map((e) => (e.id === entry.id ? outcome.entry : e)))
+        setBackupRefreshKey((n) => n + 1)
         setPartWayMessage(outcome.detail || 'Undo stopped partway through.')
       } finally {
         if (mountedRef.current) {
@@ -170,7 +176,7 @@ export function HistoryScreen() {
         }
       }
     },
-    [api]
+    [api, undoingId, pruningBackups]
   )
 
   const toggleSession = (sessionId: string) => {
@@ -200,7 +206,7 @@ export function HistoryScreen() {
         <Button
           variant="outline"
           size="sm"
-          disabled={undoingId !== null}
+          disabled={undoingId !== null || pruningBackups}
           onClick={() => void handleUndo(entry)}
         >
           <Undo2 className="size-4" aria-hidden="true" />
@@ -226,6 +232,12 @@ export function HistoryScreen() {
           Every change made to your Mods folder or settings is saved here so you can put things back in one click.
         </p>
       </div>
+
+      <SafetyCopiesCard
+        busy={undoingId !== null}
+        refreshKey={backupRefreshKey}
+        onPruningChange={setPruningBackups}
+      />
 
       {undoingId && (
         <div
@@ -259,7 +271,12 @@ export function HistoryScreen() {
                 <AlertDescription>{copy.detail}</AlertDescription>
                 {copy.canRetry && targetEntry && (
                   <div>
-                    <Button variant="outline" size="sm" onClick={() => void handleUndo(targetEntry)}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={undoingId !== null || pruningBackups}
+                      onClick={() => void handleUndo(targetEntry)}
+                    >
                       Try again
                     </Button>
                   </div>

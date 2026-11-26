@@ -2,7 +2,9 @@ import type {
   AssistAnswer,
   AssistPreview,
   AssistStatus,
+  BackupPruneResult,
   BackupStatus,
+  BackupSummary,
   DisabledGroup,
   FiftyAnswer,
   FiftyGet,
@@ -44,6 +46,8 @@ export interface IpcInvoke {
   'report:reveal': { req: void; res: void } // shows the last report in Explorer
   // PR 10 owns this block
   'backup:status': { req: void; res: BackupStatus }
+  'backup:summary': { req: void; res: BackupSummary }
+  'backup:prune': { req: void; res: BackupPruneResult }
   'fix:apply': { req: FixCall; res: FixOutcome }
   'journal:list': { req: void; res: JournalEntry[] } // reads only; waits for the start-up recovery to finish
   'journal:recovery': { req: void; res: StartupRecovery } // reads only: what the start-up recovery did, once it finished
@@ -99,6 +103,8 @@ export const INVOKE_CHANNELS = [
   'report:build',
   'report:reveal',
   'backup:status',
+  'backup:summary',
+  'backup:prune',
   'fix:apply',
   'journal:list',
   'journal:recovery',

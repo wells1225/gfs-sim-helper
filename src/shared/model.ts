@@ -284,6 +284,20 @@ export type BackupResult =
   | { status: 'refused'; reason: BackupRefusal }
   | { status: 'failed'; detail: string }
 
+export interface BackupSummary {
+  status: BackupStatus
+  verifiedCount: number
+  totalBytes: number
+  reclaimableBytes: number
+  reclaimableBackups: number
+  canPrune: boolean
+}
+
+export type BackupPruneResult =
+  | { status: 'done'; freedBytes: number; removedBackups: number; summary: BackupSummary }
+  | { status: 'refused'; why: 'busy' | 'fifty-fifty-running' | 'unsafe-state' | 'nothing-to-prune' }
+  | { status: 'failed'; detail: string }
+
 export type StepState = 'pending' | 'applied' | 'reverted'
 
 export type JournalStep =

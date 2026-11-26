@@ -11,7 +11,9 @@ import { INVOKE_CHANNELS, type Handlers, type IpcInvoke } from '../shared/ipc.ts
 import type {
   ActionKind,
   AssistAnswer,
+  BackupPruneResult,
   BackupRefusal,
+  BackupSummary,
   DisabledGroup,
   FiftyDamaged,
   FiftyStopPartWay,
@@ -493,6 +495,7 @@ describe('auto-update contract (PR 13)', () => {
       expect(changing).toEqual([
         'settings:update',
         'report:build',
+        'backup:prune',
         'fix:apply',
         'journal:undo',
         'fifty:start',
@@ -1719,5 +1722,59 @@ describe('stage review integration invariants', () => {
     } finally {
       await rm(tempRoot, { recursive: true, force: true })
     }
+  })
+})
+
+describe('backup summary and prune contract (PR 23)', () => {
+  it('registers backup:summary as read-only and backup:prune as changing, and counts both on ctx.busy()', async () => {
+    const ctx = createContext({
+      host: makeFakeHost(),
+      paths: appPaths({
+        localAppData: '/fake/LocalAppData',
+        appData: '/fake/Roaming',
+        desktopDir: '/fake/Desktop',
+        env: {}
+      }),
+      safeStorage: {
+        isEncryptionAvailable: () => false,
+        encryptString: (text) => Buffer.from(text, 'utf8'),
+        decryptString: (data) => Buffer.from(data).toString('utf8')
+      },
+      emit: () => {},
+      reveal: () => {}
+    })
+
+    expect(INVOKE_CHANNELS).toContain('backup:summary')
+    expect(INVOKE_CHANNELS).toContain('backup:prune')
+    expect([CHANGING_CHANNELS['backup:summary'], CHANGING_CHANNELS['backup:prune']]).toEqual([false, true])
+
+    const summaryShape: BackupSummary = {
+      status: { state: 'none' },
+      verifiedCount: 0,
+      totalBytes: 0,
+      reclaimableBytes: 0,
+      reclaimableBackups: 0,
+      canPrune: false
+    }
+    const pruneShapes: BackupPruneResult[] = [
+      { status: 'done', freedBytes: 100, removedBackups: 1, summary: summaryShape },
+      { status: 'refused', why: 'busy' },
+      { status: 'refused', why: 'fifty-fifty-running' },
+      { status: 'refused', why: 'unsafe-state' },
+      { status: 'refused', why: 'nothing-to-prune' },
+      { status: 'failed', detail: 'Could not finish clearing old safety copies.' }
+    ]
+    expect(pruneShapes).toHaveLength(6)
+
+    expect(ctx.busy()).toBe(false)
+    const sumCall = ctx.safety.backupSummary(null)
+    expect(ctx.busy()).toBe(true)
+    await sumCall.catch(() => {})
+    expect(ctx.busy()).toBe(false)
+
+    const pruneCall = ctx.safety.pruneBackups(null)
+    expect(ctx.busy()).toBe(true)
+    await pruneCall.catch(() => {})
+    expect(ctx.busy()).toBe(false)
   })
 })

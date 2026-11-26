@@ -7,6 +7,15 @@ const PR_SLUG = 'pr-10-fixes'
 
 const NOTHING_RECOVERED: StartupRecovery = { status: 'finished', touched: [] }
 
+const NO_BACKUPS_SUMMARY = {
+  status: { state: 'none' as const },
+  verifiedCount: 0,
+  totalBytes: 0,
+  reclaimableBytes: 0,
+  reclaimableBackups: 0,
+  canPrune: false
+}
+
 const NO_TRANSITIONS = `(() => {
   const style = document.createElement('style');
   style.textContent = '*, *::before, *::after { transition: none !important; }';
@@ -139,7 +148,8 @@ test('branch shot: history', async () => {
   try {
     await stubIpc(running.app, {
       'journal:recovery': NOTHING_RECOVERED,
-      'journal:list': buildHistoryEntries()
+      'journal:list': buildHistoryEntries(),
+      'backup:summary': NO_BACKUPS_SUMMARY
     })
 
     await running.page.getByRole('button', { name: 'History' }).click()
@@ -149,6 +159,40 @@ test('branch shot: history', async () => {
 
     expect(running.consoleErrors).toEqual([])
     await shoot(running.page, PR_SLUG, 'history')
+  } finally {
+    await running.close()
+  }
+})
+
+test('branch shot: history-safety-copies', async () => {
+  const running = await launchApp()
+  try {
+    await running.page.addInitScript({ content: NO_TRANSITIONS })
+    await stubIpc(running.app, {
+      'journal:recovery': NOTHING_RECOVERED,
+      'journal:list': buildHistoryEntries(),
+      'backup:summary': {
+        status: {
+          state: 'verified',
+          backupId: '20261124-122000-bk04',
+          at: '2026-11-24T12:20:00.000Z'
+        },
+        verifiedCount: 4,
+        totalBytes: Math.round(128.4 * 1024 * 1024),
+        reclaimableBytes: Math.round(45.2 * 1024 * 1024),
+        reclaimableBackups: 2,
+        canPrune: true
+      }
+    })
+
+    await running.page.getByRole('button', { name: 'History' }).click()
+    await expect(running.page.getByText('Safety copies', { exact: true })).toBeVisible()
+    await expect(running.page.getByText('Free 45.2 MB from 2 older safety copies')).toBeVisible()
+    await expect(running.page.getByRole('button', { name: 'Clear old safety copies' })).toBeVisible()
+    await expect(running.page.getByText('Set aside 3 zip files from Mods')).toBeVisible()
+
+    expect(running.consoleErrors).toEqual([])
+    await shoot(running.page, PR_SLUG, 'history-safety-copies')
   } finally {
     await running.close()
   }
@@ -168,7 +212,8 @@ test('branch shot: history-undone', async () => {
     await stubIpc(running.app, {
       'journal:recovery': NOTHING_RECOVERED,
       'journal:list': [target, entries[2]!],
-      'journal:undo': { status: 'done', entry: undoneTarget }
+      'journal:undo': { status: 'done', entry: undoneTarget },
+      'backup:summary': NO_BACKUPS_SUMMARY
     })
 
     await running.page.getByRole('button', { name: 'History' }).click()

@@ -55,6 +55,19 @@ function makeFakeSafety(overrides: Partial<Safety> = {}): Safety & {
     async backupStatus() {
       return { state: 'verified', backupId: 'b1', at: '2026-11-24T12:00:00.000Z' }
     },
+    async backupSummary() {
+      return {
+        status: { state: 'verified', backupId: 'b1', at: '2026-11-24T12:00:00.000Z' },
+        verifiedCount: 1,
+        totalBytes: 1000,
+        reclaimableBytes: 0,
+        reclaimableBackups: 0,
+        canPrune: false
+      }
+    },
+    async pruneBackups() {
+      return { status: 'refused', why: 'nothing-to-prune' }
+    },
     async createBackup() {
       return {
         status: 'verified',

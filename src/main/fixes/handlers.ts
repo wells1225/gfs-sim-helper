@@ -1,13 +1,17 @@
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Handlers } from '../../shared/ipc.ts'
-import type { DisabledGroup, FixCall, FixOutcome, StartupRecovery } from '../../shared/model.ts'
+import type { BackupStatus, DisabledGroup, FixCall, FixOutcome, StartupRecovery } from '../../shared/model.ts'
 import type { AppContext } from '../ports.ts'
 import { oneAtATime } from '../safety/lock.ts'
+import { isStrictIsoTime, normalizeIsoTime } from '../safety/manifest.ts'
+import { isSafeId } from '../safety/where.ts'
 import { disabledGroupOf } from './index.ts'
 
 export type FixChannel =
   | 'backup:status'
+  | 'backup:summary'
+  | 'backup:prune'
   | 'fix:apply'
   | 'journal:list'
   | 'journal:recovery'
@@ -49,6 +53,22 @@ async function readSavedFolderPath(stateDir: string): Promise<string | null> {
   } catch {
     return null
   }
+}
+
+const SAFE_BACKUP_UNKNOWN = 'We could not check your safety copy right now.'
+
+function sanitizeBackupStatus(status: BackupStatus): BackupStatus {
+  if (!status || typeof status !== 'object') {
+    return { state: 'unknown', detail: SAFE_BACKUP_UNKNOWN }
+  }
+  if (status.state === 'none') return { state: 'none' }
+  if (status.state === 'unknown') return { state: 'unknown', detail: SAFE_BACKUP_UNKNOWN }
+  if (status.state === 'verified' || status.state === 'stale') {
+    if (typeof status.backupId === 'string' && isSafeId(status.backupId) && isStrictIsoTime(status.at)) {
+      return { state: status.state, backupId: status.backupId, at: normalizeIsoTime(status.at) }
+    }
+  }
+  return { state: 'unknown', detail: SAFE_BACKUP_UNKNOWN }
 }
 
 const FIX_IDS: readonly string[] = [
@@ -101,7 +121,47 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
       if (!folderPath) {
         return { state: 'none' }
       }
-      return ctx.safety.backupStatus(folderPath)
+      try {
+        return sanitizeBackupStatus(await ctx.safety.backupStatus(folderPath))
+      } catch {
+        return { state: 'unknown', detail: SAFE_BACKUP_UNKNOWN }
+      }
+    },
+
+    async 'backup:summary'() {
+      await recovery()
+      const folderPath = ctx.session.scan?.folder.path ?? (await readSavedFolderPath(ctx.paths.stateDir))
+      try {
+        const summary = await ctx.safety.backupSummary(folderPath)
+        return {
+          ...summary,
+          status: sanitizeBackupStatus(summary.status)
+        }
+      } catch {
+        return {
+          status: { state: 'unknown', detail: SAFE_BACKUP_UNKNOWN },
+          verifiedCount: 0,
+          totalBytes: 0,
+          reclaimableBytes: 0,
+          reclaimableBackups: 0,
+          canPrune: false
+        }
+      }
+    },
+
+    'backup:prune'() {
+      return oneAtATime(ctx, async () => {
+        await recovery()
+        if (await isFiftyFiftyRunning(ctx.paths.stateDir)) {
+          return { status: 'refused', why: 'fifty-fifty-running' }
+        }
+        const folderPath = ctx.session.scan?.folder.path ?? (await readSavedFolderPath(ctx.paths.stateDir))
+        try {
+          return await ctx.safety.pruneBackups(folderPath)
+        } catch {
+          return { status: 'failed', detail: 'Could not finish clearing old safety copies.' }
+        }
+      })
     },
 
     'fix:apply'(call: FixCall) {

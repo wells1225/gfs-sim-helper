@@ -74,6 +74,19 @@ async function makeContext(overrides: {
     async backupStatus() {
       return { state: 'verified', backupId: 'b1', at: '2026-11-24T12:00:00.000Z' }
     },
+    async backupSummary() {
+      return {
+        status: { state: 'verified', backupId: 'b1', at: '2026-11-24T12:00:00.000Z' },
+        verifiedCount: 2,
+        totalBytes: 2048,
+        reclaimableBytes: 0,
+        reclaimableBackups: 0,
+        canPrune: false
+      }
+    },
+    async pruneBackups() {
+      return { status: 'refused', why: 'nothing-to-prune' }
+    },
     async createBackup() {
       return {
         status: 'verified',
@@ -587,6 +600,197 @@ describe('stage review: journal read failures never leak paths over IPC', () => 
       )
       expect(msg).not.toBeNull()
       expect(msg!).not.toMatch(/Lila|AppData|EACCES|[A-Z]:\\|\//i)
+    }
+  })
+})
+
+describe('backup:summary and backup:prune handlers (PR 23)', () => {
+  it('backup:summary waits for startupRecovery() and passes resolved folderPath or null to safety.backupSummary', async () => {
+    let finish!: () => void
+    const order: string[] = []
+    const recoverSpy = vi.fn<Safety['recover']>(
+      () =>
+        new Promise((resolve) => {
+          finish = () => {
+            order.push('recovered')
+            resolve([])
+          }
+        })
+    )
+    const summarySpy = vi.fn<Safety['backupSummary']>(async (folderPath) => {
+      order.push(`summary:${folderPath ?? 'null'}`)
+      return {
+        status: folderPath ? { state: 'verified', backupId: 'b1', at: '2026-11-24T12:00:00.000Z' } : { state: 'none' },
+        verifiedCount: folderPath ? 2 : 0,
+        totalBytes: 4096,
+        reclaimableBytes: 1024,
+        reclaimableBackups: 1,
+        canPrune: true
+      }
+    })
+    const { ctx } = await makeContext({ safety: { recover: recoverSpy, backupSummary: summarySpy } })
+    const handlers = fixHandlers(ctx)
+
+    const pending = handlers['backup:summary'](undefined)
+    await new Promise((r) => setTimeout(r, 15))
+    expect(summarySpy).not.toHaveBeenCalled()
+
+    finish()
+    expect((await pending).status).toEqual({ state: 'none' })
+    expect(order).toEqual(['recovered', 'summary:null'])
+
+    await writeFile(
+      join(ctx.paths.stateDir, 'settings.json'),
+      JSON.stringify({ welcome: 'seen', folderPath: '/saved/The Sims 4' }),
+      'utf8'
+    )
+    await handlers['backup:summary'](undefined)
+    expect(summarySpy).toHaveBeenLastCalledWith('/saved/The Sims 4')
+
+    const scan = sampleScan()
+    ctx.session.scan = scan
+    await handlers['backup:summary'](undefined)
+    expect(summarySpy).toHaveBeenLastCalledWith(scan.folder.path)
+  })
+
+  it('backup:prune waits for startupRecovery(), refuses fifty-fifty-running, and serializes on oneAtATime(ctx)', async () => {
+    let finishRecovery!: () => void
+    let finishApply!: () => void
+    const order: string[] = []
+
+    const recoverSpy = vi.fn<Safety['recover']>(
+      () =>
+        new Promise((resolve) => {
+          finishRecovery = () => {
+            order.push('recovered')
+            resolve([])
+          }
+        })
+    )
+    const applySpy = vi.fn<Fixes['apply']>(
+      () =>
+        new Promise((resolve) => {
+          order.push('apply:start')
+          finishApply = () => {
+            order.push('apply:end')
+            resolve({ status: 'done', entry: sampleJournalEntry() })
+          }
+        })
+    )
+    const pruneSpy = vi.fn<Safety['pruneBackups']>(async (folderPath) => {
+      order.push(`prune:${folderPath ?? 'null'}`)
+      return {
+        status: 'done',
+        freedBytes: 1024,
+        removedBackups: 1,
+        summary: {
+          status: { state: 'verified', backupId: 'b2', at: '2026-11-24T12:10:00.000Z' },
+          verifiedCount: 2,
+          totalBytes: 2048,
+          reclaimableBytes: 0,
+          reclaimableBackups: 0,
+          canPrune: false
+        }
+      }
+    })
+
+    const { ctx } = await makeContext({
+      safety: { recover: recoverSpy, pruneBackups: pruneSpy },
+      fixes: { apply: applySpy }
+    })
+    const scan = sampleScan()
+    ctx.session.scan = scan
+    const handlers = fixHandlers(ctx)
+
+    // Queue fix:apply first, then backup:prune -> both wait on recovery, and prune waits on fix:apply!
+    const applyCall = handlers['fix:apply']({ via: 'finding', findingId: 'mods-off', fix: 'turn-mods-on' })
+    const pruneCall = handlers['backup:prune'](undefined)
+
+    await new Promise((r) => setTimeout(r, 15))
+    expect(applySpy).not.toHaveBeenCalled()
+    expect(pruneSpy).not.toHaveBeenCalled()
+
+    finishRecovery()
+    await new Promise((r) => setTimeout(r, 15))
+    expect(order).toEqual(['recovered', 'apply:start'])
+    expect(pruneSpy).not.toHaveBeenCalled()
+
+    finishApply()
+    await applyCall
+    const pruneRes = await pruneCall
+    expect(pruneRes.status).toBe('done')
+    expect(order).toEqual(['recovered', 'apply:start', 'apply:end', `prune:${scan.folder.path}`])
+
+    // Refuses when fiftyfifty.json is active or unreadable, allows when stopped
+    const stateFile = join(ctx.paths.stateDir, 'fiftyfifty.json')
+    for (const raw of [JSON.stringify({ phase: 'awaiting-answer' }), '{broken']) {
+      await writeFile(stateFile, raw, 'utf8')
+      expect(await handlers['backup:prune'](undefined)).toEqual({
+        status: 'refused',
+        why: 'fifty-fifty-running'
+      })
+    }
+
+    await writeFile(stateFile, JSON.stringify({ phase: 'stopped' }), 'utf8')
+    expect((await handlers['backup:prune'](undefined)).status).toBe('done')
+  })
+
+  it('sanitizes unexpected errors and status fields in backup:prune and backup:summary so raw errors or OS paths never leak', async () => {
+    const throwingPrune = await makeContext({
+      safety: {
+        async pruneBackups() {
+          throw new Error("EACCES: permission denied, unlink 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper\\backups'")
+        }
+      }
+    })
+    const pruneRes = await fixHandlers(throwingPrune.ctx)['backup:prune'](undefined)
+    expect(pruneRes).toEqual({
+      status: 'failed',
+      detail: 'Could not finish clearing old safety copies.'
+    })
+    expect(JSON.stringify(pruneRes)).not.toMatch(/Lila|AppData|EACCES|[A-Z]:\\|\//i)
+
+    // Throwing backupSummary returns safe unknown status without leaking paths
+    const throwingSummary = await makeContext({
+      safety: {
+        async backupSummary() {
+          throw new Error("EACCES: scandir 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper\\backups'")
+        }
+      }
+    })
+    const sumThrown = await fixHandlers(throwingSummary.ctx)['backup:summary'](undefined)
+    expect(sumThrown.status).toEqual({
+      state: 'unknown',
+      detail: 'We could not check your safety copy right now.'
+    })
+    expect(JSON.stringify(sumThrown)).not.toMatch(/Lila|AppData|EACCES|[A-Z]:\\|\//i)
+
+    // Path-bearing status.at or status.detail from safety.backupSummary is sanitized fail-closed
+    for (const badStatus of [
+      { state: 'verified' as const, backupId: 'b1', at: 'C:\\Users\\Lila\\Documents\\The Sims 4' },
+      { state: 'stale' as const, backupId: '../escape', at: '2026-11-24T12:00:00.000Z' },
+      { state: 'unknown' as const, detail: 'Failed reading C:\\Users\\Lila\\AppData\\manifest.json' }
+    ]) {
+      const { ctx } = await makeContext({
+        safety: {
+          async backupSummary() {
+            return {
+              status: badStatus,
+              verifiedCount: 1,
+              totalBytes: 512,
+              reclaimableBytes: 0,
+              reclaimableBackups: 0,
+              canPrune: false
+            }
+          }
+        }
+      })
+      const res = await fixHandlers(ctx)['backup:summary'](undefined)
+      expect(res.status).toEqual({
+        state: 'unknown',
+        detail: 'We could not check your safety copy right now.'
+      })
+      expect(JSON.stringify(res)).not.toMatch(/Lila|AppData|escape|[A-Z]:\\|\//i)
     }
   })
 })
