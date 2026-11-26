@@ -25,7 +25,9 @@ import { FiftyEntry } from '../fiftyfifty/FiftyEntry.tsx'
 import { useNav } from '../nav.tsx'
 import { useSession } from '../session.tsx'
 import { ChangesCard } from './ChangesCard.tsx'
+import { CoverageNotice } from './CoverageNotice.tsx'
 import { FindingCard } from './FindingCard.tsx'
+import { RecentErrorsCard } from './RecentErrorsCard.tsx'
 
 const SEVERITY_ORDER: readonly {
   severity: Severity
@@ -381,6 +383,8 @@ export function CheckUp() {
         </div>
       </Alert>
 
+      <CoverageNotice inventory={scan.inventory} />
+
       <ChangesCard changes={scan.changes} />
 
       {groupedFindings.map((group) => {
@@ -403,6 +407,8 @@ export function CheckUp() {
           </section>
         )
       })}
+
+      <RecentErrorsCard logs={scan.logs} />
 
       <div className="flex flex-col gap-3 pt-1">
         {oneSave && (
