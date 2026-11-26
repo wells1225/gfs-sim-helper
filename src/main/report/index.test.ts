@@ -327,6 +327,51 @@ describe('buildReport', () => {
     expect(readme).not.toContain('\r')
   })
 
+  it('caps long change lists, keeps line endings to \\n, and never lets a planned file replace Read me.txt', async () => {
+    const root = await makeTempDir()
+    const simsDir = join(root, 'The Sims 4')
+    await mkdir(simsDir, { recursive: true })
+    await writeFile(join(simsDir, 'READ ME.txt'), 'not the summary', 'utf8')
+
+    const base = sampleScan()
+    const added = Array.from({ length: 13 }, (_, i) => ({ groupId: `dir:m${i}`, label: `Mod ${i + 1}`, hasScript: false }))
+    const scan = sampleScan({
+      folder: { ...base.folder, path: simsDir },
+      inventory: { ...base.inventory, modsDir: join(simsDir, 'Mods'), curseForge: { status: 'not-found' } },
+      logs: [{ ...base.logs[0]!, file: 'READ ME.txt' }],
+      findings: [{ ...base.findings[0]!, detail: 'First line\r\nSecond line\rThird line' }],
+      changes: { sinceAt: '2026-11-20T10:00:00.000Z', gameVersion: null, added, updated: [], removed: [] }
+    })
+    const requests: WriteRequest[] = []
+    const gate: Gate = {
+      async run(request) {
+        requests.push(request)
+        return { status: 'done' }
+      }
+    }
+    const paths = appPaths({ localAppData: '/tmp/local', appData: '/tmp/roaming', desktopDir: '/tmp/desktop' })
+    const clock = { now: () => new Date(2026, 10, 24, 12, 0, 0) }
+
+    const { result } = await buildReport({ gate, paths, clock, redact: makeRedactor({ USERNAME: 'Lila' }) }, scan)
+    expect(result.status).toBe('saved')
+    if (result.status !== 'saved') return
+    expect(result.entries.filter((name) => name.toLowerCase() === 'read me.txt')).toEqual(['Read me.txt'])
+
+    const op = requests[0]!.ops[0]!
+    if (op.op !== 'write') throw new Error('expected a write')
+    const unzipped = unzipSync(op.data as Uint8Array)
+    expect(Object.keys(unzipped).filter((name) => name.toLowerCase() === 'read me.txt')).toEqual(['Read me.txt'])
+    const readme = strFromU8(unzipped['Read me.txt']!)
+
+    expect(readme.startsWith('Sims Helper report\n')).toBe(true)
+    expect(readme).not.toContain('not the summary')
+    expect(readme).toContain('Added 13 mods: Mod 1, Mod 2')
+    expect(readme).toContain('Mod 10, and 3 more')
+    expect(readme).not.toContain('Mod 11')
+    expect(readme).not.toContain('\r')
+    expect(readme).toContain('First line\nSecond line\nThird line')
+  })
+
   it('says so plainly when there are no findings and no logs', async () => {
     const scan = sampleScan({ findings: [], logs: [], game: null, changes: null })
     const requests: WriteRequest[] = []

@@ -176,7 +176,7 @@ export function buildReadme(scan: Scan): string {
     lines.push('- No Mods folder was found.')
   }
   const totalBytes = inv.files.reduce((sum, f) => sum + f.bytes, 0)
-  const scriptCount = inv.files.filter((f) => f.kind === 'script').length
+  const scriptCount = inv.groups.filter((g) => g.hasScript).length
   lines.push(`- Files: ${inv.files.length}`)
   lines.push(`- Mod groups: ${inv.groups.length}`)
   lines.push(`- Script mods: ${scriptCount}`)
@@ -250,7 +250,9 @@ export function buildReadme(scan: Scan): string {
   lines.push('')
   lines.push('Saves and Tray folders are never included in this report.')
 
-  return `${scrub(lines.join('\n')).replace(/[\u2013\u2014]/g, '-')}\n`
+  return `${scrub(lines.join('\n'))
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\u2013\u2014]/g, '-')}\n`
 }
 
 export function planReport(
