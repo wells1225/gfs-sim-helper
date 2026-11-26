@@ -762,4 +762,13 @@ describe('share saves contract (PR 14)', () => {
     expect(explicit).not.toHaveProperty('sims_helper_share_dir')
     expect(explicit['SIMS_HELPER_SHARE_DIR']).toBe('C:\\Temp\\Sims Helper Share')
   })
+
+  it('e2e launches keep ProgramW6432 in sync when ProgramFiles is overridden so Windows cmd.exe does not reset it', () => {
+    const env = launchEnv(
+      { ProgramFiles: 'C:\\Program Files', ProgramW6432: 'C:\\Program Files', PATH: '/bin' },
+      { ProgramFiles: 'C:\\Temp\\big\\Program Files' }
+    )
+    expect(env['ProgramFiles']).toBe('C:\\Temp\\big\\Program Files')
+    expect(env['ProgramW6432']).toBe('C:\\Temp\\big\\Program Files')
+  })
 })
