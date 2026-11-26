@@ -22,6 +22,11 @@ const MOD_COUNT = 64
 const BAD_MOD = 'Mod_42'
 /** One control round with every group set aside, then 64 → 32 → 16 → 8 → 4 → 2 → 1. */
 const EXPECTED_ANSWERS = 7
+/**
+ * The write gate runs tasklist about once per group it moves (183 calls in one run), and round 0 moves all 64,
+ * so one step can take well over 30 seconds on a Windows runner.
+ */
+const STEP_WAIT = 90_000
 /** Older than the fixture's thumbnail cache (2026-11-20), so no stale-cache finding fires. */
 const MOD_TIME = new Date('2026-11-15T12:00:00.000Z')
 
@@ -165,7 +170,7 @@ test.describe('live 50/50 test on Windows', () => {
       const answers: ('crashed' | 'worked')[] = []
 
       for (let guard = 0; guard <= EXPECTED_ANSWERS; guard += 1) {
-        await expect(tested.or(found).or(notice).first()).toBeVisible({ timeout: 30_000 })
+        await expect(tested.or(found).or(notice).first()).toBeVisible({ timeout: STEP_WAIT })
         if (await found.isVisible()) break
         if (!(await tested.isVisible())) {
           throw new Error(`The 50/50 test stopped with a notice: ${await notice.first().innerText()}`)
@@ -180,7 +185,7 @@ test.describe('live 50/50 test on Windows', () => {
         answers.push(crashed ? 'crashed' : 'worked')
       }
 
-      await expect(found).toBeVisible({ timeout: 30_000 })
+      await expect(found).toBeVisible({ timeout: STEP_WAIT })
       expect(answers).toHaveLength(EXPECTED_ANSWERS)
       // The control round runs with every mod set aside, so the game "worked"; the splits need both answers.
       expect(answers[0]).toBe('worked')
@@ -193,7 +198,7 @@ test.describe('live 50/50 test on Windows', () => {
       expect(existsSync(badFile)).toBe(false)
 
       await page.getByRole('button', { name: 'Put everything back' }).click()
-      await expect(page.getByRole('heading', { name: 'All done' })).toBeVisible({ timeout: 30_000 })
+      await expect(page.getByRole('heading', { name: 'All done' })).toBeVisible({ timeout: STEP_WAIT })
       await expect(page.getByText('All your mods are back in place.')).toBeVisible({ timeout: 15_000 })
 
       const fullAfter = await snapshotTree(simsDir)
