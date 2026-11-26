@@ -66,7 +66,17 @@ function cleanEnv(base: NodeJS.ProcessEnv, overrides: Record<string, string | un
 
 /** The environment for a launched app: updates are off and no host share dir leaks unless the caller says otherwise. */
 export function launchEnv(base: NodeJS.ProcessEnv, overrides: Record<string, string | undefined>): Record<string, string> {
-  return cleanEnv(base, { SIMS_HELPER_UPDATES: 'off', SIMS_HELPER_SHARE_DIR: undefined, ...overrides })
+  const effective: Record<string, string | undefined> = {
+    SIMS_HELPER_UPDATES: 'off',
+    SIMS_HELPER_SHARE_DIR: undefined,
+    ...overrides
+  }
+  const hasExplicitW6432 = Object.keys(overrides).some((k) => k.toLowerCase() === 'programw6432')
+  const programFilesEntry = Object.entries(overrides).find(([k]) => k.toLowerCase() === 'programfiles')
+  if (programFilesEntry && !hasExplicitW6432) {
+    effective['ProgramW6432'] = programFilesEntry[1]
+  }
+  return cleanEnv(base, effective)
 }
 
 export async function launchApp(options: LaunchAppOptions = {}): Promise<LaunchedApp> {

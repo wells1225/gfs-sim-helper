@@ -191,7 +191,7 @@ Illustrative example, modeled on [MTS1] and [BE1] (shown with real line breaks; 
 <sku>ea.maxis.sims4_64.15.pc</sku><createtime>2026-11-20 19:42:07</createtime>
 <buildsignature>Local.Unknown.Unknown.1.129.39.1030-1.200.000.999.Release</buildsignature>
 <categoryid>tunable.py:2138</categoryid><desyncid>0a1b2c3d4e5f60718293a4b5</desyncid>
-<systemconfig/><screenshot/><desyncdata>[cjiang] Caught exception loading reference. RefName: 136725 Manager: InstanceManager_interaction.
+<systemconfig/><screenshot/><desyncdata>[maxisdev] Caught exception loading reference. RefName: 136725 Manager: InstanceManager_interaction.
  TunableReference is set to a value that is not allowed by its class restriction. (ValueError: ...)
 Traceback (most recent call last):
   File "T:\InGame\Gameplay\Scripts\Core\sims4\tuning\instance_manager.py", line 433, in load_data_into_class_instances
@@ -210,7 +210,7 @@ How people read it to name a mod:
 | The path in a mod frame is whatever the mod author's computer had at compile time. It need not contain `.ts4script` or her Mods path. | I (Python behavior; verify on her logs) |
 | Tuning errors name a resource, not a file: `RefName: 136725 Manager: InstanceManager_interaction`. The number is a tuning instance ID. Finding which package holds or overrides that instance needs the package index (section 4). | S for the message [MTS1]; I for the lookup |
 | A traceback that runs from `instance_manager.py` into `xml\etree\ElementTree.py` and ends in `ParseError: mismatched tag: line N` means a tuning XML inside some package is itself broken. The log does not say which package. | S [MTS2] |
-| Bracketed tags such as `[cjiang]` are Maxis developer names, not mods. | I |
+| Bracketed tags such as `[maxisdev]` are Maxis developer names, not mods. | I |
 | Many errors are too generic to pin on a mod. "Sometimes, there is nothing anyone can do." Then the 50/50 method is the only way. | S [MCCC] |
 | An exception at load time often comes from an out-of-date mod that stops the others loading. Custom content can cause exceptions too, not only script mods. | S [MCCC] |
 
