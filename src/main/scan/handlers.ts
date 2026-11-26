@@ -123,6 +123,7 @@ export function scanHandlers(ctx: AppContext): Handlers<ScanChannel> {
     },
 
     async 'scan:run'(req) {
+      await ctx.startupRecovery()
       const folderPath: unknown = req?.folderPath
       const located = await runLocate(ctx)
       const folder =

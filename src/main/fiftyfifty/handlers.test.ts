@@ -126,4 +126,35 @@ describe('fiftyHandlers', () => {
       await rm(stateDir, { recursive: true, force: true })
     }
   })
+
+  it('waits for startupRecovery before starting a 50/50 test or reading state', async () => {
+    const events: string[] = []
+    let finishRecovery!: () => void
+    const ctx = {
+      session: { scan: sampleScan() },
+      startupRecovery: () =>
+        new Promise((resolve) => {
+          events.push('recovery:start')
+          finishRecovery = () => {
+            events.push('recovery:done')
+            resolve({ status: 'finished', touched: [] })
+          }
+        })
+    } as unknown as AppContext
+    const api: FiftyApi = {
+      ...recordingApi([]),
+      start: async () => {
+        events.push('fifty:start')
+        return OK
+      }
+    }
+    const h = makeFiftyHandlers(ctx, api)
+    const pending = h['fifty:start']()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(events).toEqual(['recovery:start'])
+
+    finishRecovery()
+    expect(await pending).toEqual(OK)
+    expect(events).toEqual(['recovery:start', 'recovery:done', 'fifty:start'])
+  })
 })

@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import type { Handlers } from '../../shared/ipc.ts'
 import type { DisabledGroup, FixCall, FixOutcome, StartupRecovery } from '../../shared/model.ts'
 import type { AppContext } from '../ports.ts'
+import { oneAtATime } from '../safety/lock.ts'
 import { disabledGroupOf } from './index.ts'
 
 export type FixChannel =
@@ -101,92 +102,104 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
       return ctx.safety.backupStatus(folderPath)
     },
 
-    async 'fix:apply'(call: FixCall) {
-      await recovery()
-      if (!isFixCall(call)) {
-        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-finding' } }
-      }
-      if (await isFiftyFiftyRunning(ctx.paths.stateDir)) {
-        return { status: 'refused', refusal: { why: 'fifty-fifty-running' } }
-      }
-
-      const scan = ctx.session.scan
-      if (!scan) {
-        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'no-scan' } }
-      }
-
-      if (call.via === 'finding') {
-        const finding = scan.findings.find((f) => f.id === call.findingId)
-        if (!finding) {
+    'fix:apply'(call: FixCall) {
+      return oneAtATime(ctx, async () => {
+        await recovery()
+        if (!isFixCall(call)) {
           return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-finding' } }
         }
-        const request = finding.fixes.find((r) => r.fix === call.fix)
-        if (!request) {
-          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-finding' } }
+        if (await isFiftyFiftyRunning(ctx.paths.stateDir)) {
+          return { status: 'refused', refusal: { why: 'fifty-fifty-running' } }
         }
-        return applyCalmly(() => ctx.fixes.apply(scan, request, (progress) => ctx.emit(progress)))
-      }
 
-      if (call.fix === 'disable-group') {
-        const hasGroup = scan.inventory.groups.some((g) => g.id === call.groupId)
-        if (!hasGroup) {
+        const scan = ctx.session.scan
+        if (!scan) {
+          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'no-scan' } }
+        }
+
+        if (call.via === 'finding') {
+          const finding = scan.findings.find((f) => f.id === call.findingId)
+          if (!finding) {
+            return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-finding' } }
+          }
+          const request = finding.fixes.find((r) => r.fix === call.fix)
+          if (!request) {
+            return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-finding' } }
+          }
+          return applyCalmly(() => ctx.fixes.apply(scan, request, (progress) => ctx.emit(progress)))
+        }
+
+        if (call.fix === 'disable-group') {
+          const hasGroup = scan.inventory.groups.some((g) => g.id === call.groupId)
+          if (!hasGroup) {
+            return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-group' } }
+          }
+          return applyCalmly(() =>
+            ctx.fixes.apply(scan, { fix: 'disable-group', groupId: call.groupId }, (progress) => ctx.emit(progress))
+          )
+        }
+
+        const inScan = scan.inventory.groups.some((g) => g.id === call.groupId)
+        const disabled = inScan ? [] : await ctx.fixes.disabledGroups(scan.folder.path)
+        if (!inScan && !disabled.some((d) => d.groupId === call.groupId)) {
           return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-group' } }
         }
-        return applyCalmly(() =>
-          ctx.fixes.apply(scan, { fix: 'disable-group', groupId: call.groupId }, (progress) => ctx.emit(progress))
+        return ctx.fixes.apply(
+          scan,
+          { fix: 'enable-group', groupId: call.groupId },
+          (progress) => ctx.emit(progress)
         )
-      }
-
-      const inScan = scan.inventory.groups.some((g) => g.id === call.groupId)
-      const disabled = inScan ? [] : await ctx.fixes.disabledGroups(scan.folder.path)
-      if (!inScan && !disabled.some((d) => d.groupId === call.groupId)) {
-        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'unknown-group' } }
-      }
-      return ctx.fixes.apply(
-        scan,
-        { fix: 'enable-group', groupId: call.groupId },
-        (progress) => ctx.emit(progress)
-      )
+      })
     },
 
     async 'journal:list'() {
       await recovery()
-      return ctx.safety.listJournal()
+      try {
+        return await ctx.safety.listJournal()
+      } catch {
+        throw new Error('Could not read history')
+      }
     },
 
     async 'journal:recovery'() {
       return recovery()
     },
 
-    async 'journal:undo'(req) {
-      await recovery()
-      if (await isFiftyFiftyRunning(ctx.paths.stateDir)) {
-        return { status: 'refused', refusal: { why: 'fifty-fifty-running' } }
-      }
-      if (!req || typeof req.entryId !== 'string' || req.entryId.length === 0) {
-        return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
-      }
-      return ctx.safety.undo(req.entryId, (progress) => ctx.emit(progress))
+    'journal:undo'(req) {
+      return oneAtATime(ctx, async () => {
+        await recovery()
+        if (await isFiftyFiftyRunning(ctx.paths.stateDir)) {
+          return { status: 'refused', refusal: { why: 'fifty-fifty-running' } }
+        }
+        if (!req || typeof req.entryId !== 'string' || req.entryId.length === 0) {
+          return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+        }
+        return ctx.safety.undo(req.entryId, (progress) => ctx.emit(progress))
+      })
     },
 
     async 'groups:disabled'() {
       await recovery()
-      const folderPath = ctx.session.scan?.folder.path ?? (await readSavedFolderPath(ctx.paths.stateDir))
-      if (folderPath) {
-        return ctx.fixes.disabledGroups(folderPath)
-      }
-      const journal = await ctx.safety.listJournal()
-      const seen = new Set<string>()
-      const result: DisabledGroup[] = []
-      for (const entry of journal) {
-        if (entry.action !== 'disable-group' || entry.status !== 'done' || entry.groupId === null) {
-          continue
+      try {
+        const folderPath = ctx.session.scan?.folder.path ?? (await readSavedFolderPath(ctx.paths.stateDir))
+        if (folderPath) {
+          return await ctx.fixes.disabledGroups(folderPath)
         }
-        if (seen.has(entry.groupId)) continue
-        seen.add(entry.groupId)
-        result.push(disabledGroupOf(entry, entry.groupId))
+        const journal = await ctx.safety.listJournal()
+        const seen = new Set<string>()
+        const result: DisabledGroup[] = []
+        for (const entry of journal) {
+          if (entry.action !== 'disable-group' || entry.status !== 'done' || entry.groupId === null) {
+            continue
+          }
+          if (seen.has(entry.groupId)) continue
+          seen.add(entry.groupId)
+          result.push(disabledGroupOf(entry, entry.groupId))
+        }
+        return result
+      } catch {
+        throw new Error('Could not read set-aside mods')
       }
-      return result
     }
   }
 }

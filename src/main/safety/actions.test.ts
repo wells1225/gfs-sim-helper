@@ -2068,4 +2068,18 @@ describe('listJournal', () => {
     if (first.status !== 'done' || second.status !== 'done') throw new Error('actions failed')
     expect((await listJournal(ws.deps)).map((e) => e.id)).toEqual([second.entry.id, first.entry.id])
   })
+
+  it('rejects without exposing the journal folder path when the folder cannot be read', async () => {
+    const ws = await makeWorkspace(TOOLS, 'clean')
+    await mkdir(dirname(ws.deps.paths.journalDir), { recursive: true })
+    await writeFile(ws.deps.paths.journalDir, 'not a folder', 'utf8')
+
+    const msg = await listJournal(ws.deps).then(
+      () => null,
+      (err: unknown) => (err instanceof Error ? err.message : String(err))
+    )
+    expect(msg).not.toBeNull()
+    expect(msg!).not.toContain(ws.deps.paths.journalDir)
+    expect(msg!).not.toMatch(/[A-Z]:\\|\/|ENOTDIR/i)
+  })
 })

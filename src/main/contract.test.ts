@@ -1,11 +1,12 @@
 // @vitest-environment node
 import { execFile } from 'node:child_process'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import type { Page } from '@playwright/test'
 import { afterAll, describe, expect, it } from 'vitest'
-import { readFile, rm } from 'node:fs/promises'
 import { INVOKE_CHANNELS, type Handlers, type IpcInvoke } from '../shared/ipc.ts'
 import type {
   ActionKind,
@@ -26,7 +27,7 @@ import type {
   UpdateInstall,
   UpdateState
 } from '../shared/model.ts'
-import { sampleFiftyFifty, sampleJournalEntry, sampleShareView } from '../shared/testing/sample.ts'
+import { sampleFiftyFifty, sampleJournalEntry, sampleScan, sampleShareView } from '../shared/testing/sample.ts'
 import { appPaths } from './app-paths.ts'
 import { assistHandlers } from './assist/handlers.ts'
 import { fiftyHandlers } from './fiftyfifty/handlers.ts'
@@ -770,5 +771,169 @@ describe('share saves contract (PR 14)', () => {
     )
     expect(env['ProgramFiles']).toBe('C:\\Temp\\big\\Program Files')
     expect(env['ProgramW6432']).toBe('C:\\Temp\\big\\Program Files')
+  })
+})
+
+describe('stage review integration invariants', () => {
+  it('main/index.ts awaits startupRecovery before creating the window', async () => {
+    const src = await readFile(join(REPO_ROOT, 'src/main/index.ts'), 'utf8')
+    expect(src).not.toMatch(/void\s+ctx\.startupRecovery\(\)/)
+    const awaitAt = src.indexOf('await ctx.startupRecovery()')
+    const createAt = src.indexOf('mainWindow = createWindow()')
+    expect(awaitAt).toBeGreaterThan(-1)
+    expect(createAt).toBeGreaterThan(awaitAt)
+  })
+
+  it('registerIpc never leaks raw OS paths or usernames when a handler rejects', async () => {
+    const ctx = createContext({
+      host: makeFakeHost(),
+      paths: appPaths({
+        localAppData: '/fake/LocalAppData',
+        appData: '/fake/Roaming',
+        desktopDir: '/fake/Desktop',
+        env: {}
+      }),
+      safeStorage: {
+        isEncryptionAvailable: () => false,
+        encryptString: (text) => Buffer.from(text, 'utf8'),
+        decryptString: (data) => Buffer.from(data).toString('utf8')
+      },
+      emit: () => {},
+      reveal: () => {}
+    })
+    const registered = new Map<string, (event: IpcMainInvokeEvent, req: unknown) => Promise<unknown>>()
+    const base = collectHandlers(ctx)
+    const fakeHandlers: Handlers<keyof IpcInvoke> = {
+      ...base,
+      'journal:list': async () => {
+        throw Object.assign(
+          new Error("EACCES: permission denied, scandir 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper\\journal'"),
+          { code: 'EACCES', path: 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper\\journal' }
+        )
+      },
+      'settings:get': async () => {
+        throw new Error('Could not read C:\\Users\\Lila\\Documents\\file.txt')
+      }
+    }
+    registerIpc(
+      {
+        handle(channel, fn) {
+          registered.set(channel, fn as (event: IpcMainInvokeEvent, req: unknown) => Promise<unknown>)
+        }
+      },
+      ctx,
+      () => true,
+      fakeHandlers
+    )
+
+    const ev = {} as IpcMainInvokeEvent
+    const journalMsg = await registered.get('journal:list')!(ev, undefined).then(
+      () => null,
+      (err: unknown) => (err instanceof Error ? err.message : String(err))
+    )
+    expect(journalMsg).not.toBeNull()
+    expect(journalMsg!).not.toMatch(/Lila|AppData|EACCES|[A-Z]:\\/i)
+
+    const settingsMsg = await registered.get('settings:get')!(ev, undefined).then(
+      () => null,
+      (err: unknown) => (err instanceof Error ? err.message : String(err))
+    )
+    expect(settingsMsg).not.toBeNull()
+    expect(settingsMsg!).not.toContain('Lila')
+  })
+
+  it('fix:apply and fifty:start never overlap: fifty:start sees a group whose disable just finished, and a fix after fifty:start is refused', async () => {
+    const tempRoot = await mkdtemp(join(tmpdir(), 'sims-stage-race-'))
+    try {
+      const paths = appPaths({
+        localAppData: join(tempRoot, 'LocalAppData'),
+        appData: join(tempRoot, 'Roaming'),
+        desktopDir: join(tempRoot, 'Desktop'),
+        env: {}
+      })
+      await mkdir(paths.stateDir, { recursive: true })
+
+      const disabled: DisabledGroup[] = []
+      let releaseFix!: () => void
+      let markFixStarted!: () => void
+      const waitFixStarted = new Promise<void>((resolve) => {
+        markFixStarted = resolve
+      })
+
+      const baseCtx = createContext({
+        host: makeFakeHost(),
+        paths,
+        safeStorage: {
+          isEncryptionAvailable: () => false,
+          encryptString: (text) => Buffer.from(text, 'utf8'),
+          decryptString: (data) => Buffer.from(data).toString('utf8')
+        },
+        emit: () => {},
+        reveal: () => {}
+      })
+
+      const ctx = {
+        ...baseCtx,
+        startupRecovery: async (): Promise<StartupRecovery> => ({ status: 'finished', touched: [] }),
+        gate: {
+          async run(request: Parameters<typeof baseCtx.gate.run>[0]) {
+            for (const op of request.ops) {
+              if (op.op === 'mkdir') await mkdir(op.path, { recursive: true })
+              else if (op.op === 'write') {
+                await mkdir(dirname(op.path), { recursive: true })
+                await writeFile(op.path, op.data)
+              }
+            }
+            return { status: 'done' as const }
+          }
+        },
+        fixes: {
+          ...baseCtx.fixes,
+          async disabledGroups() {
+            return [...disabled]
+          },
+          async apply(_scan: ReturnType<typeof sampleScan>, request: Parameters<typeof baseCtx.fixes.apply>[1]) {
+            if (request.fix === 'disable-group') {
+              markFixStarted()
+              await new Promise<void>((resolve) => {
+                releaseFix = resolve
+              })
+              disabled.push({
+                groupId: request.groupId,
+                label: 'Hair',
+                entryId: 'e-hair',
+                at: '2026-11-25T12:00:00.000Z',
+                origin: 'fix'
+              })
+            }
+            return { status: 'done' as const, entry: sampleJournalEntry({ groupId: 'dir:hair' }) }
+          }
+        }
+      }
+
+      ctx.session.scan = sampleScan()
+      const fixH = fixHandlers(ctx)
+      const fiftyH = fiftyHandlers(ctx)
+
+      const fixPromise = fixH['fix:apply']({ via: 'group', fix: 'disable-group', groupId: 'dir:hair' })
+      await waitFixStarted
+      const startPromise = fiftyH['fifty:start']()
+      await new Promise((r) => setTimeout(r, 20))
+      releaseFix()
+
+      const [fixRes, startRes] = await Promise.all([fixPromise, startPromise])
+      expect(fixRes.status).toBe('done')
+      expect(startRes.status).toBe('ok')
+      if (startRes.status === 'ok') {
+        expect(startRes.state).not.toBeNull()
+        expect(startRes.state!.groups.map((g) => g.id)).not.toContain('dir:hair')
+      }
+
+      // Now fiftyfifty.json is active: a fix must be refused.
+      const afterStart = await fixH['fix:apply']({ via: 'finding', findingId: 'mods-off', fix: 'turn-mods-on' })
+      expect(afterStart).toEqual({ status: 'refused', refusal: { why: 'fifty-fifty-running' } })
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true })
+    }
   })
 })

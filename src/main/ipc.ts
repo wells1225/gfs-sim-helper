@@ -103,6 +103,14 @@ export const CHANGING_CHANNELS = {
   'share:find-send': false
 } as const satisfies Record<keyof IpcInvoke, boolean>
 
+function sanitizeIpcError(err: unknown, redact?: (text: string) => string): Error {
+  if (err && typeof err === 'object' && 'path' in err && typeof (err as { path?: unknown }).path === 'string') {
+    return new Error('A file operation failed')
+  }
+  const raw = err instanceof Error ? err.message : String(err)
+  return new Error(redact ? redact(raw) : raw)
+}
+
 /** `handlers` is for tests; the app registers collectHandlers(ctx). */
 export function registerIpc(
   ipcMain: IpcMainLike,
@@ -116,10 +124,11 @@ export function registerIpc(
       if (!isAppWindow(event)) {
         throw new Error(`IPC call rejected on channel ${channel}: untrusted sender`)
       }
-      if (!CHANGING_CHANNELS[channel]) return await handler(req)
-      const letGo = ctx.holdBusy?.()
+      const letGo = CHANGING_CHANNELS[channel] ? ctx.holdBusy?.() : undefined
       try {
         return await handler(req)
+      } catch (err) {
+        throw sanitizeIpcError(err, ctx.redact)
       } finally {
         letGo?.()
       }
