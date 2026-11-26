@@ -1,0 +1,147 @@
+name: release
+
+# A v* tag builds the installer and leaves a DRAFT release. It never publishes: Tyler opens the draft on GitHub
+# and clicks Publish release, and that click is the moment a version reaches Lila's PC.
+# No stored secret: only the built-in token. Only the publish job can write, and it runs no repo code and no npm.
+# (docs/research/fable-auto-update.md, sections 2 and 3)
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FEED_PORT: '47613'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: The tag must be "v" + the plain package.json version
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          V=$(node -p "require('./package.json').version")
+          echo "$V" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || { echo "version $V is not a plain x.y.z"; exit 1; }
+          [ "$TAG" = "v$V" ] || { echo "tag $TAG does not match package.json version $V"; exit 1; }
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Generate test fixtures
+        run: npm run fixtures
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build the installer
+        run: npm run dist:win
+
+      - name: Stage the installer under the name latest.yml gives, checking its SHA-512
+        run: node scripts/release/stage.ts --dist dist --out staged --version ${{ env.VERSION }}
+
+      - name: Find the newest published release
+        id: last
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The release GitHub marks as latest: never a draft or a pre-release, the one installed copies see.
+          # Only "release not found" means there is none yet; any other error fails, so the proof is never skipped by mistake.
+          if tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>err.txt); then
+            [ -n "$tag" ] || { echo "gh gave no tag for the latest release"; exit 1; }
+            echo "Newest published release: $tag"
+          elif grep -q 'release not found' err.txt; then
+            tag=''
+            echo "No published release yet: the update proof is skipped for this first one."
+          else
+            cat err.txt; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download and install the newest published release
+        if: steps.last.outputs.tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LAST_TAG: ${{ steps.last.outputs.tag }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          gh release download $env:LAST_TAG --repo $env:GITHUB_REPOSITORY --pattern 'Sims-Helper-Setup-*.exe' --dir last-release
+          if ($LASTEXITCODE -ne 0) { throw "Could not download the installer of $env:LAST_TAG" }
+          $installer = @(Get-ChildItem last-release -Filter '*.exe')
+          if ($installer.Count -ne 1) { throw "Expected one installer in $env:LAST_TAG, found $($installer.Count)" }
+          $proc = Start-Process -FilePath $installer[0].FullName -ArgumentList '/S' -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "Silent install of $env:LAST_TAG failed with exit code $($proc.ExitCode)" }
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\Sims Helper'
+          "SIMS_HELPER_EXE=$(Join-Path $installDir 'Sims Helper.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "APP_UPDATE_YML=$(Join-Path $installDir 'resources\app-update.yml')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Point the runner's installed copy at this build (checks it names the GitHub repo first)
+        if: steps.last.outputs.tag != ''
+        run: node scripts/release/point-feed.ts --app-update "${{ env.APP_UPDATE_YML }}" --port ${{ env.FEED_PORT }}
+
+      - name: Prove the newest published release updates itself to this build
+        if: steps.last.outputs.tag != ''
+        env:
+          SIMS_HELPER_UPDATE_FEED_DIR: ${{ github.workspace }}\staged
+          SIMS_HELPER_UPDATE_FEED_PORT: ${{ env.FEED_PORT }}
+        run: npx playwright test test/e2e/live/pr-13-update.spec.ts --project=live --reporter=list
+
+      - name: Upload the staged release files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: staged
+          path: staged/
+          if-no-files-found: error
+
+  publish:
+    # Holds the only write token. No checkout and no npm: it downloads the build's files and leaves a draft.
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download the staged release files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: staged
+          path: staged
+
+      - name: Leave a draft release (Tyler publishes it)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ls -l staged
+          gh release create "$TAG" staged/* --draft --verify-tag --title "Sims Helper ${TAG#v}" \
+            --notes "Built from $TAG. Open this draft and click Publish release to ship it."

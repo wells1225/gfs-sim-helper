@@ -1,0 +1,108 @@
+name: pr-13-update
+
+# The update proof on real Windows: install version A, serve version B from a local feed, and show that A updates
+# itself to B through the real updater and the real installer, and that a tampered B is refused.
+# Nothing here publishes or talks to GitHub Releases.
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/update/**'
+      - 'src/main/index.ts'
+      - 'src/main/services.ts'
+      - 'src/renderer/update/**'
+      - 'scripts/release/**'
+      - 'electron-builder.yml'
+      - 'build/installer.nsh'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'test/e2e/live/pr-13-update.spec.ts'
+      - 'test/e2e/support/**'
+      - '.github/workflows/pr-13-update.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-13-update-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FEED_PORT: '47613'
+
+jobs:
+  update-proof:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build installer A
+        run: npm run dist:win
+
+      - name: Build installer B (the same app, patch version + 1)
+        shell: bash
+        run: |
+          set -euo pipefail
+          A=$(node -p "require('./package.json').version")
+          B=$(node -p "const [x, y, z] = require('./package.json').version.split('.').map(Number); [x, y, z + 1].join('.')")
+          npx electron-builder --win nsis --x64 --publish never "-c.extraMetadata.version=$B" "-c.directories.output=dist-next"
+          echo "VERSION_A=$A" >> "$GITHUB_ENV"
+          echo "VERSION_B=$B" >> "$GITHUB_ENV"
+          echo "A=$A B=$B"; echo "dist-next/latest.yml:"; cat dist-next/latest.yml
+
+      - name: Check A's update files and stage B as a feed
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f dist/latest.yml || { ls dist; echo "dist/latest.yml was not written"; exit 1; }
+          node scripts/release/stage.ts --dist dist --out staged-a --version "$VERSION_A"
+          node scripts/release/stage.ts --dist dist-next --out feed --version "$VERSION_B"
+          ls -l feed
+
+      - name: Install A silently
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path (Resolve-Path dist) "Sims Helper Setup $env:VERSION_A.exe"
+          $proc = Start-Process -FilePath $installer -ArgumentList '/S' -Wait -PassThru
+          if ($proc.ExitCode -ne 0) { throw "Silent install of A failed with exit code $($proc.ExitCode)" }
+          $installDir = Join-Path $env:LOCALAPPDATA 'Programs\Sims Helper'
+          $exe = Join-Path $installDir 'Sims Helper.exe'
+          if (-not (Test-Path $exe)) { throw "Installed executable not found at: $exe" }
+          Write-Host "A installed at $installDir, exe version $((Get-Item $exe).VersionInfo.ProductVersion)"
+          "SIMS_HELPER_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "APP_UPDATE_YML=$(Join-Path $installDir 'resources\app-update.yml')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Point the runner's installed A at the local feed (checks it names the GitHub repo first)
+        run: node scripts/release/point-feed.ts --app-update "${{ env.APP_UPDATE_YML }}" --port ${{ env.FEED_PORT }}
+
+      - name: Prove A updates itself to B, and refuses a tampered B
+        env:
+          SIMS_HELPER_UPDATE_FEED_DIR: ${{ github.workspace }}\feed
+          SIMS_HELPER_UPDATE_FEED_PORT: ${{ env.FEED_PORT }}
+        run: npx playwright test test/e2e/live/pr-13-update.spec.ts --project=live --reporter=list
+
+      - name: Upload the feed manifests
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-13-update-manifests
+          path: |
+            dist/latest.yml
+            dist-next/latest.yml
+            feed/latest.yml
+          if-no-files-found: warn
