@@ -478,6 +478,9 @@ export async function recordScanSnapshot(
   opts?: RecordScanSnapshotOptions
 ): Promise<ScanChanges | null> {
   try {
+    if (scan.inventory.skipped.length > 0 || scan.inventory.modsDirState === 'missing') {
+      return null
+    }
     const next = buildScanSnapshot(scan, opts?.redact)
     const prev = await readScanSnapshot(stateDir, next.folderHash)
     if (prev !== null) {

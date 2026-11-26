@@ -754,4 +754,69 @@ describe('scan snapshot persistence and diff', () => {
       ]
     })
   })
+
+  it('skips diffing and preserves the prior baseline when a scan skips unreadable entries or Mods is missing', async () => {
+    const { simsDir, modsDir, stateDir, ctx, gateRequests } = await makeEnv()
+    const expectedHash = folderFingerprint(simsDir)
+
+    const modA = makeModGroup({ id: 'dir:moda', label: 'Mod A' })
+    const modB = makeModGroup({ id: 'dir:modb', label: 'Mod B' })
+
+    const scan1 = sampleScan({
+      at: '2026-11-20T12:00:00.000Z',
+      folder: { path: simsDir, inOneDrive: false, newestFileAt: new Date('2026-11-20T11:00:00.000Z') },
+      inventory: makeInventory(modsDir, [modA, modB])
+    })
+
+    expect(await recordScanSnapshot(ctx.gate, stateDir, scan1)).toBeNull()
+    expect(gateRequests).toHaveLength(1)
+    gateRequests.length = 0
+
+    // Partial check-up where Mod B's folder could not be read: must not report fake removals or overwrite baseline.
+    const partialScan = sampleScan({
+      at: '2026-11-21T12:00:00.000Z',
+      folder: { path: simsDir, inOneDrive: false, newestFileAt: new Date('2026-11-21T11:00:00.000Z') },
+      inventory: {
+        ...makeInventory(modsDir, [modA]),
+        skipped: [{ relPath: 'ModB', detail: 'EACCES: permission denied' }]
+      }
+    })
+
+    expect(await recordScanSnapshot(ctx.gate, stateDir, partialScan)).toBeNull()
+    expect(gateRequests).toHaveLength(0)
+
+    const afterPartial = await readScanSnapshot(stateDir, expectedHash)
+    expect(afterPartial?.at).toBe('2026-11-20T12:00:00.000Z')
+    expect(afterPartial?.groups).toHaveLength(2)
+
+    // Missing Mods folder also preserves the prior baseline instead of reporting every mod removed.
+    const missingModsScan = sampleScan({
+      at: '2026-11-22T12:00:00.000Z',
+      folder: { path: simsDir, inOneDrive: false, newestFileAt: new Date('2026-11-22T11:00:00.000Z') },
+      inventory: {
+        ...makeInventory(modsDir, []),
+        modsDirState: 'missing'
+      }
+    })
+
+    expect(await recordScanSnapshot(ctx.gate, stateDir, missingModsScan)).toBeNull()
+    expect(gateRequests).toHaveLength(0)
+
+    // Next complete scan with both mods intact reports zero false additions or removals.
+    const scan3 = sampleScan({
+      at: '2026-11-23T12:00:00.000Z',
+      folder: { path: simsDir, inOneDrive: false, newestFileAt: new Date('2026-11-23T11:00:00.000Z') },
+      inventory: makeInventory(modsDir, [modA, modB])
+    })
+
+    const changes = await recordScanSnapshot(ctx.gate, stateDir, scan3)
+    expect(changes).toEqual({
+      sinceAt: '2026-11-20T12:00:00.000Z',
+      gameVersion: null,
+      added: [],
+      updated: [],
+      removed: []
+    })
+    expect(gateRequests).toHaveLength(1)
+  })
 })

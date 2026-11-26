@@ -396,6 +396,178 @@ describe('buildReport', () => {
     expect(readme.toLowerCase()).not.toContain('lila')
   })
 
+  it('redacts usernames and emails inside changed mod labels, findings, and log names with Windows-safe zip entries and intact headings', async () => {
+    const root = await makeTempDir()
+    const simsDir = join(root, 'The Sims 4')
+    await mkdir(simsDir, { recursive: true })
+    await writeFile(join(simsDir, 'Lila_lastException.txt'), '<root>from C:\\Users\\Lila\\Mods</root>', 'utf8')
+
+    const base = sampleScan()
+    const scan = sampleScan({
+      folder: { ...base.folder, path: simsDir },
+      inventory: { ...base.inventory, modsDir: join(simsDir, 'Mods'), curseForge: { status: 'not-found' } },
+      findings: [
+        {
+          ...base.findings[0]!,
+          title: 'Your last exception mentions Lila.private',
+          detail: 'Check Custom by Lila (lila.sims@example.com) before playing.',
+          evidence: ['Mods/Lila.private.package', 'Custom by Lila_CC_Pack']
+        }
+      ],
+      logs: [{ ...base.logs[0]!, file: 'Lila_lastException.txt' }],
+      changes: {
+        sinceAt: '2026-11-20T10:00:00.000Z',
+        gameVersion: null,
+        added: [{ groupId: 'file:lila.private.package', label: 'Lila.private', hasScript: false }],
+        updated: [
+          { groupId: 'dir:custom by lila', label: 'Custom by Lila (lila.sims@example.com)', hasScript: true }
+        ],
+        removed: []
+      }
+    })
+
+    const requests: WriteRequest[] = []
+    const gate: Gate = {
+      async run(request) {
+        requests.push(request)
+        return { status: 'done' }
+      }
+    }
+    const paths = appPaths({ localAppData: '/tmp/local', appData: '/tmp/roaming', desktopDir: '/tmp/desktop' })
+    const clock = { now: () => new Date(2026, 10, 24, 12, 0, 0) }
+    const redact = makeRedactor({ USERNAME: 'Lila', USERPROFILE: 'C:\\Users\\Lila' })
+
+    const { result } = await buildReport({ gate, paths, clock, redact }, scan)
+    expect(result.status).toBe('saved')
+
+    const op = requests[0]!.ops[0]!
+    if (op.op !== 'write') throw new Error('expected a write')
+    const unzipped = unzipSync(op.data as Uint8Array)
+    const entryNames = Object.keys(unzipped)
+    expect(entryNames).toContain('user_lastException.txt')
+    for (const name of entryNames) {
+      expect(name.toLowerCase()).not.toContain('lila')
+      expect(name).not.toMatch(/[<>:"|?*]/)
+    }
+
+    const readme = strFromU8(unzipped['Read me.txt']!)
+    const scanJson = strFromU8(unzipped['scan.json']!)
+
+    expect(readme).toContain('Added 1 mod: <user>.private')
+    expect(readme).toContain('Updated 1 mod: Custom by <user> (<email>)')
+    expect(readme).toContain('user_lastException.txt')
+    expect(readme.toLowerCase()).not.toContain('lila')
+    expect(readme).not.toContain('lila.sims@example.com')
+
+    expect(scanJson.toLowerCase()).not.toContain('lila')
+    expect(scanJson).not.toContain('lila.sims@example.com')
+
+    // Fixed headings stay intact even when the Windows username matches a word in the heading.
+    requests.length = 0
+    const simsRedact = makeRedactor({ USERNAME: 'Sims', USERPROFILE: 'C:\\Users\\Sims' })
+    const simsRes = await buildReport({ gate, paths, clock, redact: simsRedact }, scan)
+    expect(simsRes.result.status).toBe('saved')
+    const simsOp = requests[0]!.ops[0]!
+    if (simsOp.op !== 'write') throw new Error('expected a write')
+    const simsReadme = strFromU8(unzipSync(simsOp.data as Uint8Array)['Read me.txt']!)
+    expect(simsReadme.startsWith('Sims Helper report\n')).toBe(true)
+  })
+
+  it('keeps both logs when redaction maps two distinct log filenames to the same Windows-safe name', async () => {
+    const root = await makeTempDir()
+    const simsDir = join(root, 'The Sims 4')
+    await mkdir(simsDir, { recursive: true })
+    await writeFile(join(simsDir, 'lastException_Lila.txt'), '<root>first-log C:\\Users\\Lila\\Mods\\a.py</root>', 'utf8')
+    await writeFile(join(simsDir, 'lastException_user.txt'), '<root>second-log-literal-user</root>', 'utf8')
+
+    const base = sampleScan()
+    const scan = sampleScan({
+      folder: { ...base.folder, path: simsDir },
+      inventory: { ...base.inventory, modsDir: join(simsDir, 'Mods'), curseForge: { status: 'not-found' } },
+      logs: [
+        { ...base.logs[0]!, file: 'lastException_Lila.txt' },
+        { ...base.logs[0]!, file: 'lastException_user.txt' }
+      ]
+    })
+
+    const requests: WriteRequest[] = []
+    const gate: Gate = {
+      async run(request) {
+        requests.push(request)
+        return { status: 'done' }
+      }
+    }
+    const paths = appPaths({ localAppData: '/tmp/local', appData: '/tmp/roaming', desktopDir: '/tmp/desktop' })
+    const clock = { now: () => new Date(2026, 10, 24, 12, 0, 0) }
+    const redact = makeRedactor({ USERNAME: 'Lila', USERPROFILE: 'C:\\Users\\Lila' })
+
+    const { result } = await buildReport({ gate, paths, clock, redact }, scan)
+    expect(result.status).toBe('saved')
+
+    const op = requests[0]!.ops[0]!
+    if (op.op !== 'write') throw new Error('expected a write')
+    const unzipped = unzipSync(op.data as Uint8Array)
+    expect(unzipped['lastException_user.txt']).toBeDefined()
+    expect(unzipped['lastException_user (2).txt']).toBeDefined()
+    expect(strFromU8(unzipped['lastException_user.txt']!)).toContain('first-log C:\\Users\\<user>\\Mods\\a.py')
+    expect(strFromU8(unzipped['lastException_user.txt']!).toLowerCase()).not.toContain('lila')
+    expect(strFromU8(unzipped['lastException_user (2).txt']!)).toContain('second-log-literal-user')
+    const readme = strFromU8(unzipped['Read me.txt']!)
+    expect(readme).toContain('- lastException_user.txt (')
+    expect(readme).toContain('- lastException_user (2).txt (')
+  })
+
+  it('matches planned ZIP paths in Read me.txt for nested colliding logs across folders', async () => {
+    const root = await makeTempDir()
+    const simsDir = join(root, 'The Sims 4')
+    await Promise.all([
+      mkdir(join(simsDir, 'Mods', 'Other'), { recursive: true }),
+      mkdir(join(simsDir, 'Mods', 'Lila'), { recursive: true }),
+      mkdir(join(simsDir, 'Mods', 'user'), { recursive: true })
+    ])
+    await writeFile(join(simsDir, 'Mods', 'Other', 'mc_lastexception.html'), 'other-log', 'utf8')
+    await writeFile(join(simsDir, 'Mods', 'Lila', 'mc_lastexception.html'), 'lila-log', 'utf8')
+    await writeFile(join(simsDir, 'Mods', 'user', 'mc_lastexception.html'), 'user-log', 'utf8')
+
+    const base = sampleScan()
+    const scan = sampleScan({
+      folder: { ...base.folder, path: simsDir },
+      inventory: { ...base.inventory, modsDir: join(simsDir, 'Mods'), curseForge: { status: 'not-found' } },
+      logs: [
+        { ...base.logs[0]!, kind: 'mccc', file: 'Mods/Other/mc_lastexception.html' },
+        { ...base.logs[0]!, kind: 'mccc', file: 'Mods/Lila/mc_lastexception.html' },
+        { ...base.logs[0]!, kind: 'mccc', file: 'Mods/user/mc_lastexception.html' }
+      ]
+    })
+
+    const requests: WriteRequest[] = []
+    const gate: Gate = {
+      async run(request) {
+        requests.push(request)
+        return { status: 'done' }
+      }
+    }
+    const paths = appPaths({ localAppData: '/tmp/local', appData: '/tmp/roaming', desktopDir: '/tmp/desktop' })
+    const clock = { now: () => new Date(2026, 10, 24, 12, 0, 0) }
+    const redact = makeRedactor({ USERNAME: 'Lila', USERPROFILE: 'C:\\Users\\Lila' })
+
+    const { result } = await buildReport({ gate, paths, clock, redact }, scan)
+    expect(result.status).toBe('saved')
+
+    const op = requests[0]!.ops[0]!
+    if (op.op !== 'write') throw new Error('expected a write')
+    const unzipped = unzipSync(op.data as Uint8Array)
+    expect(unzipped['Mods/Other/mc_lastexception.html']).toBeDefined()
+    expect(unzipped['Mods/user/mc_lastexception.html']).toBeDefined()
+    expect(unzipped['Mods/user/mc_lastexception (2).html']).toBeDefined()
+
+    const readme = strFromU8(unzipped['Read me.txt']!)
+    expect(readme).toContain('- Mods/Other/mc_lastexception.html (')
+    expect(readme).toContain('- Mods/user/mc_lastexception.html (')
+    expect(readme).toContain('- Mods/user/mc_lastexception (2).html (')
+    expect(readme).not.toContain('(3)')
+  })
+
   it('returns write-refused when the gate refuses', async () => {
     const scan = sampleScan()
     const gate: Gate = {
