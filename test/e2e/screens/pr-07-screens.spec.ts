@@ -127,6 +127,17 @@ test('captures light and dark screenshots of all PR 7 read-only screens', async 
     await expect(page.getByText(/mods folder looks healthy/i)).toBeVisible()
     await shoot(page, SLUG, 'check-up-all-clear')
 
+    // 7b. Check-up (one save or lot): the report comes first, the 50/50 test stays below
+    await stubIpc(app, {
+      'settings:get': { welcome: 'seen', folderPath: scan.folder.path },
+      'scan:run': { status: 'done', scan: sampleScan({ symptom: 'one-save-or-lot', findings: [] }) }
+    })
+    await page.getByRole('button', { name: /one save or lot is broken/i }).click()
+    await expect(page.getByText('When the trouble is in one save or lot')).toBeVisible()
+    await expect(page.getByText(/brand new test household/)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Send to Tyler' })).toBeVisible()
+    await shoot(page, SLUG, 'check-up-one-save')
+
     // 8. About
     await page.getByRole('button', { name: 'About' }).click()
     await expect(page.getByText('Built by Tyler, for Lila.')).toBeVisible()

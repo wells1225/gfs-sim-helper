@@ -12,7 +12,7 @@ import {
   type LucideIcon
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
-import type { Finding, Progress, Severity } from '../../shared/model.ts'
+import type { Finding, Progress, Severity, Symptom } from '../../shared/model.ts'
 import { useApi } from '../api.tsx'
 import { AskEntry } from '../assist/AskEntry.tsx'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../components/ui/accordion.tsx'
@@ -79,7 +79,24 @@ function progressValue(progress: Progress | null): number | null {
   return 95
 }
 
-function verdictSummary(findings: Finding[]): {
+/** The all-clear subtext, fitted to what she said happened. */
+function healthySubtext(symptom: Symptom): string {
+  if (symptom === 'wont-load') {
+    return 'If your game still will not open, a recent game update may be the reason. You can try Repair in the EA app, or send a report to Tyler so he can take a closer look.'
+  }
+  if (symptom === 'freezes') {
+    return 'If your game still freezes or gets stuck, you can try the 50/50 test or send a report to Tyler so he can take a closer look.'
+  }
+  if (symptom === 'one-save-or-lot') {
+    return 'If one save or lot still has trouble, sending a report to Tyler is the easiest next step so he can take a closer look.'
+  }
+  return 'If your game is still crashing, you can try the 50/50 test or send a report to Tyler so he can take a closer look.'
+}
+
+function verdictSummary(
+  findings: Finding[],
+  symptom: Symptom
+): {
   variant: 'destructive' | 'warn' | 'info' | 'ok'
   icon: LucideIcon
   headline: string
@@ -122,8 +139,7 @@ function verdictSummary(findings: Finding[]): {
     variant: 'ok',
     icon: CheckCircle2,
     headline: "Your mods folder looks healthy. We didn't spot any obvious problems.",
-    subtext:
-      'If your game is still crashing, you can try the 50/50 test or send a report to Tyler so he can take a closer look.'
+    subtext: healthySubtext(symptom)
   }
 }
 
@@ -298,12 +314,14 @@ export function CheckUp() {
     )
   }
 
-  const verdict = verdictSummary(scan.findings)
+  const verdict = verdictSummary(scan.findings, scan.symptom)
+  const oneSave = scan.symptom === 'one-save-or-lot'
   const VerdictIcon = verdict.icon
   const groupedFindings = SEVERITY_ORDER.map((group) => ({
     ...group,
     items: scan.findings.filter((f) => f.severity === group.severity)
   })).filter((group) => group.items.length > 0)
+  const sendCard = <SendCard onSend={() => go({ screen: 'send-to-tyler' })} />
 
   return (
     <main className="mx-auto flex max-w-3xl flex-col gap-5 py-1">
@@ -384,22 +402,42 @@ export function CheckUp() {
       })}
 
       <div className="flex flex-col gap-3 pt-1">
+        {oneSave && (
+          <Alert variant="info">
+            <div className="flex items-start gap-2.5">
+              <Info className="mt-0.5 size-5 shrink-0" strokeWidth={1.75} aria-hidden />
+              <div className="flex flex-col gap-0.5">
+                <AlertTitle>When the trouble is in one save or lot</AlertTitle>
+                <AlertDescription>
+                  The 50/50 test plays in a brand new test household, so a problem that only happens on one save or lot
+                  may never show up there. Sending a report to Tyler is the easiest first step.
+                </AlertDescription>
+              </div>
+            </div>
+          </Alert>
+        )}
+        {oneSave && sendCard}
         <FiftyEntry scan={scan} />
         <AskEntry scan={scan} />
-
-        <Card className="flex-col gap-4 bg-muted/40 p-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-1 flex-col gap-1">
-            <h3 className="text-base font-semibold text-foreground">Want Tyler to take a look?</h3>
-            <p className="text-sm text-muted-foreground">
-              Save one clean report zip to your Desktop with your crash logs and mod list (never your saves).
-            </p>
-          </div>
-          <Button className="shrink-0" onClick={() => go({ screen: 'send-to-tyler' })}>
-            <Send className="size-4" strokeWidth={1.75} />
-            Send to Tyler
-          </Button>
-        </Card>
+        {!oneSave && sendCard}
       </div>
     </main>
+  )
+}
+
+function SendCard({ onSend }: { onSend(): void }) {
+  return (
+    <Card className="flex-col gap-4 bg-muted/40 p-5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-1 flex-col gap-1">
+        <h3 className="text-base font-semibold text-foreground">Want Tyler to take a look?</h3>
+        <p className="text-sm text-muted-foreground">
+          Save one clean report zip to your Desktop with your crash logs and mod list (never your saves).
+        </p>
+      </div>
+      <Button className="shrink-0" onClick={onSend}>
+        <Send className="size-4" strokeWidth={1.75} />
+        Send to Tyler
+      </Button>
+    </Card>
   )
 }

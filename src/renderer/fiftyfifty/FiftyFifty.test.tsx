@@ -550,6 +550,47 @@ describe('FiftyEntry', () => {
     await user.click(screen.getByRole('button', { name: /Try the 50\/50 test/ }))
     expect(screen.getByTestId('route')).toHaveTextContent('fifty-fifty')
   })
+
+  it('says a new test household may not show a one save problem, in both sizes', () => {
+    const big = sampleScan({
+      symptom: 'one-save-or-lot',
+      findings: [sampleFinding({ id: 'crash-without-cause', rule: 'crash-without-cause', next: 'fifty-fifty' })]
+    })
+    setup(<FiftyEntry scan={big} />, {}, { route: { screen: 'check-up' } })
+    expect(screen.getByText(/new test household may not/i)).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+    cleanup()
+
+    setup(<FiftyEntry scan={sampleScan({ symptom: 'one-save-or-lot' })} />, {}, { route: { screen: 'check-up' } })
+    expect(screen.getByText(/new test household may not/i)).toBeInTheDocument()
+  })
+
+  it('has no save note for other symptoms', () => {
+    setup(<FiftyEntry scan={sampleScan({ symptom: 'closes' })} />, {}, { route: { screen: 'check-up' } })
+    expect(screen.queryByText(/new test household may not/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('TestStep and what happened', () => {
+  const REAL_SAVE =
+    "Open The Sims 4, start a new test household (don't open your real save), and try the thing that crashed."
+
+  it('one save or lot: a gentle note that she can stop and send a report, and the real-save warning stays', async () => {
+    setup(<FiftyFiftyScreen />, { 'fifty:get': round() }, { scan: sampleScan({ symptom: 'one-save-or-lot' }) })
+    expect(await screen.findByText(/start a/)).toHaveTextContent(REAL_SAVE)
+    const note = screen.getByText(/only happens on one save or lot/i)
+    expect(note).toHaveTextContent(/new test household/i)
+    expect(note).toHaveTextContent(/Stop the test/)
+    expect(note).toHaveTextContent(/send a report to Tyler/i)
+    expect(note.textContent).not.toMatch(/open your .*save/i)
+    expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+  })
+
+  it('has no save note for other symptoms', async () => {
+    setup(<FiftyFiftyScreen />, { 'fifty:get': round() }, { scan: sampleScan({ symptom: 'closes' }) })
+    expect(await screen.findByText(/start a/)).toHaveTextContent(REAL_SAVE)
+    expect(screen.queryByText(/only happens on one save or lot/i)).not.toBeInTheDocument()
+  })
 })
 
 describe('a stop never says every mod is back while one is not', () => {

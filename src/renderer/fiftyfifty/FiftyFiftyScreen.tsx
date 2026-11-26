@@ -216,7 +216,7 @@ export function FiftyFiftyScreen() {
   } else if (state.phase === 'awaiting-answer') {
     body =
       step === 'test' ? (
-        <TestStep state={state} onTested={() => setStep('answer')} locked={locked} />
+        <TestStep state={state} onTested={() => setStep('answer')} locked={locked} symptom={scan?.symptom} />
       ) : (
         <AnswerStep state={state} onAnswer={(answer) => giveAnswer(answer, state.round)} locked={locked} />
       )
