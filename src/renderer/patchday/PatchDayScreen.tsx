@@ -239,10 +239,15 @@ export function PatchDayScreen() {
         }
         setSuccess({ mode, count: doneCount })
       } finally {
-        busyRef.current = false
-        if (mountedRef.current) {
-          setBusy(null)
-          await load()
+        try {
+          if (mountedRef.current) {
+            await load()
+          }
+        } finally {
+          busyRef.current = false
+          if (mountedRef.current) {
+            setBusy(null)
+          }
         }
       }
     },
@@ -313,7 +318,7 @@ export function PatchDayScreen() {
 
   const progressText = progressCopy(progress)
   const summaryParts = [plural(inMods.length, 'script mod in Mods', 'script mods in Mods'), `${setAside.length} set aside`]
-  if (needsAttention.length > 0) summaryParts.push(`${needsAttention.length} need attention`)
+  if (needsAttention.length > 0) summaryParts.push(plural(needsAttention.length, 'needs attention', 'need attention'))
 
   const problemCopy: RefusalCopy | null = problem
     ? problem.kind === 'unexpected'
