@@ -9,7 +9,7 @@ const SNAPSHOT_FORMAT = 1
 export const MAX_SNAPSHOT_BYTES = 2 * 1024 * 1024
 const MAX_SNAPSHOT_GROUPS = 50_000
 const SHA256_HEX = /^[0-9a-f]{64}$/
-const EMAIL_PATTERN = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
+const EMAIL_PATTERN = /[^\s@<>'"`()[\]{},;:]+@[^\s@<>'"`()[\]{},;:.]+(?:\.[^\s@<>'"`()[\]{},;:.]+)+/gu
 
 export interface SnapshotGroup {
   idHash: string
@@ -53,15 +53,6 @@ function redactSegment(segment: string, redact: (text: string) => string): strin
   let out = ''
   let i = 0
   while (i < segment.length) {
-    const cp = segment.codePointAt(i)!
-    const charLen = cp > 0xffff ? 2 : 1
-    const ch = segment.slice(i, i + charLen)
-    if (!/[\p{L}\p{M}\p{N}]/u.test(ch)) {
-      out += ch
-      i += charLen
-      continue
-    }
-
     const tail = segment.slice(i)
     const redactedTail = redact(tail)
     if (
@@ -73,6 +64,15 @@ function redactSegment(segment: string, redact: (text: string) => string): strin
       const consumed = tail.length - (redactedTail.length - '<user>'.length)
       out += '<user>'
       i += consumed
+      continue
+    }
+
+    const cp = segment.codePointAt(i)!
+    const charLen = cp > 0xffff ? 2 : 1
+    const ch = segment.slice(i, i + charLen)
+    if (!/[\p{L}\p{M}\p{N}]/u.test(ch)) {
+      out += ch
+      i += charLen
       continue
     }
 

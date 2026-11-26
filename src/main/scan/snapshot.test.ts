@@ -605,9 +605,35 @@ describe('scan snapshot persistence and diff', () => {
     expect(sanitizeSnapshotLabel('MCCC', redact)).toBe('MCCC')
     expect(sanitizeSnapshotLabel('Cozy Hair', redact)).toBe('Cozy Hair')
     expect(sanitizeSnapshotLabel('Lilac Hair', redact)).toBe('Lilac Hair')
+    expect(sanitizeSnapshotLabel('(Lila)', redact)).toBe('(<user>)')
     expect(sanitizeSnapshotLabel("Lila's Backup", redact)).toBe("<user>'s Backup")
     expect(sanitizeSnapshotLabel('Lila_CC_Pack', redact)).toBe('<user>_CC_Pack')
     expect(sanitizeSnapshotLabel('Custom by Lila (lila.sims@example.com)', redact)).toBe('Custom by <user> (<email>)')
+    expect(sanitizeSnapshotLabel('user@sub.example.co.uk', redact)).toBe('<email>')
+    expect(sanitizeSnapshotLabel('Mod@2', redact)).toBe('Mod@2')
+  })
+
+  it('redacts usernames with leading punctuation and Unicode email addresses in persisted snapshot labels', () => {
+    const redact = makeRedactor({ USERNAME: '_Lila', USERPROFILE: 'C:\\Users\\_Lila' })
+    expect(sanitizeSnapshotLabel('_Lila Mods', redact)).toBe('<user> Mods')
+    expect(sanitizeSnapshotLabel('(_Lila)', redact)).toBe('(<user>)')
+    expect(sanitizeSnapshotLabel('李@example.com', redact)).toBe('<email>')
+    expect(sanitizeSnapshotLabel('Custom by 李@example.com', redact)).toBe('Custom by <email>')
+
+    const simsDir = 'C:\\Users\\_Lila\\Documents\\Electronic Arts\\The Sims 4'
+    const modsDir = `${simsDir}\\Mods`
+    const punctUserMod = makeModGroup({ id: 'dir:_lila mods', label: '_Lila Mods' })
+    const unicodeEmailMod = makeModGroup({ id: 'dir:unicode-email', label: 'Pack (李@example.com)' })
+    const scan = sampleScan({
+      folder: { path: simsDir, inOneDrive: false, newestFileAt: new Date('2026-11-20T11:00:00.000Z') },
+      inventory: makeInventory(modsDir, [punctUserMod, unicodeEmailMod])
+    })
+
+    const snapshot = buildScanSnapshot(scan, redact)
+    const serialized = JSON.stringify(snapshot)
+    expect(serialized).not.toContain('_Lila')
+    expect(serialized).not.toContain('李@example.com')
+    expect(snapshot.groups.map((g) => g.label).sort()).toEqual(['<user> Mods', 'Pack (<email>)'])
   })
 
   it('hashes group IDs and strips usernames and emails from persisted snapshots while diffing cleanly', async () => {
