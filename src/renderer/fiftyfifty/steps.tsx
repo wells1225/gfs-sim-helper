@@ -15,6 +15,7 @@ import {
   isControlRound,
   isUncertainResult,
   roundHeader,
+  roundSymptomCopy,
   roundsWord
 } from './words.ts'
 
@@ -181,6 +182,7 @@ export function TestStep({
   symptom?: Symptom
 }) {
   const control = isControlRound(state)
+  const copy = roundSymptomCopy(symptom, control)
   return (
     <Card>
       <RoundHeader state={state} />
@@ -194,8 +196,9 @@ export function TestStep({
         <div className="flex items-start gap-2">
           <Gamepad2 className="mt-0.5 size-5 shrink-0" strokeWidth={1.75} aria-hidden />
           <p className="text-[0.9375rem] font-medium">
-            Open The Sims 4, start a <strong>new</strong> test household (don't open your real save), and try the thing
-            that crashed.
+            {copy.testBeforeNew}
+            <strong>new</strong>
+            {copy.testAfterNew}
           </p>
         </div>
       </Alert>
@@ -221,28 +224,31 @@ export function TestStep({
 export function AnswerStep({
   state,
   onAnswer,
-  locked
+  locked,
+  symptom
 }: {
   state: FiftyFifty
   onAnswer(answer: FiftyAnswer): void
   locked: boolean
+  symptom?: Symptom
 }) {
+  const copy = roundSymptomCopy(symptom, isControlRound(state))
   return (
     <Card>
       <RoundHeader state={state} />
-      <Heading>{isControlRound(state) ? 'Did the game crash without mods?' : 'Did the game crash?'}</Heading>
+      <Heading>{copy.answerHeading}</Heading>
       <Text>Close The Sims 4 before you answer, so we can move your mods safely.</Text>
       <div className="grid gap-3 sm:grid-cols-2">
         <Button size="lg" variant="outline" className="h-16 text-base" onClick={() => onAnswer('crashed')} disabled={locked}>
-          It still crashed
+          {copy.crashedLabel}
         </Button>
         <Button size="lg" variant="outline" className="h-16 text-base" onClick={() => onAnswer('worked')} disabled={locked}>
-          No crash, it worked!
+          {copy.workedLabel}
         </Button>
       </div>
       <div>
         <Button variant="link" className="h-auto p-0 text-muted-foreground" onClick={() => onAnswer('not-sure')} disabled={locked}>
-          Not sure, let me test again
+          {copy.notSureLabel}
         </Button>
       </div>
     </Card>
@@ -333,12 +339,14 @@ export function Ended({
   how,
   label,
   back,
-  onCheckAgain
+  onCheckAgain,
+  onSendReport
 }: {
   how: EndedHow
   label: string
   back: BackCheck
   onCheckAgain(): void
+  onSendReport(): void
 }) {
   const heading =
     how === 'not-mods'
@@ -347,6 +355,7 @@ export function Ended({
         ? 'The 50/50 test is stopped'
         : 'All done'
   const allBack = back.kind === 'all-back'
+  const showSendReport = how === 'stopped' || how === 'not-mods'
   return (
     <main>
       <Card>
@@ -380,6 +389,11 @@ export function Ended({
         </p>
         <div className="flex flex-wrap gap-2">
           <Button onClick={onCheckAgain}>Check again</Button>
+          {showSendReport && (
+            <Button variant="outline" onClick={onSendReport}>
+              Send a report to Tyler
+            </Button>
+          )}
           {!allBack && <HistoryButton />}
         </div>
       </Card>

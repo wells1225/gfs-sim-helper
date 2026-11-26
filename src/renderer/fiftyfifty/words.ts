@@ -1,4 +1,4 @@
-import type { FiftyDamaged, FiftyFifty, FiftyGet, FixRefusal, JournalEntry, Progress } from '../../shared/model.ts'
+import type { FiftyDamaged, FiftyFifty, FiftyGet, FixRefusal, JournalEntry, Progress, Symptom } from '../../shared/model.ts'
 
 export function groupsWord(n: number): string {
   return n === 1 ? '1 mod group' : `${n} mod groups`
@@ -42,6 +42,60 @@ export function roundHeader(state: FiftyFifty): string {
 
 export function groupLabel(state: FiftyFifty, id: string | null): string {
   return state.groups.find((g) => g.id === id)?.label ?? 'this mod group'
+}
+
+export interface RoundSymptomCopy {
+  testBeforeNew: string
+  testAfterNew: string
+  testPrompt: string
+  answerHeading: string
+  crashedLabel: string
+  workedLabel: string
+  notSureLabel: string
+}
+
+const REAL_SAVE_WARNING = "(don't open your real save)"
+const NOT_SURE_LABEL = 'Not sure, let me test again'
+
+/** Round test and answer prompts fitted to what she said happened, with the 'closes' copy as the safe fallback. */
+export function roundSymptomCopy(symptom: Symptom | undefined, control: boolean): RoundSymptomCopy {
+  if (symptom === 'freezes') {
+    const testBeforeNew = 'Open The Sims 4, start a '
+    const testAfterNew = ` test household ${REAL_SAVE_WARNING}, and try the thing that froze or got stuck.`
+    return {
+      testBeforeNew,
+      testAfterNew,
+      testPrompt: `${testBeforeNew}new${testAfterNew}`,
+      answerHeading: control ? 'Did the game freeze without mods?' : 'Did the game freeze or get stuck?',
+      crashedLabel: 'It still froze',
+      workedLabel: 'It worked fine',
+      notSureLabel: NOT_SURE_LABEL
+    }
+  }
+  if (symptom === 'wont-load') {
+    const testBeforeNew = 'Open The Sims 4 and see if it loads past the start screen into a '
+    const testAfterNew = ` test household ${REAL_SAVE_WARNING}.`
+    return {
+      testBeforeNew,
+      testAfterNew,
+      testPrompt: `${testBeforeNew}new${testAfterNew}`,
+      answerHeading: control ? 'Did the game fail to open without mods?' : 'Did the game fail to open?',
+      crashedLabel: "It still wouldn't open",
+      workedLabel: 'It loaded fine',
+      notSureLabel: NOT_SURE_LABEL
+    }
+  }
+  const testBeforeNew = 'Open The Sims 4, start a '
+  const testAfterNew = ` test household ${REAL_SAVE_WARNING}, and try the thing that crashed.`
+  return {
+    testBeforeNew,
+    testAfterNew,
+    testPrompt: `${testBeforeNew}new${testAfterNew}`,
+    answerHeading: control ? 'Did the game crash without mods?' : 'Did the game crash?',
+    crashedLabel: 'It still crashed',
+    workedLabel: 'No crash, it worked!',
+    notSureLabel: NOT_SURE_LABEL
+  }
 }
 
 export const STOP_QUESTION = 'Stop the 50/50 test and put all your mods back?'

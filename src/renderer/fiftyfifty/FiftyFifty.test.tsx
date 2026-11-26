@@ -2,7 +2,7 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event'
 import type { ReactNode } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { FiftyFifty, FiftyGet, FiftyResult, FiftyStopResult, JournalEntry, Scan } from '../../shared/model.ts'
+import type { FiftyAnswer, FiftyFifty, FiftyGet, FiftyResult, FiftyStopResult, JournalEntry, Scan } from '../../shared/model.ts'
 import { sampleFiftyFifty, sampleFinding, sampleJournalEntry, sampleScan } from '../../shared/testing/sample.ts'
 import { ApiProvider } from '../api.tsx'
 import { NavProvider, useNav, type Route } from '../nav.tsx'
@@ -11,7 +11,7 @@ import { fakeApi, type FakeApiAnswers } from '../testing/fake-api.ts'
 import { FiftyEntry } from './FiftyEntry.tsx'
 import { FiftyFiftyScreen } from './FiftyFiftyScreen.tsx'
 import { ResumeBanner } from './ResumeBanner.tsx'
-import { PART_WAY, refusalWords } from './words.ts'
+import { PART_WAY, refusalWords, roundSymptomCopy } from './words.ts'
 
 afterEach(() => {
   cleanup()
@@ -927,5 +927,227 @@ describe('live move and backup progress', () => {
       finishSecond(ok(round({ round: 2 })))
     })
     expect(await screen.findByText(/Round 3 of about 3/)).toBeInTheDocument()
+  })
+})
+
+describe('symptom-tailored round prompts and answers', () => {
+  function scriptedRounds(answers: FiftyAnswer[]) {
+    return (req: { answer: FiftyAnswer; round: number }): FiftyResult => {
+      answers.push(req.answer)
+      if (req.round === 0) return ok(round())
+      if (req.answer === 'not-sure') return ok(round())
+      return ok(round({ round: 2, suspects: ['cf:901234', 'dir:buildbuy'], parked: ['cf:901234'], inMods: ['dir:buildbuy'] }))
+    }
+  }
+
+  it('tailors TestStep and AnswerStep for freezes while sending exact IPC answers and keeping the real-save warning', async () => {
+    const answers: FiftyAnswer[] = []
+    const { user } = setup(
+      <FiftyFiftyScreen />,
+      { 'fifty:get': controlRound(), 'fifty:answer': scriptedRounds(answers) },
+      { scan: sampleScan({ symptom: 'freezes' }) }
+    )
+
+    const controlPrompt = await screen.findByText(/Open The Sims 4, start a/)
+    expect(controlPrompt).toHaveTextContent(
+      "Open The Sims 4, start a new test household (don't open your real save), and try the thing that froze or got stuck."
+    )
+    expect(within(controlPrompt).getByText('new', { selector: 'strong' })).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+
+    await user.click(screen.getByRole('button', { name: "I've tested it" }))
+    expect(screen.getByRole('heading', { name: 'Did the game freeze without mods?' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'It still froze' })).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+
+    await user.click(screen.getByRole('button', { name: 'It worked fine' }))
+    expect(await screen.findByText('Round 2 of about 3 · 4 mod groups left')).toBeInTheDocument()
+
+    expect(screen.getByText(/Open The Sims 4, start a/)).toHaveTextContent(
+      "Open The Sims 4, start a new test household (don't open your real save), and try the thing that froze or got stuck."
+    )
+    await user.click(screen.getByRole('button', { name: "I've tested it" }))
+    expect(screen.getByRole('heading', { name: 'Did the game freeze or get stuck?' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Not sure, let me test again' }))
+    await screen.findByRole('button', { name: "I've tested it" })
+
+    await user.click(screen.getByRole('button', { name: "I've tested it" }))
+    await user.click(screen.getByRole('button', { name: 'It still froze' }))
+    expect(await screen.findByText('Round 3 of about 3 · 2 mod groups left')).toBeInTheDocument()
+    expect(answers).toEqual(['worked', 'not-sure', 'crashed'])
+  })
+
+  it('tailors TestStep and AnswerStep for wont-load while sending exact IPC answers and keeping the real-save warning', async () => {
+    const answers: FiftyAnswer[] = []
+    const { user } = setup(
+      <FiftyFiftyScreen />,
+      { 'fifty:get': controlRound(), 'fifty:answer': scriptedRounds(answers) },
+      { scan: sampleScan({ symptom: 'wont-load' }) }
+    )
+
+    const controlPrompt = await screen.findByText(/loads past the start screen/)
+    expect(controlPrompt).toHaveTextContent(
+      "Open The Sims 4 and see if it loads past the start screen into a new test household (don't open your real save)."
+    )
+    expect(within(controlPrompt).getByText('new', { selector: 'strong' })).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+
+    await user.click(screen.getByRole('button', { name: "I've tested it" }))
+    expect(screen.getByRole('heading', { name: 'Did the game fail to open without mods?' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: "It still wouldn't open" })).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+
+    await user.click(screen.getByRole('button', { name: 'It loaded fine' }))
+    expect(await screen.findByText('Round 2 of about 3 · 4 mod groups left')).toBeInTheDocument()
+
+    expect(screen.getByText(/loads past the start screen/)).toHaveTextContent(
+      "Open The Sims 4 and see if it loads past the start screen into a new test household (don't open your real save)."
+    )
+    await user.click(screen.getByRole('button', { name: "I've tested it" }))
+    expect(screen.getByRole('heading', { name: 'Did the game fail to open?' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Not sure, let me test again' }))
+    await screen.findByRole('button', { name: "I've tested it" })
+
+    await user.click(screen.getByRole('button', { name: "I've tested it" }))
+    await user.click(screen.getByRole('button', { name: "It still wouldn't open" }))
+    expect(await screen.findByText('Round 3 of about 3 · 2 mod groups left')).toBeInTheDocument()
+    expect(answers).toEqual(['worked', 'not-sure', 'crashed'])
+  })
+
+  it('keeps the exact crash wording and IPC answers for closes', async () => {
+    const answers: FiftyAnswer[] = []
+    const { user } = setup(
+      <FiftyFiftyScreen />,
+      { 'fifty:get': controlRound(), 'fifty:answer': scriptedRounds(answers) },
+      { scan: sampleScan({ symptom: 'closes' }) }
+    )
+
+    expect(await screen.findByText(/Open The Sims 4, start a/)).toHaveTextContent(
+      "Open The Sims 4, start a new test household (don't open your real save), and try the thing that crashed."
+    )
+    await user.click(screen.getByRole('button', { name: "I've tested it" }))
+    expect(screen.getByRole('heading', { name: 'Did the game crash without mods?' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'No crash, it worked!' }))
+
+    expect(await screen.findByText('Round 2 of about 3 · 4 mod groups left')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: "I've tested it" }))
+    expect(screen.getByRole('heading', { name: 'Did the game crash?' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Not sure, let me test again' }))
+    await screen.findByRole('button', { name: "I've tested it" })
+
+    await user.click(screen.getByRole('button', { name: "I've tested it" }))
+    await user.click(screen.getByRole('button', { name: 'It still crashed' }))
+    expect(await screen.findByText('Round 3 of about 3 · 2 mod groups left')).toBeInTheDocument()
+    expect(answers).toEqual(['worked', 'not-sure', 'crashed'])
+    expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+  })
+
+  it('uses the safe fallback and preserves the real-save warning when resuming a session with no scan in memory', async () => {
+    const answers: FiftyAnswer[] = []
+    const { user } = setup(
+      <FiftyFiftyScreen />,
+      { 'fifty:get': controlRound(), 'fifty:answer': scriptedRounds(answers) },
+      { scan: null }
+    )
+
+    expect(await screen.findByText(/Open The Sims 4, start a/)).toHaveTextContent(
+      "Open The Sims 4, start a new test household (don't open your real save), and try the thing that crashed."
+    )
+    await user.click(screen.getByRole('button', { name: "I've tested it" }))
+    expect(screen.getByRole('heading', { name: 'Did the game crash without mods?' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'No crash, it worked!' }))
+
+    expect(await screen.findByText('Round 2 of about 3 · 4 mod groups left')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: "I've tested it" }))
+    expect(screen.getByRole('heading', { name: 'Did the game crash?' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Not sure, let me test again' }))
+    await screen.findByRole('button', { name: "I've tested it" })
+
+    await user.click(screen.getByRole('button', { name: "I've tested it" }))
+    await user.click(screen.getByRole('button', { name: 'It still crashed' }))
+    expect(await screen.findByText('Round 3 of about 3 · 2 mod groups left')).toBeInTheDocument()
+    expect(answers).toEqual(['worked', 'not-sure', 'crashed'])
+    expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+  })
+
+  it('roundSymptomCopy keeps the real-save warning and avoids em or en dashes across every symptom', () => {
+    for (const symptom of [undefined, 'closes', 'freezes', 'wont-load', 'one-save-or-lot', 'not-sure'] as const) {
+      for (const control of [true, false]) {
+        const copy = roundSymptomCopy(symptom, control)
+        expect(copy.testPrompt).toContain("(don't open your real save)")
+        expect(`${copy.testBeforeNew}new${copy.testAfterNew}`).toBe(copy.testPrompt)
+        for (const text of [copy.testPrompt, copy.answerHeading, copy.crashedLabel, copy.workedLabel, copy.notSureLabel]) {
+          expect(text).not.toMatch(/[\u2014\u2013]/)
+        }
+      }
+    }
+  })
+})
+
+describe('direct Send a report to Tyler button on the Ended card', () => {
+  it('navigates straight to send-to-tyler from the stopped Ended card', async () => {
+    const { user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': round(),
+      'fifty:stop': ok({ ...round(), phase: 'stopped', parked: [] }),
+      'journal:list': []
+    })
+    await user.click(await screen.findByRole('button', { name: 'Stop the test' }))
+    await user.click(screen.getByRole('button', { name: 'Put everything back and stop' }))
+
+    expect(await screen.findByRole('heading', { name: 'The 50/50 test is stopped' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+
+    await user.click(screen.getByRole('button', { name: 'Send a report to Tyler' }))
+    expect(screen.getByTestId('route')).toHaveTextContent('send-to-tyler')
+  })
+
+  it('navigates straight to send-to-tyler from the not-mods Ended card', async () => {
+    const all = ['cf:901234', 'dir:hair', 'dir:buildbuy', 'file:shoes.package']
+    const stoppedControl = controlRound({
+      phase: 'stopped',
+      suspects: [],
+      parked: [],
+      inMods: [],
+      cleared: all,
+      history: [{ round: 0, parked: all, answer: 'crashed' }]
+    })
+    const { user } = setup(
+      <FiftyFiftyScreen />,
+      {
+        'fifty:get': controlRound(),
+        'fifty:answer': ok(stoppedControl),
+        'journal:list': []
+      },
+      { scan: sampleScan({ symptom: 'freezes' }) }
+    )
+    await user.click(await screen.findByRole('button', { name: "I've tested it" }))
+    await user.click(screen.getByRole('button', { name: 'It still froze' }))
+
+    expect(await screen.findByRole('heading', { name: 'Mods are unlikely to be the cause' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+
+    await user.click(screen.getByRole('button', { name: 'Send a report to Tyler' }))
+    expect(screen.getByTestId('route')).toHaveTextContent('send-to-tyler')
+  })
+
+  it('keeps the All done card clean when finishing after finding a culprit', async () => {
+    const foundSession = sampleFiftyFifty({ phase: 'found', culprit: 'dir:hair', parked: ['dir:hair'], suspects: ['dir:hair'] })
+    const { user } = setup(<FiftyFiftyScreen />, {
+      'fifty:get': foundSession,
+      'fifty:finish': ok({ ...foundSession, phase: 'stopped' }),
+      'journal:list': [moved('dir:hair', 'Hair', 'done')]
+    })
+    await user.click(await screen.findByRole('button', { name: 'Keep Hair set aside' }))
+
+    expect(await screen.findByRole('heading', { name: 'All done' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Send a report to Tyler' })).not.toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
   })
 })
