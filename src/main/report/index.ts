@@ -1,7 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { strToU8, zipSync } from 'fflate'
-import type { GateRefusal, ReportResult, Scan } from '../../shared/model.ts'
+import type { GateRefusal, LogKind, ReportResult, Scan, Severity, Symptom } from '../../shared/model.ts'
 import type { AppContext } from '../ports.ts'
 
 const MAX_REPORT_FILE_BYTES = 8 * 1024 * 1024
@@ -73,6 +73,186 @@ function isMissingFileError(err: unknown): boolean {
   return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: unknown }).code === 'ENOENT'
 }
 
+export const README_NAME = 'Read me.txt'
+const MAX_EVIDENCE_LINES = 5
+const MAX_CHANGED_NAMES = 10
+
+const SYMPTOM_TEXT: Record<Symptom, string> = {
+  closes: 'The game closes by itself',
+  freezes: 'It freezes or gets stuck',
+  'wont-load': "It won't open or load at all",
+  'one-save-or-lot': 'One save or lot is broken',
+  'not-sure': 'Not sure'
+}
+
+const SEVERITY_TEXT: Record<Severity, string> = {
+  stop: 'Do this first',
+  warn: 'Worth fixing',
+  info: 'Good to know'
+}
+
+const SEVERITY_ORDER: Severity[] = ['stop', 'warn', 'info']
+
+const LOG_KIND_TEXT: Record<LogKind, string> = {
+  exception: 'last exception',
+  uiException: 'UI exception',
+  crash: 'crash log',
+  betterExceptions: 'Better Exceptions',
+  mccc: 'MC Command Center'
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = bytes / 1024
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[unit]}`
+}
+
+function plural(count: number, one: string, many: string): string {
+  return `${count} ${count === 1 ? one : many}`
+}
+
+function runningText(state: Scan['gameRunning']): string {
+  if (state === 'running') return 'Yes'
+  if (state === 'not-running') return 'No'
+  return 'Could not tell'
+}
+
+function switchText(value: 'on' | 'off' | 'missing'): string {
+  return value === 'missing' ? 'not set' : value
+}
+
+function changedNames(items: { label: string }[]): string {
+  const names = items.slice(0, MAX_CHANGED_NAMES).map((item) => item.label)
+  const extra = items.length - names.length
+  return extra > 0 ? `${names.join(', ')}, and ${extra} more` : names.join(', ')
+}
+
+/** Swaps her full folder paths for short labels, so the summary never shows a raw drive or user path. */
+function makePathScrubber(scan: Scan): (text: string) => string {
+  const known: [string, string][] = []
+  const add = (path: string | undefined, label: string): void => {
+    const trimmed = path?.replace(/[\\/]+$/, '')
+    if (!trimmed) return
+    known.push([trimmed, label])
+    known.push([trimmed.replaceAll('\\', '/'), label])
+    known.push([trimmed.replaceAll('/', '\\'), label])
+  }
+  add(scan.inventory.modsDir, '[Mods folder]')
+  add(scan.folder.path, '[Sims 4 folder]')
+  add(scan.game?.path, '[game folder]')
+  known.sort((a, b) => b[0].length - a[0].length)
+  return (text: string) => {
+    let out = text
+    for (const [path, label] of known) {
+      const pattern = new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+      out = out.replace(pattern, label)
+    }
+    return out
+  }
+}
+
+/** The plain-language summary Tyler reads first. Callers must still run it through redact. */
+export function buildReadme(scan: Scan): string {
+  const lines: string[] = []
+  const inv = scan.inventory
+  const scrub = makePathScrubber(scan)
+
+  lines.push('Sims Helper report')
+  lines.push(`Check-up time: ${scan.at}`)
+  lines.push('')
+  lines.push(`What she picked: ${SYMPTOM_TEXT[scan.symptom] ?? 'Not sure'}`)
+  lines.push(`Game version: ${scan.game?.version ?? 'Unknown'}`)
+  lines.push(`Game was running: ${runningText(scan.gameRunning)}`)
+  lines.push('')
+
+  lines.push('Mods')
+  if (inv.modsDirState === 'missing') {
+    lines.push('- No Mods folder was found.')
+  }
+  const totalBytes = inv.files.reduce((sum, f) => sum + f.bytes, 0)
+  const scriptCount = inv.files.filter((f) => f.kind === 'script').length
+  lines.push(`- Files: ${inv.files.length}`)
+  lines.push(`- Mod groups: ${inv.groups.length}`)
+  lines.push(`- Script mods: ${scriptCount}`)
+  lines.push(`- Mods folder size: ${formatBytes(totalBytes)}`)
+  const options = scan.facts.options
+  if (options.status === 'ok') {
+    lines.push(`- Options.ini: mods ${switchText(options.mods)}, script mods ${switchText(options.scriptMods)}`)
+  } else if (options.status === 'missing') {
+    lines.push('- Options.ini: not found')
+  } else {
+    lines.push('- Options.ini: could not be read')
+  }
+  const cfg = inv.resourceCfg
+  if (cfg.status === 'ok') {
+    lines.push(`- Resource.cfg: packages load up to ${plural(cfg.maxPackageDepth, 'folder', 'folders')} deep`)
+  } else if (cfg.status === 'missing') {
+    lines.push('- Resource.cfg: not found')
+  } else {
+    lines.push('- Resource.cfg: could not be read')
+  }
+  lines.push('')
+
+  const changes = scan.changes
+  if (
+    changes &&
+    (changes.gameVersion || changes.added.length > 0 || changes.updated.length > 0 || changes.removed.length > 0)
+  ) {
+    lines.push(`What changed since the last check-up (${changes.sinceAt})`)
+    if (changes.gameVersion) {
+      lines.push(`- Game updated from ${changes.gameVersion.from} to ${changes.gameVersion.to}`)
+    }
+    if (changes.added.length > 0) {
+      lines.push(`- Added ${plural(changes.added.length, 'mod', 'mods')}: ${changedNames(changes.added)}`)
+    }
+    if (changes.updated.length > 0) {
+      lines.push(`- Updated ${plural(changes.updated.length, 'mod', 'mods')}: ${changedNames(changes.updated)}`)
+    }
+    if (changes.removed.length > 0) {
+      lines.push(`- Removed ${plural(changes.removed.length, 'mod', 'mods')}: ${changedNames(changes.removed)}`)
+    }
+    lines.push('')
+  }
+
+  lines.push('What the check-up found')
+  if (scan.findings.length === 0) {
+    lines.push('No obvious mod problems were found.')
+  } else {
+    for (const severity of SEVERITY_ORDER) {
+      for (const finding of scan.findings.filter((f) => f.severity === severity)) {
+        lines.push(`[${SEVERITY_TEXT[severity]}] ${finding.title}`)
+        lines.push(`  ${finding.detail}`)
+        for (const ev of finding.evidence.slice(0, MAX_EVIDENCE_LINES)) {
+          lines.push(`  * ${ev}`)
+        }
+        if (finding.evidence.length > MAX_EVIDENCE_LINES) {
+          lines.push(`  * and ${finding.evidence.length - MAX_EVIDENCE_LINES} more`)
+        }
+      }
+    }
+  }
+  lines.push('')
+
+  lines.push('Crash and exception logs')
+  if (scan.logs.length === 0) {
+    lines.push('No readable crash or exception logs found.')
+  } else {
+    for (const log of scan.logs) {
+      lines.push(`- ${fileBasename(log.file)} (${LOG_KIND_TEXT[log.kind] ?? log.kind}, ${log.fileModifiedAt})`)
+    }
+  }
+  lines.push('')
+  lines.push('Saves and Tray folders are never included in this report.')
+
+  return `${scrub(lines.join('\n')).replace(/[\u2013\u2014]/g, '-')}\n`
+}
+
 export function planReport(
   scan: Scan,
   redact: (text: string) => string
@@ -120,7 +300,11 @@ export async function buildReport(
     const zipEntries: Record<string, Uint8Array> = {}
     const skippedLines: string[] = []
 
+    // First entry, so it is the first thing Tyler sees when he opens the zip.
+    zipEntries[README_NAME] = strToU8(deps.redact(buildReadme(scan)))
+
     for (const entry of planned) {
+      if (entry.name.toLowerCase() === README_NAME.toLowerCase()) continue
       if ('json' in entry.source) {
         const text = deps.redact(`${JSON.stringify(entry.source.json, null, 2)}\n`)
         zipEntries[entry.name] = strToU8(text)
