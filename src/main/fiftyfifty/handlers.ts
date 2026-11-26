@@ -1,6 +1,7 @@
 import type { Handlers } from '../../shared/ipc.ts'
 import type { FiftyAnswer, FiftyResult } from '../../shared/model.ts'
 import type { AppContext } from '../ports.ts'
+import { oneAtATime } from '../safety/lock.ts'
 import { beginRound, finish, getState, giveAnswer, start, stop } from './index.ts'
 
 export type FiftyChannel =
@@ -43,13 +44,23 @@ export function makeFiftyHandlers(ctx: AppContext, api: FiftyApi = DRIVER): Hand
 
   const mutate = <T>(work: () => Promise<T>): Promise<T> => {
     inFlightMutations += 1
-    return one(work).finally(() => {
+    // Share the per-context change lock with fixHandlers so a fix/undo and a 50/50 step never overlap.
+    return one(() =>
+      oneAtATime(ctx, async () => {
+        await ctx.startupRecovery?.()
+        return await work()
+      })
+    ).finally(() => {
       inFlightMutations -= 1
     })
   }
 
   return {
-    'fifty:get': () => one(() => api.loadState(ctx)),
+    'fifty:get': () =>
+      one(async () => {
+        await ctx.startupRecovery?.()
+        return await api.loadState(ctx)
+      }),
     'fifty:start': () => mutate(() => api.start(ctx, ctx.session.scan)),
     'fifty:begin-round': () => mutate(() => api.beginRound(ctx)),
     'fifty:answer': (req) => {

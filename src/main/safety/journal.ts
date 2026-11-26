@@ -46,7 +46,7 @@ export async function listEntries(journalDir: string): Promise<JournalEntry[]> {
     names = await readdir(journalDir)
   } catch (err) {
     if ((err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT') return []
-    throw err
+    throw new Error('Could not read the history folder')
   }
   const entries: JournalEntry[] = []
   for (const name of names) {

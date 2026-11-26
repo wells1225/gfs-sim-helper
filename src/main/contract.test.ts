@@ -925,7 +925,8 @@ describe('stage review integration invariants', () => {
       expect(fixRes.status).toBe('done')
       expect(startRes.status).toBe('ok')
       if (startRes.status === 'ok') {
-        expect(startRes.state.groups.map((g) => g.id)).not.toContain('dir:hair')
+        expect(startRes.state).not.toBeNull()
+        expect(startRes.state!.groups.map((g) => g.id)).not.toContain('dir:hair')
       }
 
       // Now fiftyfifty.json is active: a fix must be refused.
