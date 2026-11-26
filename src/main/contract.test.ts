@@ -1206,7 +1206,7 @@ describe('stage review integration invariants', () => {
       ],
       [
         'Failed at C:\\Games\\Mods and then read Options.ini',
-        'Failed at <path> and then read Options.ini'
+        'Failed at <path>'
       ],
       [
         'Failed at C:\\Games\\Mods, please check Options.ini',
@@ -1214,15 +1214,19 @@ describe('stage review integration invariants', () => {
       ],
       [
         'Failed at C:\\Games\\Mods please check Options.ini',
-        'Failed at <path> please check Options.ini'
+        'Failed at <path>'
       ],
       [
         'Failed at C:\\Games\\The Sims 4 please check Options.ini',
-        'Failed at <path> please check Options.ini'
+        'Failed at <path>'
       ],
       [
         'Failed at C:\\Games\\Mods (see Options.ini)',
         'Failed at <path> (see Options.ini)'
+      ],
+      [
+        'Failed at C:\\Games\\Mods (please check Options.ini later)',
+        'Failed at <path> (please check Options.ini later)'
       ],
       [
         'Could not open C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4 because it is locked.',
@@ -1339,26 +1343,68 @@ describe('stage review integration invariants', () => {
     expect(elapsedUnbalanced).toBeLessThan(100)
     expect(unbalancedMsg).toBe(`Could not read <path> ${closingParens}a`)
     expect(unbalancedMsg).not.toContain('Lila')
+
+    const trailingDotsInput = `/${'.'.repeat(50_000)}`
+    const t2 = performance.now()
+    expect(sanitizeIpcError(new Error(trailingDotsInput), ctx.redact).message).toBe(trailingDotsInput)
+    expect(performance.now() - t2).toBeLessThan(100)
   })
 
-  it('sanitizeIpcError redacts multi-word filenames with conjunctions, prepositions, and articles while preserving prose instructions', () => {
+  it('sanitizeIpcError redacts multi-word filenames containing any English words fail-closed while preserving punctuated prose', () => {
     const ctx = makeContext()
 
     const cases: [string, string][] = [
+      ['Could not read C:\\Games\\Save and Restore Options.ini', 'Could not read <path>'],
+      ['Could not read C:\\Games\\save and restore options.ini', 'Could not read <path>'],
+      ['Could not read C:\\Users\\Lila\\Mods\\Check Mail and Make Tea.package', 'Could not read <path>'],
       ['Could not read C:\\Games\\Save and Exit.ini', 'Could not read <path>'],
       ['Could not read C:\\Users\\Lila\\Better Build and Buy.package', 'Could not read <path>'],
       ['Could not read C:\\Users\\Lila\\Mods\\Slice of Life.package', 'Could not read <path>'],
       ['Could not read C:\\Users\\Lila\\Mods\\Walk to School in the Rain.package', 'Could not read <path>'],
       ['Could not read C:\\Users\\Lila\\Mods\\Made for Sims with Pets by Lila.package', 'Could not read <path>'],
+      ['Could not read C:\\Users\\Lila\\Mods\\Please Try While You Wait.package', 'Could not read <path>'],
+      ['Could not read C:\\Users\\Lila\\Mods\\please try while you wait.package', 'Could not read <path>'],
+      ['Could not read C:\\Users\\Lila\\Mods\\MCCC (fix).package', 'Could not read <path>'],
+      ['Could not read C:\\Users\\Lila\\Mods\\MCCC (check and restore).package', 'Could not read <path>'],
+      ['Could not read C:\\Users\\Lila\\Mods\\[LittleMsSam Mods] Check Mail.package', 'Could not read <path>'],
+      [
+        'Could not read C:\\Games\\Mods — please check Options.ini later',
+        'Could not read <path> — please check Options.ini later'
+      ],
+      [
+        'Could not read C:\\Games\\Mods – please check Options.ini later',
+        'Could not read <path> – please check Options.ini later'
+      ],
       ['Failed at C:\\Games\\Mods, please check Options.ini', 'Failed at <path>, please check Options.ini'],
       ['Failed at C:\\Games\\Mods; restart Options.ini', 'Failed at <path>; restart Options.ini'],
       ['Failed at C:\\Games\\Mods: contact support', 'Failed at <path>: contact support'],
-      ['Failed at C:\\Games\\Mods make sure Options.ini is valid', 'Failed at <path> make sure Options.ini is valid'],
-      ['Failed at C:\\Games\\Mods reopen Options.ini', 'Failed at <path> reopen Options.ini']
+      [
+        'Could not open C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4 because it is locked.',
+        'Could not open <path> because it is locked.'
+      ],
+      ['Failed at C:\\Games\\Mods and then read Options.ini', 'Failed at <path>'],
+      ['Failed at C:\\Games\\Mods please check Options.ini', 'Failed at <path>'],
+      ['Failed at C:\\Games\\Mods make sure Options.ini is valid', 'Failed at <path> is valid'],
+      ['Failed at C:\\Games\\Mods reopen Options.ini', 'Failed at <path>'],
+      ['Failed at C:\\Games\\Mods (see Options.ini)', 'Failed at <path> (see Options.ini)']
     ]
     for (const [input, expected] of cases) {
       expect(sanitizeIpcError(new Error(input), ctx.redact).message, input).toBe(expected)
       expect(sanitizeIpcError(new Error(input)).message, `without redact: ${input}`).toBe(expected)
+    }
+
+    for (const unpunctuated of [
+      'Failed at C:\\Games\\Mods and then read Options.ini',
+      'Failed at C:\\Games\\Mods please check Options.ini',
+      'Failed at C:\\Games\\The Sims 4 please check Options.ini',
+      'Failed at C:\\Games\\Mods make sure Options.ini is valid',
+      'Failed at C:\\Games\\Mods reopen Options.ini'
+    ]) {
+      const sanitized = sanitizeIpcError(new Error(unpunctuated), ctx.redact).message
+      expect(sanitized, unpunctuated).not.toContain('Games')
+      expect(sanitized, unpunctuated).not.toContain('Mods')
+      expect(sanitized, unpunctuated).not.toContain('Sims')
+      expect(sanitized, unpunctuated).not.toContain('Options.ini')
     }
   })
 

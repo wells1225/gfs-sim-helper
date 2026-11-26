@@ -137,15 +137,6 @@ const NETWORK_ERRNO_CODES = new Set(
   ).split(' ')
 )
 
-const FINAL_PROSE_STOPWORDS = new Set(
-  (
-    'please check see try ensure verify make close restart reopen contact send tell ' +
-    'because since while when where if unless instead otherwise ' +
-    'read write delete remove rename restore inspect ' +
-    'is are was were be been has have had can cannot could should would will may might must need needs'
-  ).split(' ')
-)
-
 const KNOWN_UNIX_ROOTS = new Set([
   'Users',
   'Volumes',
@@ -188,7 +179,8 @@ const isDigitsOnly = (word: string): boolean => DIGITS_ONLY.test(word)
 
 function hasFileExtension(segment: string): boolean {
   const dot = segment.lastIndexOf('.')
-  return dot > 0 && dot < segment.length - 1 && FILE_EXT.test(segment.slice(dot + 1))
+  const extLen = segment.length - dot - 1
+  return dot > 0 && extLen >= 1 && extLen <= 12 && FILE_EXT.test(segment.slice(dot + 1))
 }
 
 function isFolderWord(word: string): boolean {
@@ -200,18 +192,6 @@ function isFolderWord(word: string): boolean {
     DIGITS_ONLY.test(word) ||
     VERSION_WORD.test(word)
   )
-}
-
-function isFinalProseStopword(word: string): boolean {
-  let start = 0
-  while (start < word.length && (word[start] === '(' || word[start] === '[')) {
-    start += 1
-  }
-  let end = word.length
-  while (end > start && (word[end - 1] === ')' || word[end - 1] === ']')) {
-    end -= 1
-  }
-  return FINAL_PROSE_STOPWORDS.has(word.slice(start, end).toLowerCase())
 }
 
 interface BracketCounts {
@@ -484,12 +464,9 @@ function matchPathStart(text: string, pos: number, insideQuotes: boolean): PathS
     if (firstChar && (isAsciiLetter(firstChar) || isAsciiDigit(firstChar) || firstChar === '.' || firstChar === '_' || firstChar === '-' || text.startsWith('<user>', p))) {
       const segCounts: BracketCounts = { parens: 0, brackets: 0 }
       const seg1End = consumeSegmentToken(text, p, segCounts)
-      const rawSeg1 = text.slice(p, seg1End)
-      let cleanSeg1 = rawSeg1
-      while (cleanSeg1.length > 0 && isTrailingPunct(cleanSeg1[cleanSeg1.length - 1]!)) {
-        cleanSeg1 = cleanSeg1.slice(0, -1)
-      }
-      if (cleanSeg1.length > 0) {
+      const cleanSeg1End = stripTrailingPunct(text, p, seg1End)
+      if (cleanSeg1End > p) {
+        const cleanSeg1 = text.slice(p, cleanSeg1End)
         const hasSecondSegment =
           text[seg1End] === '/' &&
           text[seg1End + 1] !== '/' &&
@@ -604,8 +581,7 @@ function scanUnquotedPathEnd(text: string, start: number, match: PathStartMatch)
             const clean = text.slice(wStart, cleanEnd)
             if (clean.length === 0 || !HAS_ALNUM.test(clean)) break
             const hadPunct = cleanEnd < wEnd
-            if (!hasFileExtension(clean) && isFinalProseStopword(clean)) break
-            const balanced = fCounts.parens === counts.parens && fCounts.brackets === counts.brackets
+            const balanced = fCounts.parens <= counts.parens && fCounts.brackets <= counts.brackets
             finalTokens.push({ end: wEnd, clean, hadPunct, balanced })
             if (hadPunct) break
             cursor = wEnd
