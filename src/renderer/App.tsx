@@ -207,9 +207,13 @@ function Shell() {
 
       <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 px-5 py-6">
         {recoveryPending ? (
-          showRecoveryWait ? (
-            <div className="flex flex-1 items-center justify-center py-12">
-              <Card role="status" aria-live="polite" className="w-full max-w-lg">
+          <div
+            role="status"
+            aria-live="polite"
+            className={showRecoveryWait ? 'flex flex-1 items-center justify-center py-12' : 'flex-1'}
+          >
+            {showRecoveryWait && (
+              <Card className="w-full max-w-lg">
                 <CardHeader>
                   <CardTitle>Checking your last session...</CardTitle>
                   <CardDescription>
@@ -223,10 +227,8 @@ function Shell() {
                   </CardContent>
                 )}
               </Card>
-            </div>
-          ) : (
-            <div className="flex-1" />
-          )
+            )}
+          </div>
         ) : (
           <>
             {api !== null && <UpdateBanner />}

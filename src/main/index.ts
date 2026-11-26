@@ -7,7 +7,7 @@ import { createAppHost, desktopDir } from './app-host.ts'
 import { appIconPath } from './app-icon.ts'
 import { appPaths } from './app-paths.ts'
 import { registerIpc } from './ipc.ts'
-import { createContext, updaterKeepOutOf } from './services.ts'
+import { createContext, createRecoveryQuitGuard, updaterKeepOutOf, type RecoveryQuitGuard } from './services.ts'
 import { createUpdater } from './update/updater.ts'
 
 const LIGHT_BG = '#FAF9F6'
@@ -113,6 +113,8 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock()
 if (!gotSingleInstanceLock) {
   app.quit()
 } else {
+  let quitGuard: RecoveryQuitGuard | null = null
+
   app.on('second-instance', () => {
     if (!mainWindow) return
     if (mainWindow.isMinimized()) mainWindow.restore()
@@ -172,7 +174,12 @@ if (!gotSingleInstanceLock) {
     registerIpc(ipcMain, ctx, isAppWindowEvent)
 
     // Start recovery once before the window opens without blocking first paint; IPC handlers and Shell wait on journal:recovery.
-    void ctx.startupRecovery()
+    const recoveryDone = ctx.startupRecovery()
+    quitGuard = createRecoveryQuitGuard(recoveryDone, {
+      platform: process.platform,
+      quit: () => app.quit(),
+      openWindowCount: () => BrowserWindow.getAllWindows().length
+    })
 
     nativeTheme.on('updated', () => {
       if (mainWindow && !mainWindow.isDestroyed()) {
@@ -189,8 +196,14 @@ if (!gotSingleInstanceLock) {
     })
   })
 
+  app.on('before-quit', (event) => {
+    quitGuard?.onBeforeQuit(event)
+  })
+
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') {
+    if (quitGuard) {
+      quitGuard.onWindowAllClosed()
+    } else if (process.platform !== 'darwin') {
       app.quit()
     }
   })

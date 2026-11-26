@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { execFile } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -38,7 +38,15 @@ import type { Host } from './locate/host.ts'
 import type { ActionPlan, AssistReply, KeyStore, PlanFixAt, PlannedStep, Updater } from './ports.ts'
 import type { GameRunState as LocateGameRunState } from './locate/process.ts'
 import { scanHandlers } from './scan/handlers.ts'
-import { createContext, makeOpenWeb, onceRecovery, updaterKeepOutOf, type CreateContextInput } from './services.ts'
+import { sha256File } from './fs-read.ts'
+import {
+  createContext,
+  createRecoveryQuitGuard,
+  makeOpenWeb,
+  onceRecovery,
+  updaterKeepOutOf,
+  type CreateContextInput
+} from './services.ts'
 import { shareHandlers } from './share/handlers.ts'
 import { updateHandlers } from './update/handlers.ts'
 import { createUpdater } from './update/updater.ts'
@@ -620,6 +628,75 @@ describe('start-up recovery (PR 10)', () => {
     expect(['failed', 'finished']).toContain((await run).status)
     expect(ctx.busy()).toBe(false)
   })
+
+  it('forwards backup and fix progress events from startupRecovery() to emit', async () => {
+    const tempRoot = await realpath(await mkdtemp(join(tmpdir(), 'sims-recovery-progress-')))
+    try {
+      const simsFolder = join(tempRoot, 'Users', 'Lila', 'Documents', 'Electronic Arts', 'The Sims 4')
+      const modsDir = join(simsFolder, 'Mods', 'BuildBuy')
+      const localAppData = join(tempRoot, 'LocalAppData')
+      const desktopDir = join(tempRoot, 'Desktop')
+      await mkdir(modsDir, { recursive: true })
+      await mkdir(localAppData, { recursive: true })
+      await mkdir(desktopDir, { recursive: true })
+      await writeFile(join(simsFolder, 'Options.ini'), '[options]\nmodsdisabled = 0\nscriptmodsenabled = 1\n')
+
+      const paths = appPaths({ localAppData, appData: join(tempRoot, 'Roaming'), desktopDir, env: {} })
+      const heldFile = join(paths.holdingDir, 'hold-1', 'Mods', 'BuildBuy', 'lamp_a.package')
+      await mkdir(dirname(heldFile), { recursive: true })
+      await writeFile(heldFile, 'package-bytes')
+      const sha = await sha256File(heldFile)
+
+      await mkdir(paths.journalDir, { recursive: true })
+      await writeFile(
+        join(paths.journalDir, 'hold-1.json'),
+        JSON.stringify(
+          sampleJournalEntry({
+            id: 'hold-1',
+            folderPath: simsFolder,
+            status: 'in-progress',
+            undo: 'can-undo',
+            steps: [
+              {
+                kind: 'move',
+                from: join(modsDir, 'lamp_a.package'),
+                to: heldFile,
+                bytes: Buffer.byteLength('package-bytes'),
+                sha256: sha,
+                state: 'applied'
+              }
+            ]
+          })
+        )
+      )
+
+      const emitted: Progress[] = []
+      const ctx = createContext({
+        host: { ...makeFakeHost(), documentsDir: join(tempRoot, 'Users', 'Lila', 'Documents') },
+        paths,
+        safeStorage: {
+          isEncryptionAvailable: () => false,
+          encryptString: (text) => Buffer.from(text, 'utf8'),
+          decryptString: (data) => Buffer.from(data).toString('utf8')
+        },
+        emit: (p) => emitted.push(p),
+        reveal: () => {}
+      })
+
+      const res = await ctx.startupRecovery()
+      expect(res.status).toBe('finished')
+      if (res.status === 'finished') {
+        expect(res.touched.map((e) => [e.id, e.status])).toEqual([['hold-1', 'undone']])
+      }
+      expect(emitted.some((p) => p.task === 'backup')).toBe(true)
+      expect(emitted.filter((p) => p.task === 'fix')).toEqual([
+        { task: 'fix', stage: 'moving', done: 0, total: 1 },
+        { task: 'fix', stage: 'moving', done: 1, total: 1 }
+      ])
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('share saves contract (PR 14)', () => {
@@ -775,15 +852,123 @@ describe('share saves contract (PR 14)', () => {
 })
 
 describe('stage review integration invariants', () => {
-  it('main/index.ts starts startupRecovery after registerIpc and before creating the window', async () => {
+  it('main/index.ts starts startupRecovery after registerIpc, guards quit until settled, and creates the window', async () => {
     const src = await readFile(join(REPO_ROOT, 'src/main/index.ts'), 'utf8')
     expect(src).not.toMatch(/await\s+ctx\.startupRecovery\(\)/)
     const registerAt = src.indexOf('registerIpc(')
-    const startAt = src.indexOf('void ctx.startupRecovery()')
+    const startAt = src.indexOf('const recoveryDone = ctx.startupRecovery()')
+    const guardAt = src.indexOf('createRecoveryQuitGuard(recoveryDone')
     const createAt = src.indexOf('mainWindow = createWindow()')
     expect(registerAt).toBeGreaterThan(-1)
     expect(startAt).toBeGreaterThan(registerAt)
-    expect(createAt).toBeGreaterThan(startAt)
+    expect(guardAt).toBeGreaterThan(startAt)
+    expect(createAt).toBeGreaterThan(guardAt)
+    expect(src).toMatch(/app\.on\('before-quit'/)
+    expect(src).toMatch(/quitGuard\?\.onBeforeQuit/)
+    expect(src).toMatch(/quitGuard\.onWindowAllClosed/)
+  })
+
+  it('createRecoveryQuitGuard defers window-all-closed and before-quit while recovery is pending, skips quit if a window reopens, and quits immediately once settled', async () => {
+    // 1. window-all-closed on Windows while recovery is unresolved -> defers quit until settled
+    let resolve1!: () => void
+    const recovery1 = new Promise<void>((resolve) => {
+      resolve1 = resolve
+    })
+    let quitCalls1 = 0
+    let windows1 = 0
+    const guard1 = createRecoveryQuitGuard(recovery1, {
+      platform: 'win32',
+      quit: () => {
+        quitCalls1 += 1
+      },
+      openWindowCount: () => windows1
+    })
+    guard1.onWindowAllClosed()
+    expect(quitCalls1).toBe(0)
+    resolve1()
+    await recovery1
+    await Promise.resolve()
+    expect(quitCalls1).toBe(1)
+
+    // 2. window-all-closed while unresolved, then a window reopens before recovery finishes -> does not quit; closing later quits immediately
+    let resolve2!: () => void
+    const recovery2 = new Promise<void>((resolve) => {
+      resolve2 = resolve
+    })
+    let quitCalls2 = 0
+    let windows2 = 0
+    const guard2 = createRecoveryQuitGuard(recovery2, {
+      platform: 'win32',
+      quit: () => {
+        quitCalls2 += 1
+      },
+      openWindowCount: () => windows2
+    })
+    guard2.onWindowAllClosed()
+    windows2 = 1
+    resolve2()
+    await recovery2
+    await Promise.resolve()
+    expect(quitCalls2).toBe(0)
+    windows2 = 0
+    guard2.onWindowAllClosed()
+    expect(quitCalls2).toBe(1)
+
+    // 3. darwin never quits on window-all-closed, but still defers explicit before-quit
+    let resolve3!: () => void
+    const recovery3 = new Promise<void>((resolve) => {
+      resolve3 = resolve
+    })
+    let quitCalls3 = 0
+    const guard3 = createRecoveryQuitGuard(recovery3, {
+      platform: 'darwin',
+      quit: () => {
+        quitCalls3 += 1
+      },
+      openWindowCount: () => 0
+    })
+    guard3.onWindowAllClosed()
+    resolve3()
+    await recovery3
+    await Promise.resolve()
+    expect(quitCalls3).toBe(0)
+    guard3.onWindowAllClosed()
+    expect(quitCalls3).toBe(0)
+
+    // 4. before-quit while unresolved prevents default, coalesces repeated events + window-all-closed into one quit, and lets nested before-quit pass once settled
+    let resolve4!: () => void
+    const recovery4 = new Promise<void>((resolve) => {
+      resolve4 = resolve
+    })
+    let quitCalls4 = 0
+    let nestedPrevented = false
+    const guard4 = createRecoveryQuitGuard(recovery4, {
+      platform: 'win32',
+      quit: () => {
+        quitCalls4 += 1
+        guard4.onBeforeQuit({
+          preventDefault: () => {
+            nestedPrevented = true
+          }
+        })
+      },
+      openWindowCount: () => 1
+    })
+    let preventedA = false
+    let preventedB = false
+    guard4.onBeforeQuit({ preventDefault: () => void (preventedA = true) })
+    guard4.onBeforeQuit({ preventDefault: () => void (preventedB = true) })
+    guard4.onWindowAllClosed()
+    expect([preventedA, preventedB, quitCalls4]).toEqual([true, true, 0])
+    resolve4()
+    await recovery4
+    await Promise.resolve()
+    expect([quitCalls4, nestedPrevented]).toEqual([1, false])
+
+    // 5. Once already settled, before-quit does not prevent default and window-all-closed quits synchronously
+    let settledPrevented = false
+    guard4.onBeforeQuit({ preventDefault: () => void (settledPrevented = true) })
+    expect(settledPrevented).toBe(false)
   })
 
   it('registerIpc never leaks raw OS paths or usernames when a handler rejects', async () => {
@@ -875,6 +1060,7 @@ describe('stage review integration invariants', () => {
       Object.assign(new Error('rename dest failed'), { dest: 'D:\\Backups\\b1\\file.package' }),
       Object.assign(new Error('rename dest uint8 failed'), { dest: new Uint8Array([1, 2, 3]) }),
       Object.assign(new Error('stat failed'), { syscall: 'stat' }),
+      Object.assign(new Error('copyfile failed'), { syscall: 'copyfile' }),
       new Error("EACCES: permission denied, scandir 'C:\\Users\\Lila\\AppData'"),
       new Error("ENOENT: no such file or directory, open '/private/var/folders/ab/cd/T/sims/Options.ini'"),
       'ERR_FS_EISDIR: illegal operation on a directory'
@@ -882,6 +1068,94 @@ describe('stage review integration invariants', () => {
     for (const err of fsObjects) {
       expect(sanitizeIpcError(err, ctx.redact).message).toBe('A file operation failed')
     }
+    for (const syscall of [
+      'open',
+      'read',
+      'write',
+      'stat',
+      'lstat',
+      'fstat',
+      'statfs',
+      'scandir',
+      'readdir',
+      'mkdir',
+      'rmdir',
+      'unlink',
+      'rename',
+      'copyfile',
+      'realpath',
+      'readlink',
+      'chmod',
+      'chown',
+      'access',
+      'rm',
+      'link',
+      'symlink',
+      'mkdtemp',
+      'truncate',
+      'utime',
+      'futime',
+      'close',
+      'fsync'
+    ]) {
+      expect(sanitizeIpcError(Object.assign(new Error(`${syscall} failed`), { syscall }), ctx.redact).message, syscall).toBe(
+        'A file operation failed'
+      )
+    }
+    for (const code of [
+      'ENOENT',
+      'EACCES',
+      'EPERM',
+      'EBUSY',
+      'EEXIST',
+      'EISDIR',
+      'ENOTDIR',
+      'ENOTEMPTY',
+      'ENOSPC',
+      'EMFILE',
+      'ENFILE',
+      'EROFS',
+      'EXDEV',
+      'ENAMETOOLONG',
+      'ELOOP',
+      'EIO',
+      'EBADF',
+      'EFBIG'
+    ]) {
+      expect(sanitizeIpcError(new Error(`${code}: fs failure`), ctx.redact).message, code).toBe('A file operation failed')
+    }
+
+    // Non-filesystem syscalls and errno codes must not falsely claim 'A file operation failed', while still redacting paths
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:443'), { code: 'ECONNREFUSED', syscall: 'connect' }),
+        ctx.redact
+      ).message
+    ).toBe('connect ECONNREFUSED 127.0.0.1:443')
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('getaddrinfo ENOTFOUND api.anthropic.com'), {
+          code: 'ENOTFOUND',
+          syscall: 'getaddrinfo'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('getaddrinfo ENOTFOUND api.anthropic.com')
+    expect(sanitizeIpcError(new Error('ECONNREFUSED: connection refused'), ctx.redact).message).toBe(
+      'ECONNREFUSED: connection refused'
+    )
+    expect(sanitizeIpcError(new Error('ETIMEDOUT: request timed out'), ctx.redact).message).toBe(
+      'ETIMEDOUT: request timed out'
+    )
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('connect ECONNREFUSED C:\\Users\\Lila\\AppData\\Local\\pipe.sock'), {
+          code: 'ECONNREFUSED',
+          syscall: 'connect'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('connect ECONNREFUSED <path>')
 
     expect(sanitizeIpcError(null, ctx.redact).message).toBe('Something went wrong')
     expect(sanitizeIpcError({ code: 42 }, ctx.redact).message).toBe('Something went wrong')
@@ -890,6 +1164,46 @@ describe('stage review integration invariants', () => {
       [
         'Could not read C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4\\Options.ini',
         'Could not read <path>'
+      ],
+      [
+        'Could not read C:\\Games\\Private  Profile\\Options.ini',
+        'Could not read <path>'
+      ],
+      [
+        'Failed on /Users/Lila/Private  Profile/The  Sims  4/Options.ini.',
+        'Failed on <path>.'
+      ],
+      [
+        'C:\\Users\\Lila\\My Cool Mod.package',
+        '<path>'
+      ],
+      [
+        'Corrupt mod at C:\\Users\\Lila\\Mods\\My  Cool  Mod.package',
+        'Corrupt mod at <path>'
+      ],
+      [
+        'Could not read C:\\Games\\Mods — please check Options.ini later',
+        'Could not read <path> — please check Options.ini later'
+      ],
+      [
+        'Failed at C:\\Games\\Mods and then read Options.ini',
+        'Failed at <path> and then read Options.ini'
+      ],
+      [
+        'Failed at C:\\Games\\Mods, please check Options.ini',
+        'Failed at <path>, please check Options.ini'
+      ],
+      [
+        'Failed at C:\\Games\\Mods please check Options.ini',
+        'Failed at <path> please check Options.ini'
+      ],
+      [
+        'Failed at C:\\Games\\The Sims 4 please check Options.ini',
+        'Failed at <path> please check Options.ini'
+      ],
+      [
+        'Failed at C:\\Games\\Mods (see Options.ini)',
+        'Failed at <path> (see Options.ini)'
       ],
       [
         'Could not open C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4 because it is locked.',

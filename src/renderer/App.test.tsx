@@ -125,21 +125,26 @@ describe('App shell', () => {
     fireEvent.keyDown(window, { key: 'K', ctrlKey: true, shiftKey: true })
     expect(api.calls.map((c) => c.channel)).toEqual(['journal:recovery'])
     expect(screen.queryByText(/Getting things ready/)).toBeNull()
-    expect(screen.queryByRole('status')).toBeNull()
+    const liveRegion = screen.getByRole('status')
+    expect(liveRegion).toHaveAttribute('aria-live', 'polite')
+    expect(liveRegion).toBeEmptyDOMElement()
     expect(screen.queryByText('Checking your last session...')).toBeNull()
 
     await act(async () => {
       vi.advanceTimersByTime(249)
     })
-    expect(screen.queryByRole('status')).toBeNull()
+    expect(screen.getByRole('status')).toBe(liveRegion)
+    expect(liveRegion).toBeEmptyDOMElement()
     expect(screen.queryByText('Checking your last session...')).toBeNull()
 
-    // At 250 ms: calm status card appears with no em/en dashes
+    // At 250 ms: calm status card populates the same live region with no em/en dashes
     await act(async () => {
       vi.advanceTimersByTime(1)
     })
     const statusCard = screen.getByRole('status')
+    expect(statusCard).toBe(liveRegion)
     expect(statusCard).toHaveAttribute('aria-live', 'polite')
+    expect(statusCard).not.toBeEmptyDOMElement()
     expect(screen.getByText('Checking your last session...')).toBeInTheDocument()
     expect(
       screen.getByText('Making sure your last change finished cleanly. Your saves and households are never touched.')

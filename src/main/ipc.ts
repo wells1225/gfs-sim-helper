@@ -103,7 +103,7 @@ export const CHANGING_CHANNELS = {
   'share:find-send': false
 } as const satisfies Record<keyof IpcInvoke, boolean>
 
-const ERRNO_PREFIX = /^[A-Z][A-Z0-9_]{1,30}:\s/
+const ERRNO_PREFIX = /^([A-Z][A-Z0-9_]{1,30}):\s/
 const ASCII_LETTER = /^[A-Za-z]$/
 const ASCII_UPPER = /^[A-Z]$/
 const ASCII_DIGIT = /^\d$/
@@ -114,6 +114,30 @@ const TRAILING_PUNCT = /^[.,;:!?]$/
 const FILE_EXT = /^[A-Za-z][A-Za-z0-9]{0,11}$/
 const DIGITS_ONLY = /^\d+$/
 const VERSION_WORD = /^[vV]\d+(?:\.\d+)*$/
+const HAS_ALNUM = /[A-Za-z0-9]/
+
+const FS_SYSCALLS = new Set(
+  (
+    'open read write stat lstat fstat statfs scandir readdir mkdir rmdir unlink rename copyfile ' +
+    'realpath readlink chmod chown access rm link symlink mkdtemp truncate utime futime close fsync'
+  ).split(' ')
+)
+
+const FS_ERRNO_CODES = new Set(
+  (
+    'ENOENT EACCES EPERM EBUSY EEXIST EISDIR ENOTDIR ENOTEMPTY ENOSPC ' +
+    'EMFILE ENFILE EROFS EXDEV ENAMETOOLONG ELOOP EIO EBADF EFBIG'
+  ).split(' ')
+)
+
+const FINAL_PROSE_STOPWORDS = new Set(
+  (
+    'and or nor but so yet then please check see try for with without from to into onto in on at by via ' +
+    'because since while when where if unless until after before instead otherwise later again ' +
+    'read open write save load close delete remove move copy rename restore verify ensure inspect edit update use run ' +
+    'is are was were be been has have had can cannot could should would will may might must need needs'
+  ).split(' ')
+)
 
 const KNOWN_UNIX_ROOTS = new Set([
   'Users',
@@ -169,6 +193,11 @@ function isFolderWord(word: string): boolean {
     DIGITS_ONLY.test(word) ||
     VERSION_WORD.test(word)
   )
+}
+
+function isFinalProseStopword(word: string): boolean {
+  const bare = word.replace(/^[(\[]+|[)\]]+$/g, '').toLowerCase()
+  return FINAL_PROSE_STOPWORDS.has(bare)
 }
 
 interface BracketCounts {
@@ -495,18 +524,15 @@ function scanUnquotedPathEnd(text: string, start: number, match: PathStartMatch)
       if (!tokHadTrailingPunct) {
         // Subcase A: look ahead (bounded) for a matching separator bridging a multi-word folder segment
         const savedCounts: BracketCounts = { parens: counts.parens, brackets: counts.brackets }
+        const bridgeLimit = Math.min(text.length, tokEnd + MAX_BRIDGE_CHARS)
         let look = tokEnd
         let words = 0
         let bridgedTo = -1
 
-        while (
-          words < MAX_BRIDGE_WORDS &&
-          look - tokEnd < MAX_BRIDGE_CHARS &&
-          text[look] === ' ' &&
-          text[look + 1] !== ' '
-        ) {
-          const wordStart = look + 1
-          if (wordStart >= text.length || isLineBreak(text[wordStart]!)) break
+        while (words < MAX_BRIDGE_WORDS && look < bridgeLimit && text[look] === ' ') {
+          let wordStart = look
+          while (wordStart < bridgeLimit && text[wordStart] === ' ') wordStart += 1
+          if (wordStart >= bridgeLimit || isLineBreak(text[wordStart]!)) break
           if (matchPathStart(text, wordStart, false) !== null) break
           const wordEnd = consumeSegmentToken(text, wordStart, savedCounts)
           if (wordEnd === wordStart) break
@@ -548,28 +574,33 @@ function scanUnquotedPathEnd(text: string, start: number, match: PathStartMatch)
         // Subcase B: final segment (no further separator)
         const cleanTok0 = text.slice(segStart, stripTrailingPunct(text, segStart, tokEnd))
         if (!hasFileExtension(cleanTok0)) {
-          const finalTokens: { end: number; clean: string; hadPunct: boolean }[] = []
+          const finalTokens: { end: number; clean: string; hadPunct: boolean; balanced: boolean }[] = []
           const fCounts: BracketCounts = { parens: counts.parens, brackets: counts.brackets }
+          const finalLimit = Math.min(text.length, tokEnd + MAX_BRIDGE_CHARS)
           let cursor = tokEnd
 
-          while (finalTokens.length < MAX_FINAL_WORDS && text[cursor] === ' ' && text[cursor + 1] !== ' ') {
-            const wStart = cursor + 1
-            if (wStart >= text.length || isLineBreak(text[wStart]!)) break
+          while (finalTokens.length < MAX_FINAL_WORDS && cursor < finalLimit && text[cursor] === ' ') {
+            let wStart = cursor
+            while (wStart < finalLimit && text[wStart] === ' ') wStart += 1
+            if (wStart >= finalLimit || isLineBreak(text[wStart]!)) break
             if (matchPathStart(text, wStart, false) !== null) break
             const wEnd = consumeSegmentToken(text, wStart, fCounts)
             if (wEnd === wStart) break
             const cleanEnd = stripTrailingPunct(text, wStart, wEnd)
             const clean = text.slice(wStart, cleanEnd)
-            if (clean.length === 0) break
+            if (clean.length === 0 || !HAS_ALNUM.test(clean)) break
             const hadPunct = cleanEnd < wEnd
-            finalTokens.push({ end: wEnd, clean, hadPunct })
+            if (!hasFileExtension(clean) && isFinalProseStopword(clean)) break
+            const balanced = fCounts.parens === counts.parens && fCounts.brackets === counts.brackets
+            finalTokens.push({ end: wEnd, clean, hadPunct, balanced })
             if (hadPunct) break
             cursor = wEnd
           }
 
           let extIdx = -1
           for (let k = 0; k < finalTokens.length; k += 1) {
-            if (hasFileExtension(finalTokens[k]!.clean)) {
+            const candidate = finalTokens[k]!
+            if (candidate.balanced && hasFileExtension(candidate.clean)) {
               extIdx = k
               break
             }
@@ -673,10 +704,22 @@ function isPathValue(value: unknown): boolean {
   return typeof value === 'string' || value instanceof Uint8Array || Buffer.isBuffer(value) || value instanceof URL
 }
 
+function isFsErrnoCode(code: string): boolean {
+  return FS_ERRNO_CODES.has(code) || code.startsWith('ERR_FS_')
+}
+
 function isFsErrorObject(err: unknown): boolean {
   if (!err || typeof err !== 'object') return false
-  const candidate = err as { path?: unknown; dest?: unknown; syscall?: unknown }
-  return isPathValue(candidate.path) || isPathValue(candidate.dest) || typeof candidate.syscall === 'string'
+  const candidate = err as { path?: unknown; dest?: unknown; syscall?: unknown; code?: unknown }
+  if (isPathValue(candidate.path) || isPathValue(candidate.dest)) return true
+  if (typeof candidate.syscall === 'string' && FS_SYSCALLS.has(candidate.syscall.toLowerCase())) return true
+  if (typeof candidate.code === 'string' && isFsErrnoCode(candidate.code)) return true
+  return false
+}
+
+function hasFsErrnoPrefix(text: string): boolean {
+  const match = ERRNO_PREFIX.exec(text)
+  return match !== null && isFsErrnoCode(match[1]!)
 }
 
 export function sanitizeIpcError(err: unknown, redact?: (text: string) => string): Error {
@@ -684,7 +727,7 @@ export function sanitizeIpcError(err: unknown, redact?: (text: string) => string
     return new Error('A file operation failed')
   }
   const raw = err instanceof Error ? err.message : typeof err === 'string' ? err : 'Something went wrong'
-  if (ERRNO_PREFIX.test(raw)) {
+  if (hasFsErrnoPrefix(raw)) {
     return new Error('A file operation failed')
   }
   const userRedacted = redact ? redact(raw) : raw

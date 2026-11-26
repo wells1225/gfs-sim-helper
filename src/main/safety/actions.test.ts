@@ -2057,6 +2057,22 @@ describe('recover', () => {
     expect(touched.map((e) => e.status)).toEqual(['undone'])
     expect(await snapshotTree(ws.simsFolder)).toEqual(before)
   })
+
+  it('emits backup and fix progress events when recovery makes a safety copy and puts files back', async () => {
+    const ws = await backedUp()
+    const entry = await interrupted(ws, 2)
+    await writeFile(join(ws.mods, 'new_hair.package'), 'new since backup')
+    const progress: Progress[] = []
+
+    const touched = await recover(ws.deps, (p) => progress.push(p))
+
+    expect(touched.map((e) => [e.id, e.status])).toEqual([[entry.id, 'undone']])
+    expect(progress.some((p) => p.task === 'backup')).toBe(true)
+    expect(progress.filter((p) => p.task === 'fix')).toEqual([
+      { task: 'fix', stage: 'moving', done: 0, total: 2 },
+      { task: 'fix', stage: 'moving', done: 2, total: 2 }
+    ])
+  })
 })
 
 describe('listJournal', () => {
