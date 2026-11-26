@@ -1206,6 +1206,7 @@ describe('stage review integration invariants', () => {
       'Temp path (/private/var/folders/xy/z123/T/sims-helper/Mods/a.package) missing',
       'Single root file /Options.ini missing',
       'Single versioned root file /Save.v2.ini missing',
+      'Single dotfile /.env.local missing',
       'Fake root /fake/LocalAppData/SimsHelper failed',
       'Sims root /sims/Mods/a.package failed',
       "That didn't work at 'C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4' or \"/Users/Lila/Mods\"",
@@ -1228,6 +1229,7 @@ describe('stage review integration invariants', () => {
       'fifty:finish needs keep',
       'Could not read history',
       'Could not read set-aside mods',
+      '/.hidden',
       '50/50 test stopped on 11/25/2026 and/or needs https://www.curseforge.com/sims4/mods/mccc'
     ]
     for (const msg of preserved) {
@@ -1348,6 +1350,7 @@ describe('stage review integration invariants', () => {
 
     for (const preservedUrl of [
       'https://example.com/?next=/api/status',
+      'https://example.com/a;next=/api/status',
       'https://example.com:8443/v1/check?next=/api/status',
       'https://www.curseforge.com/sims4/mods/mccc',
       'Request failed at https://example.com/?next=/api/status',
@@ -1367,6 +1370,10 @@ describe('stage review integration invariants', () => {
       'https://example.com/?next=/api/status:/Users/Lila/Options.ini',
       'https://example.com/a[/Users/Lila/Options.ini]',
       'https://example.com/a{/Users/Lila/Options.ini}',
+      'https://example.com/a]/Users/Lila/Options.ini',
+      'https://example.com/a}/Users/Lila/Options.ini',
+      'https://example.com/a)/Users/Lila/Options.ini',
+      'https://example.com/a)C:\\Users\\Lila\\Options.ini',
       'Request failed at https://example.com/?path=C:\\Users\\Lila\\Options.ini',
       'Request failed at https://example.com/?file=file:///Users/Lila/Options.ini',
       'See https://example.com/?next=/api/status and /Users/Lila/Options.ini'
@@ -1379,6 +1386,11 @@ describe('stage review integration invariants', () => {
     const t0 = performance.now()
     expect(sanitizeIpcError(new Error(longUrlLeak), ctx.redact).message).toBe('A file operation failed')
     expect(performance.now() - t0).toBeLessThan(100)
+
+    const longSingleSegment = `/${'a'.repeat(50_000)}`
+    const tSingle = performance.now()
+    expect(sanitizeIpcError(new Error(longSingleSegment), ctx.redact).message).toBe(longSingleSegment)
+    expect(performance.now() - tSingle).toBeLessThan(50)
   })
 
   it('sanitizeIpcError does not misclassify non-filesystem syscalls with EACCES/EPERM as file errors without a path', () => {

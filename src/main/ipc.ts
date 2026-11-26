@@ -126,16 +126,77 @@ const NETWORK_ERRNO_CODES = new Set(
   ).split(' ')
 )
 
-const WIN_DRIVE_OR_DEVICE_PATH = /(?:^|[\s'"`(\[{=,:;])(?:\\{2,}[?.][\\/]|(?:\\+[?.]\\+)?[A-Za-z]:[\\/])/
-const WIN_UNC_PATH = /(?:^|[\s'"`(\[{=,:;])\\{2,}(?:<user>|[^\s\\/:*?"'`<>|])+\\+(?:<user>|[^\s\\/:*?"'`<>|])/
-const POSIX_UNC_PATH = /(?:^|[\s'"`(\[{=,])\/\/(?:<user>|[^\s\\/:*?"'`<>|])+\/(?:<user>|[^\s\\/:*?"'`<>|])/
-const FILE_URL_PATH = /(?:^|[\s'"`(\[{=,:;])file:\//i
+const WIN_DRIVE_OR_DEVICE_PATH = /(?:^|[\s'"`()[\]{}=,:;])(?:\\{2,}[?.][\\/]|(?:\\+[?.]\\+)?[A-Za-z]:[\\/])/
+const WIN_UNC_PATH = /(?:^|[\s'"`()[\]{}=,:;])\\{2,}(?:<user>|[^\s\\/:*?"'`<>|])+\\+(?:<user>|[^\s\\/:*?"'`<>|])/
+const POSIX_UNC_PATH = /(?:^|[\s'"`()[\]{}=,;])\/\/(?:<user>|[^\s\\/:*?"'`<>|])+\/(?:<user>|[^\s\\/:*?"'`<>|])/
+const FILE_URL_PATH = /(?:^|[\s'"`()[\]{}=,:;])file:\//i
 const ENV_OR_HOME_PATH =
-  /(?:^|[\s'"`(\[{=,:;])(?:(?:~|%[A-Za-z_][A-Za-z0-9_()]*%|\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|(?:env:)?[A-Za-z_][A-Za-z0-9_]*))[\\/]|\.\.?[\\/](?:<user>|[A-Za-z0-9_.-]))/i
-const UNIX_ABS_PATH =
-  /(?:^|[\s'"`(\[{=,:;])\/(?!\/)(?:(?:Users|Volumes|Applications|Library|System|private|home|root|etc|var|tmp|opt|usr|bin|sbin|dev|proc|sys|run|mnt|media|srv|nix|snap|fake|sims|<user>)(?:$|[\s/'"`)\]}.,;:!?])|(?:<user>|[^\s\\/:*?"'`<>|])+\/(?:<user>|[^\s\\/:*?"'`<>|])|\.?(?:<user>|[A-Za-z0-9_-])(?:<user>|[^\s\\/:*?"'`<>|])*\.[A-Za-z][A-Za-z0-9]{0,11}(?:$|[\s'"`)\]}.,;:!?]))/
+  /(?:^|[\s'"`()[\]{}=,:;])(?:(?:~|%[A-Za-z_][A-Za-z0-9_()]*%|\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|(?:env:)?[A-Za-z_][A-Za-z0-9_]*))[\\/]|\.\.?[\\/](?:<user>|[A-Za-z0-9_.-]))/i
 const WEB_URL =
-  /https?:\/\/(?:<user>|[^\s'"`()<>[\]{},;:/])+(?::\d{1,5})?(?:\/(?:<user>|[^\s'"`()<>[\]{},;:])*)?/gi
+  /https?:\/\/(?:<user>|[^\s'"`()<>[\]{},;:/])+(?::\d{1,5})?(?:\/(?:<user>|;(?![\\/])|[^\s'"`()<>[\]{},;:])*)?/gi
+
+const UNIX_START_BOUNDARY = /[\s'"`()[\]{}=,:;]/
+const UNIX_SEG_STOP = /[\s\\/:*?"'`<>|()[\]{},;!]/
+const UNIX_EXT = /^[A-Za-z][A-Za-z0-9]{0,11}$/
+const KNOWN_UNIX_ROOTS = new Set(
+  (
+    'Users Volumes Applications Library System private home root etc var tmp opt usr bin sbin ' +
+    'dev proc sys run mnt media srv nix snap fake sims'
+  ).split(' ')
+)
+
+function isTrailingPunct(ch: string): boolean {
+  return ch === '.' || ch === ',' || ch === ';' || ch === ':' || ch === '!' || ch === '?'
+}
+
+function hasUnixAbsPath(text: string): boolean {
+  let i = 0
+  while (i < text.length) {
+    if (text[i] === '/' && text[i + 1] !== '/' && (i === 0 || UNIX_START_BOUNDARY.test(text[i - 1]!))) {
+      let j = i + 1
+      while (j < text.length) {
+        if (text.startsWith('<user>', j)) {
+          j += 6
+          continue
+        }
+        if (UNIX_SEG_STOP.test(text[j]!)) break
+        j += 1
+      }
+      if (j === i + 1) {
+        i = j
+        continue
+      }
+      if (
+        text[j] === '/' &&
+        j + 1 < text.length &&
+        text[j + 1] !== '/' &&
+        (text.startsWith('<user>', j + 1) || !UNIX_SEG_STOP.test(text[j + 1]!))
+      ) {
+        return true
+      }
+      let end = j
+      while (end > i + 1 && isTrailingPunct(text[end - 1]!)) {
+        end -= 1
+      }
+      if (end > i + 1) {
+        const cleanSeg1 = text.slice(i + 1, end)
+        if (KNOWN_UNIX_ROOTS.has(cleanSeg1) || cleanSeg1 === '<user>') {
+          return true
+        }
+        const lastDot = cleanSeg1.lastIndexOf('.')
+        const minDot = cleanSeg1.startsWith('.') ? 2 : 1
+        const extLen = cleanSeg1.length - lastDot - 1
+        if (lastDot >= minDot && extLen >= 1 && extLen <= 12 && UNIX_EXT.test(cleanSeg1.slice(lastDot + 1))) {
+          return true
+        }
+      }
+      i = j
+      continue
+    }
+    i += 1
+  }
+  return false
+}
 
 function containsFilePath(text: string): boolean {
   if (
@@ -148,7 +209,7 @@ function containsFilePath(text: string): boolean {
     return true
   }
   const withoutWebUrls = text.replace(WEB_URL, ' ')
-  return UNIX_ABS_PATH.test(withoutWebUrls)
+  return hasUnixAbsPath(withoutWebUrls)
 }
 
 function isPathValue(value: unknown): boolean {
