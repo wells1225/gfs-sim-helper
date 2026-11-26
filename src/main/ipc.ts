@@ -134,16 +134,20 @@ const ENV_OR_HOME_PATH =
   /(?:^|[\s'"`(\[{=,:;])(?:(?:~|%[A-Za-z_][A-Za-z0-9_()]*%|\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|(?:env:)?[A-Za-z_][A-Za-z0-9_]*))[\\/]|\.\.?[\\/](?:<user>|[A-Za-z0-9_.-]))/i
 const UNIX_ABS_PATH =
   /(?:^|[\s'"`(\[{=,:;])\/(?!\/)(?:(?:Users|Volumes|Applications|Library|System|private|home|root|etc|var|tmp|opt|usr|bin|sbin|dev|proc|sys|run|mnt|media|srv|nix|snap|fake|sims|<user>)(?:$|[\s/'"`)\]}.,;:!?])|(?:<user>|[^\s\\/:*?"'`<>|])+\/(?:<user>|[^\s\\/:*?"'`<>|])|\.?(?:<user>|[A-Za-z0-9_-])(?:<user>|[^\s\\/:*?"'`<>|])*\.[A-Za-z][A-Za-z0-9]{0,11}(?:$|[\s'"`)\]}.,;:!?]))/
+const WEB_URL = /https?:\/\/(?:<user>|[^\s'"`()<>])+/gi
 
 function containsFilePath(text: string): boolean {
-  return (
+  if (
     WIN_DRIVE_OR_DEVICE_PATH.test(text) ||
     WIN_UNC_PATH.test(text) ||
     POSIX_UNC_PATH.test(text) ||
     FILE_URL_PATH.test(text) ||
-    ENV_OR_HOME_PATH.test(text) ||
-    UNIX_ABS_PATH.test(text)
-  )
+    ENV_OR_HOME_PATH.test(text)
+  ) {
+    return true
+  }
+  const withoutWebUrls = text.replace(WEB_URL, ' ')
+  return UNIX_ABS_PATH.test(withoutWebUrls)
 }
 
 function isPathValue(value: unknown): boolean {
@@ -169,9 +173,13 @@ function isFileSystemError(err: unknown, raw: string): boolean {
     const candidate = err as { path?: unknown; dest?: unknown; syscall?: unknown; code?: unknown }
     if (isPathValue(candidate.path) || isPathValue(candidate.dest)) return true
     const code = typeof candidate.code === 'string' ? candidate.code.toUpperCase() : undefined
-    if (code === undefined || !NETWORK_ERRNO_CODES.has(code)) {
-      if (typeof candidate.syscall === 'string' && FS_SYSCALLS.has(candidate.syscall.toLowerCase())) return true
-      if (code !== undefined && isFsErrnoCode(code)) return true
+    if (typeof candidate.syscall === 'string') {
+      if (!FS_SYSCALLS.has(candidate.syscall.toLowerCase())) return false
+      return code === undefined || !NETWORK_ERRNO_CODES.has(code)
+    }
+    if (code !== undefined) {
+      if (NETWORK_ERRNO_CODES.has(code)) return false
+      if (isFsErrnoCode(code)) return true
     }
   }
   const match = ERRNO_PREFIX.exec(raw)

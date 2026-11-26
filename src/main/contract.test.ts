@@ -1343,6 +1343,93 @@ describe('stage review integration invariants', () => {
     ).toBe('A file operation failed')
   })
 
+  it('sanitizeIpcError preserves http(s) URLs with slash query values while still failing closed on leaked paths', () => {
+    const ctx = makeContext()
+
+    expect(
+      sanitizeIpcError(new Error('Request failed at https://example.com/?next=/api/status'), ctx.redact).message
+    ).toBe('Request failed at https://example.com/?next=/api/status')
+    expect(
+      sanitizeIpcError(
+        new Error('Redirect http://localhost:3000/callback?returnTo=/settings/profile&tab=/mods'),
+        ctx.redact
+      ).message
+    ).toBe('Redirect http://localhost:3000/callback?returnTo=/settings/profile&tab=/mods')
+    expect(
+      sanitizeIpcError(new Error('Request failed at HTTPS://example.com/?next=/Users/status'), ctx.redact).message
+    ).toBe('Request failed at HTTPS://example.com/?next=/Users/status')
+    expect(
+      sanitizeIpcError(new Error('Request failed at https://Lila.example.com/?next=/api/status'), ctx.redact).message
+    ).toBe('Request failed at https://<user>.example.com/?next=/api/status')
+
+    expect(
+      sanitizeIpcError(new Error('Request failed at https://example.com/?path=C:\\Users\\Lila\\Options.ini'), ctx.redact)
+        .message
+    ).toBe('A file operation failed')
+    expect(
+      sanitizeIpcError(
+        new Error('Request failed at https://example.com/?file=file:///Users/Lila/Options.ini'),
+        ctx.redact
+      ).message
+    ).toBe('A file operation failed')
+    expect(
+      sanitizeIpcError(new Error('See https://example.com/?next=/api/status and /Users/Lila/Options.ini'), ctx.redact)
+        .message
+    ).toBe('A file operation failed')
+  })
+
+  it('sanitizeIpcError does not misclassify non-filesystem syscalls with EACCES/EPERM as file errors without a path', () => {
+    const ctx = makeContext()
+
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('listen EACCES: permission denied 127.0.0.1:80'), {
+          code: 'EACCES',
+          syscall: 'listen'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('listen EACCES: permission denied 127.0.0.1:80')
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('EACCES: bind permission denied 0.0.0.0:443'), {
+          code: 'EACCES',
+          syscall: 'bind'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('EACCES: bind permission denied 0.0.0.0:443')
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('listen EPERM: operation not permitted 0.0.0.0:80'), {
+          code: 'EPERM',
+          syscall: 'listen'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('listen EPERM: operation not permitted 0.0.0.0:80')
+
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('listen EACCES: permission denied /Users/Lila/app.sock'), {
+          code: 'EACCES',
+          syscall: 'listen'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('A file operation failed')
+    expect(
+      sanitizeIpcError(
+        Object.assign(new Error('listen EACCES'), {
+          code: 'EACCES',
+          syscall: 'listen',
+          path: '/tmp/app.sock'
+        }),
+        ctx.redact
+      ).message
+    ).toBe('A file operation failed')
+  })
+
   it('main/index.ts reopens the window on second-instance when closed while startup recovery is still running', async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), 'sims-second-instance-'))
     try {
