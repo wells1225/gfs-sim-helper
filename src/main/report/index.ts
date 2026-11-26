@@ -56,6 +56,20 @@ function safeZipEntryName(rawName: string, redact?: (text: string) => string): s
     .replace(/^\/+/, '')
 }
 
+function uniqueEntryName(baseName: string, seenNames: Set<string>): string {
+  if (!seenNames.has(baseName.toLowerCase())) return baseName
+  const slash = baseName.lastIndexOf('/')
+  const dot = baseName.lastIndexOf('.')
+  const hasExt = dot > slash + 1
+  const stem = hasExt ? baseName.slice(0, dot) : baseName
+  const ext = hasExt ? baseName.slice(dot) : ''
+  let n = 2
+  while (seenNames.has(`${stem} (${n})${ext}`.toLowerCase())) {
+    n += 1
+  }
+  return `${stem} (${n})${ext}`
+}
+
 function redactJsonValue(value: unknown, redact: (text: string) => string): unknown {
   if (typeof value === 'string') {
     return sanitizeSnapshotLabel(value, redact)
@@ -255,8 +269,16 @@ export function buildReadme(scan: Scan, redact?: (text: string) => string): stri
   if (scan.logs.length === 0) {
     lines.push('No readable crash or exception logs found.')
   } else {
+    const logEntryNames = new Map<string, string>()
+    const seenLogNames = new Set<string>()
     for (const log of scan.logs) {
-      const logName = safeZipEntryName(fileBasename(log.file), redact)
+      const fileKey = log.file.replaceAll('\\', '/').toLowerCase()
+      let logName = logEntryNames.get(fileKey)
+      if (!logName) {
+        logName = uniqueEntryName(safeZipEntryName(fileBasename(log.file), redact), seenLogNames)
+        seenLogNames.add(logName.toLowerCase())
+        logEntryNames.set(fileKey, logName)
+      }
       lines.push(`- ${logName} (${LOG_KIND_TEXT[log.kind] ?? clean(log.kind)}, ${clean(log.fileModifiedAt)})`)
     }
   }
@@ -274,12 +296,18 @@ export function planReport(
 ): { name: string; source: { file: string } | { json: unknown } }[] {
   const entries: { name: string; source: { file: string } | { json: unknown } }[] = []
   const seenNames = new Set<string>()
+  const seenFiles = new Set<string>()
 
   const addEntry = (rawName: string, source: { file: string } | { json: unknown }): void => {
-    const name = safeZipEntryName(rawName, redact)
-    const key = name.toLowerCase()
-    if (!name || seenNames.has(key)) return
-    seenNames.add(key)
+    const baseName = safeZipEntryName(rawName, redact)
+    if (!baseName) return
+    if ('file' in source) {
+      const fileKey = source.file.replaceAll('\\', '/').toLowerCase()
+      if (seenFiles.has(fileKey)) return
+      seenFiles.add(fileKey)
+    }
+    const name = uniqueEntryName(baseName, seenNames)
+    seenNames.add(name.toLowerCase())
     entries.push({ name, source })
   }
 

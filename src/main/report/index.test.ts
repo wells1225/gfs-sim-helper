@@ -473,6 +473,50 @@ describe('buildReport', () => {
     expect(simsReadme.startsWith('Sims Helper report\n')).toBe(true)
   })
 
+  it('keeps both logs when redaction maps two distinct log filenames to the same Windows-safe name', async () => {
+    const root = await makeTempDir()
+    const simsDir = join(root, 'The Sims 4')
+    await mkdir(simsDir, { recursive: true })
+    await writeFile(join(simsDir, 'lastException_Lila.txt'), '<root>first-log C:\\Users\\Lila\\Mods\\a.py</root>', 'utf8')
+    await writeFile(join(simsDir, 'lastException_user.txt'), '<root>second-log-literal-user</root>', 'utf8')
+
+    const base = sampleScan()
+    const scan = sampleScan({
+      folder: { ...base.folder, path: simsDir },
+      inventory: { ...base.inventory, modsDir: join(simsDir, 'Mods'), curseForge: { status: 'not-found' } },
+      logs: [
+        { ...base.logs[0]!, file: 'lastException_Lila.txt' },
+        { ...base.logs[0]!, file: 'lastException_user.txt' }
+      ]
+    })
+
+    const requests: WriteRequest[] = []
+    const gate: Gate = {
+      async run(request) {
+        requests.push(request)
+        return { status: 'done' }
+      }
+    }
+    const paths = appPaths({ localAppData: '/tmp/local', appData: '/tmp/roaming', desktopDir: '/tmp/desktop' })
+    const clock = { now: () => new Date(2026, 10, 24, 12, 0, 0) }
+    const redact = makeRedactor({ USERNAME: 'Lila', USERPROFILE: 'C:\\Users\\Lila' })
+
+    const { result } = await buildReport({ gate, paths, clock, redact }, scan)
+    expect(result.status).toBe('saved')
+
+    const op = requests[0]!.ops[0]!
+    if (op.op !== 'write') throw new Error('expected a write')
+    const unzipped = unzipSync(op.data as Uint8Array)
+    expect(unzipped['lastException_user.txt']).toBeDefined()
+    expect(unzipped['lastException_user (2).txt']).toBeDefined()
+    expect(strFromU8(unzipped['lastException_user.txt']!)).toContain('first-log C:\\Users\\<user>\\Mods\\a.py')
+    expect(strFromU8(unzipped['lastException_user.txt']!).toLowerCase()).not.toContain('lila')
+    expect(strFromU8(unzipped['lastException_user (2).txt']!)).toContain('second-log-literal-user')
+    const readme = strFromU8(unzipped['Read me.txt']!)
+    expect(readme).toContain('- lastException_user.txt (')
+    expect(readme).toContain('- lastException_user (2).txt (')
+  })
+
   it('returns write-refused when the gate refuses', async () => {
     const scan = sampleScan()
     const gate: Gate = {
