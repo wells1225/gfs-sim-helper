@@ -1,0 +1,52 @@
+{
+  "name": "p17-ask-tyler",
+  "description": "Healthy Sims 4 setup used to test Ask Tyler mod requests and installing delivered mods.",
+  "seed": 1701,
+  "baseTime": "2026-11-26T14:30:00.000Z",
+  "gameInstall": {
+    "relPath": "Program Files/EA Games/The Sims 4",
+    "version": "1.129.39.1030",
+    "packs": ["EP01", "EP02", "GP02", "SP18", "FP01"],
+    "deltaOnlyPacks": ["EP15"]
+  },
+  "userFolders": [
+    {
+      "relPath": "Users/Player/Documents/Electronic Arts/The Sims 4",
+      "gameVersion": "1.129.39.1030",
+      "gameVersionMtime": "2026-11-20T18:00:00.000Z",
+      "options": {
+        "modsdisabled": 0,
+        "scriptmodsenabled": 1,
+        "showmodliststartup": 1
+      },
+      "resourceCfgDepth": 5,
+      "thumbCacheMtime": "2026-11-26T14:00:00.000Z",
+      "packages": [
+        {
+          "relPath": "cozy_rug.package",
+          "mtime": "2026-11-18T12:00:00.000Z",
+          "keys": [
+            { "type": "0x319E4F1D", "group": "0x00000000", "instance": "0x0001000000001701" }
+          ]
+        },
+        {
+          "relPath": "CAS/Hair/sample_waves.package",
+          "mtime": "2026-11-18T12:05:00.000Z",
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x8000000100001702" }
+          ]
+        }
+      ],
+      "scripts": [
+        {
+          "relPath": "MCCC/mc_cmd_center.ts4script",
+          "mtime": "2026-11-18T12:15:00.000Z",
+          "entries": [
+            "mc_cmd_center/__init__.pyc",
+            "mc_cmd_center/mc_utils.pyc"
+          ]
+        }
+      ]
+    }
+  ]
+}
