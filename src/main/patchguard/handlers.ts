@@ -1,5 +1,9 @@
 import type { Handlers } from '../../shared/ipc.ts'
 import type { AppContext } from '../ports.ts'
+import { oneAtATime } from '../safety/lock.ts'
+import { playGame } from './play.ts'
+import { clearHoldingEntry, listWaitingOnMods } from './waiting.ts'
+import { markGameVersionSeen, watchGameVersion } from './watch.ts'
 
 export type PatchGuardChannel =
   | 'patchguard:watch'
@@ -8,23 +12,29 @@ export type PatchGuardChannel =
   | 'patchguard:waiting'
   | 'patchguard:clear-holding'
 
-/** PR 16 (briefs/pr-16.md). Round 7 stubs: each throws until PR 16 lands. Play opens the game with ctx.openGame. */
-export function patchGuardHandlers(_ctx: AppContext): Handlers<PatchGuardChannel> {
+/** PR 16 (briefs/pr-16.md): game version watch, Play button guard, Waiting on list, and Clear holding. */
+export function patchGuardHandlers(ctx: AppContext): Handlers<PatchGuardChannel> {
   return {
     async 'patchguard:watch'() {
-      throw new Error('not implemented: patchguard:watch')
+      return await watchGameVersion(ctx)
     },
     async 'patchguard:seen'() {
-      throw new Error('not implemented: patchguard:seen')
+      return await markGameVersionSeen(ctx)
     },
-    async 'patchguard:play'() {
-      throw new Error('not implemented: patchguard:play')
+    async 'patchguard:play'(req) {
+      return await playGame(ctx, req)
     },
     async 'patchguard:waiting'() {
-      throw new Error('not implemented: patchguard:waiting')
+      return await listWaitingOnMods(ctx)
     },
-    async 'patchguard:clear-holding'() {
-      throw new Error('not implemented: patchguard:clear-holding')
+    'patchguard:clear-holding'(req) {
+      return oneAtATime(ctx, async () => {
+        const entryId = (req as { entryId?: unknown } | null | undefined)?.entryId
+        if (typeof entryId !== 'string') {
+          return { kind: 'refused', why: 'not-found' }
+        }
+        return await clearHoldingEntry(ctx, entryId)
+      })
     }
   }
 }

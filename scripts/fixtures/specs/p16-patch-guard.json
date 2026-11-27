@@ -1,0 +1,94 @@
+{
+  "name": "p16-patch-guard",
+  "description": "PR 16: a Sims 4 install after an update with CurseForge metadata covering waiting, updated, and back-in-mods states.",
+  "seed": 1601,
+  "baseTime": "2026-11-20T18:00:00.000Z",
+  "gameInstall": {
+    "relPath": "Program Files/EA Games/The Sims 4",
+    "version": "1.130.12.1020",
+    "packs": ["EP01", "GP02"]
+  },
+  "userFolders": [
+    {
+      "relPath": "Users/Player/Documents/Electronic Arts/The Sims 4",
+      "gameVersion": "1.130.12.1020",
+      "gameVersionMtime": "2026-11-20T18:00:00.000Z",
+      "options": {
+        "modsdisabled": 0,
+        "scriptmodsenabled": 1,
+        "showmodliststartup": 1
+      },
+      "resourceCfgDepth": 5,
+      "thumbCacheMtime": "2026-11-20T18:00:00.000Z",
+      "packages": [
+        {
+          "relPath": "CAS/cozy_hair.package",
+          "mtime": "2026-11-10T12:00:00.000Z",
+          "keys": [
+            { "type": "0x034AEECB", "group": "0x00000000", "instance": "0x0001000000001601" }
+          ]
+        }
+      ],
+      "scripts": [
+        {
+          "relPath": "BackInMods/back_in_mods.ts4script",
+          "mtime": "2026-11-26T14:00:00.000Z",
+          "entries": [
+            "back_in_mods/__init__.pyc",
+            "back_in_mods/main.pyc"
+          ]
+        },
+        {
+          "relPath": "ActiveMod/active_mod.ts4script",
+          "mtime": "2026-11-10T12:00:00.000Z",
+          "entries": [
+            "active_mod/__init__.pyc"
+          ]
+        }
+      ]
+    }
+  ],
+  "curseForge": {
+    "relPath": "Users/Player/AppData/Roaming/CurseForge/agent/GameInstances/AddonGameInstance.json",
+    "gameInstanceGuid": "16010000-0000-4000-8000-000000001601",
+    "installPath": "C:\\Users\\Player\\Documents\\Electronic Arts\\The Sims 4\\Mods",
+    "installedAddons": [
+      {
+        "addonID": 160101,
+        "fileId": 5001,
+        "displayName": "Waiting Script Mod",
+        "fileNameOnDisk": "WaitingMod/waiting_mod.ts4script",
+        "fileDate": "2026-11-15T10:00:00.000Z",
+        "releaseType": 1,
+        "downloadUrl": "https://edge.forgecdn.net/files/5001/waiting_mod.ts4script",
+        "modules": [
+          { "name": "waiting_mod.ts4script", "fingerprint": 16010101 }
+        ]
+      },
+      {
+        "addonID": 160102,
+        "fileId": 5002,
+        "displayName": "Updated Script Mod",
+        "fileNameOnDisk": "UpdatedMod/updated_mod.ts4script",
+        "fileDate": "2026-11-25T15:00:00.000Z",
+        "releaseType": 1,
+        "downloadUrl": "https://edge.forgecdn.net/files/5002/updated_mod.ts4script",
+        "modules": [
+          { "name": "updated_mod.ts4script", "fingerprint": 16010201 }
+        ]
+      },
+      {
+        "addonID": 160103,
+        "fileId": 5003,
+        "displayName": "Back In Mods Script",
+        "fileNameOnDisk": "BackInMods/back_in_mods.ts4script",
+        "fileDate": "2026-11-26T14:00:00.000Z",
+        "releaseType": 1,
+        "downloadUrl": "https://edge.forgecdn.net/files/5003/back_in_mods.ts4script",
+        "modules": [
+          { "name": "back_in_mods.ts4script", "fingerprint": 16010301 }
+        ]
+      }
+    ]
+  }
+}
