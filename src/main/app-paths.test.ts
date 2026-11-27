@@ -29,6 +29,7 @@ describe('appPaths', () => {
     expect(paths.keyFile).toBe(join(expectedRoot, 'assist', 'key.bin'))
     expect(paths.oldSavesDir).toBe(join(expectedRoot, 'old-saves'))
     expect(paths.shareDir).toBe(join(expectedRoot, 'share'))
+    expect(paths.saveCopiesDir).toBe(join(expectedRoot, 'save-copies'))
     expect(paths.desktopDir).toBe(desktopDir)
     expect(paths.oneDriveRoots).toEqual(['/fake/OneDrive', '/fake/OneDrive - Work'])
     expect(paths.curseForgeInstanceFile).toBe(

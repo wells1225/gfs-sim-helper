@@ -205,6 +205,8 @@ interface World {
   deps: GateDeps
   game: GameRunState | (() => never)
   backup: BackupStatus | (() => never)
+  /** What deps.modFolderRoot() answers: the Sims Helper Mods folder (PR 17), null, or a throw. */
+  modRoot: unknown
   asked: string[]
   run(ops: WriteOp[], overrides?: Partial<WriteRequest>): Promise<GateResult>
   inFolder(...parts: string[]): string
@@ -236,6 +238,7 @@ async function makeWorld(
     paths,
     game: 'not-running',
     backup: VERIFIED,
+    modRoot: null,
     asked: [],
     deps: {
       paths,
@@ -249,6 +252,9 @@ async function makeWorld(
       },
       async shareRoot() {
         return null
+      },
+      modFolderRoot() {
+        return typeof world.modRoot === 'function' ? (world.modRoot as () => never)() : (world.modRoot as string | null)
       }
     },
     run: (ops, overrides = {}) =>
@@ -3257,5 +3263,601 @@ describe('sortPath, the name check, with Windows paths (runs on any machine)', (
       desktopDir: null
     }
     expect(sortPath(win32, kateRoots, 'C:\\Users\\\u212aate\\AppData\\Local\\SimsHelper\\x').zone).toBe('none')
+  })
+})
+
+// ── Round 7 (briefs/pr-15.md and pr-17.md): the save-new-slot and mod-folder zones
+
+const NEW_SLOT = 'Slot_0000000a.save'
+
+/** A world with one checked save copy in app data, as PR 15 makes it. */
+async function makePutBackWorld(): Promise<{ w: World; copy: string }> {
+  const w = await makeWorld()
+  const copy = join(w.paths.saveCopiesDir, 'c1', 'saves', 'Slot_00000002.save')
+  await mkdir(dirname(copy), { recursive: true })
+  await writeFile(copy, 'a saved game, as it was')
+  return { w, copy }
+}
+
+function putBack(w: World, from: string, to: string, overrides: Partial<WriteRequest> = {}): Promise<GateResult> {
+  return w.run([{ op: 'copy', from, to }], { reason: 'save-put-back', ...overrides })
+}
+
+describe('save-new-slot: a save copy goes back only as a new slot file', () => {
+  it('yes: copies the save into a new slot, changes nothing else, and asks only about the game', async () => {
+    const { w, copy } = await makePutBackWorld()
+    w.backup = { state: 'none' } // nothing of hers is changed or removed, so no backup is needed
+    const target = w.inFolder('saves', NEW_SLOT)
+    const savesBefore = await snapshotTree(w.inFolder('saves'))
+    const trayBefore = await snapshotTree(w.inFolder('Tray'))
+    const modsBefore = await snapshotTree(w.inFolder('Mods'))
+    expect(await putBack(w, copy, target)).toEqual({ status: 'done' })
+    expect(await sha256(target)).toBe(await sha256(copy))
+    const savesAfter = await snapshotTree(w.inFolder('saves'))
+    expect([...savesAfter.keys()].sort()).toEqual([...savesBefore.keys(), NEW_SLOT].sort())
+    for (const [name, value] of savesBefore) expect(savesAfter.get(name), name).toBe(value)
+    expect(await snapshotTree(w.inFolder('Tray'))).toEqual(trayBefore)
+    expect(await snapshotTree(w.inFolder('Mods'))).toEqual(modsBefore)
+    expect(w.asked).toEqual(['game'])
+  })
+
+  it('yes: the highest name the zone takes, Slot_0fffffff.save', async () => {
+    const { w, copy } = await makePutBackWorld()
+    expect(await putBack(w, copy, w.inFolder('saves', 'Slot_0fffffff.save'))).toEqual({ status: 'done' })
+  })
+
+  const wrongNames: [string, (w: World) => string][] = [
+    ['upper-case hex', (w) => w.inFolder('saves', 'Slot_0000000A.save')],
+    ['a first digit other than 0', (w) => w.inFolder('saves', 'Slot_1000000a.save')],
+    ['7 digits', (w) => w.inFolder('saves', 'Slot_000000a.save')],
+    ['9 digits', (w) => w.inFolder('saves', 'Slot_00000000a.save')],
+    ['a letter that is not hex', (w) => w.inFolder('saves', 'Slot_0000000g.save')],
+    ['a .ver0 file', (w) => w.inFolder('saves', `${NEW_SLOT}.ver0`)],
+    ['a .ver4 file', (w) => w.inFolder('saves', `${NEW_SLOT}.ver4`)],
+    ['slot in small letters', (w) => w.inFolder('saves', 'slot_0000000a.save')],
+    ['.SAVE in capitals', (w) => w.inFolder('saves', 'Slot_0000000a.SAVE')],
+    ['another extension after it', (w) => w.inFolder('saves', `${NEW_SLOT}.tmp`)],
+    ['a subfolder of saves', (w) => w.inFolder('saves', 'scratch', NEW_SLOT)],
+    ['Tray', (w) => w.inFolder('Tray', NEW_SLOT)],
+    ['the saves folder itself', (w) => w.inFolder('saves')],
+    ['a trailing dot', (w) => `${w.inFolder('saves', NEW_SLOT)}.`],
+    ['a trailing space', (w) => `${w.inFolder('saves', NEW_SLOT)} `],
+    ['a data stream', (w) => `${w.inFolder('saves', NEW_SLOT)}:hidden`],
+    ['Mods/../saves', (w) => `${w.folder}${sep}Mods${sep}..${sep}saves${sep}${NEW_SLOT}`],
+    ['saves. with a trailing dot', (w) => `${w.folder}${sep}saves.${sep}${NEW_SLOT}`],
+    ['a long s for the s of saves', (w) => w.inFolder('\u017faves', NEW_SLOT)]
+  ]
+
+  it.each(wrongNames)('refuses %s with saves-or-tray', async (_name, spell) => {
+    const { w, copy } = await makePutBackWorld()
+    const target = spell(w)
+    await expectRefusal(w, () => putBack(w, copy, target), { reason: 'saves-or-tray', path: target })
+    expect(w.asked).toEqual([])
+  })
+
+  it('refuses a slot that is already there, and leaves it as it was', async () => {
+    const { w, copy } = await makePutBackWorld()
+    const target = w.inFolder(...SAVE)
+    await expectRefusal(w, () => putBack(w, copy, target), { reason: 'saves-or-tray', path: target })
+    expect(w.asked).toEqual([])
+  })
+
+  it('refuses a slot name that is taken by a folder or a link', async () => {
+    const { w, copy } = await makePutBackWorld()
+    const folder = w.inFolder('saves', 'Slot_0000000b.save')
+    await mkdir(folder)
+    await expectRefusal(w, () => putBack(w, copy, folder), { reason: 'saves-or-tray', path: folder })
+    const dangling = w.inFolder('saves', 'Slot_0000000c.save')
+    await linkFolder(join(w.root, 'nowhere'), dangling)
+    await expectRefusal(w, () => putBack(w, copy, dangling), { reason: 'saves-or-tray', path: dangling })
+  })
+
+  it('refuses when saves is a link to another folder', async () => {
+    const { w, copy } = await makePutBackWorld()
+    const moved = join(w.root, 'pc', 'Elsewhere', 'saves')
+    await mkdir(dirname(moved), { recursive: true })
+    await rename(w.inFolder('saves'), moved)
+    await linkFolder(moved, w.inFolder('saves'))
+    const target = w.inFolder('saves', NEW_SLOT)
+    await expectRefusal(w, () => putBack(w, copy, target), { reason: 'link-escape', path: target })
+    expect(await exists(join(moved, NEW_SLOT))).toBe(false)
+  })
+
+  it('refuses when there is no saves folder to put it in', async () => {
+    const { w, copy } = await makePutBackWorld()
+    await rm(w.inFolder('saves'), { recursive: true })
+    const target = w.inFolder('saves', NEW_SLOT)
+    await expectRefusal(w, () => putBack(w, copy, target), { reason: 'saves-or-tray', path: target })
+  })
+
+  it('refuses a source outside saveCopiesDir', async () => {
+    const { w } = await makePutBackWorld()
+    const backup = w.inData('backups', 'b1', 'saves', 'Slot_00000002.save')
+    const beside = join(`${w.paths.saveCopiesDir}-old`, 'c1', 'saves', 'Slot_00000002.save')
+    const loose = join(w.root, 'pc', 'Downloads', 'Slot_00000002.save')
+    for (const file of [backup, beside, loose]) {
+      await mkdir(dirname(file), { recursive: true })
+      await writeFile(file, 'not a save copy')
+    }
+    const target = w.inFolder('saves', NEW_SLOT)
+    for (const from of [backup, beside, loose, w.inFolder(...SAVE), w.inFolder(...MOD), w.paths.saveCopiesDir]) {
+      await expectRefusal(w, () => putBack(w, from, target), { reason: 'outside-allowed-area', path: from })
+    }
+    expect(w.asked).toEqual([])
+  })
+
+  it('refuses a source reached through a link, even one into app data or saves', async () => {
+    const { w } = await makePutBackWorld()
+    await mkdir(w.inData('backups', 'b1', 'saves'), { recursive: true })
+    await writeFile(w.inData('backups', 'b1', 'saves', 'Slot_00000002.save'), 'a backup')
+    await linkFolder(w.inData('backups', 'b1'), join(w.paths.saveCopiesDir, 'c2'))
+    await linkFolder(w.folder, join(w.paths.saveCopiesDir, 'c3'))
+    await linkFolder(join(w.root, 'pc'), join(w.paths.saveCopiesDir, 'c4'))
+    const target = w.inFolder('saves', NEW_SLOT)
+    for (const from of [
+      join(w.paths.saveCopiesDir, 'c2', 'saves', 'Slot_00000002.save'),
+      join(w.paths.saveCopiesDir, 'c3', 'saves', 'Slot_00000002.save'),
+      join(w.paths.saveCopiesDir, 'c4', 'Users', 'Player', 'Documents', 'Electronic Arts', 'The Sims 4', ...SAVE)
+    ]) {
+      await expectRefusal(w, () => putBack(w, from, target), { reason: 'link-escape', path: from })
+    }
+  })
+
+  it('refuses when saveCopiesDir is not inside app data', async () => {
+    const { w, copy } = await makePutBackWorld()
+    const target = w.inFolder('saves', NEW_SLOT)
+    w.paths.saveCopiesDir = dirname(w.paths.dataDir)
+    await expectRefusal(w, () => putBack(w, copy, target), { reason: 'outside-allowed-area', path: copy })
+    w.paths.saveCopiesDir = w.paths.dataDir
+    await expectRefusal(w, () => putBack(w, copy, target), { reason: 'outside-allowed-area', path: copy })
+  })
+
+  const gameStates: [string, World['game'], GateRefusal][] = [
+    ['running', 'running', { reason: 'game-running' }],
+    ['unknown', 'unknown', { reason: 'game-state-unknown' }],
+    [
+      'a check that throws',
+      () => {
+        throw new Error('tasklist failed')
+      },
+      { reason: 'game-state-unknown' }
+    ],
+    ['an answer that is not one of the three', 'closed' as GameRunState, { reason: 'game-state-unknown' }]
+  ]
+
+  it.each(gameStates)('the game %s refuses, and the backup is never asked', async (_name, game, refusal) => {
+    const { w, copy } = await makePutBackWorld()
+    w.game = game
+    await expectRefusal(w, () => putBack(w, copy, w.inFolder('saves', NEW_SLOT)), refusal)
+    expect(w.asked).toEqual(['game'])
+  })
+
+  it('every other op on a new slot path refuses with saves-or-tray, whatever the reason', async () => {
+    const { w, copy } = await makePutBackWorld()
+    const target = w.inFolder('saves', NEW_SLOT)
+    const ops: WriteOp[] = [
+      { op: 'move', from: copy, to: target },
+      { op: 'move', from: target, to: w.inData('taken.save') },
+      { op: 'write', path: target, data: 'x', mode: 'create' },
+      { op: 'write', path: target, data: 'x', mode: 'replace' },
+      { op: 'remove', path: target },
+      { op: 'mkdir', path: target }
+    ]
+    for (const reason of ['save-put-back', 'fix', 'save-copy'] as const) {
+      for (const op of ops) {
+        await expectRefusal(w, () => w.run([op], { reason }), { reason: 'saves-or-tray', path: target })
+      }
+    }
+    expect(w.asked).toEqual([])
+  })
+
+  it('a copy to a new slot with any other reason refuses with saves-or-tray', async () => {
+    const { w, copy } = await makePutBackWorld()
+    const target = w.inFolder('saves', NEW_SLOT)
+    for (const reason of ['fix', 'backup', 'save-copy', 'share-save', 'undo', 'mod-install'] as const) {
+      await expectRefusal(w, () => putBack(w, copy, target, { reason }), { reason: 'saves-or-tray', path: target })
+    }
+  })
+
+  it('a put-back request does one copy into saves and nothing else', async () => {
+    const { w, copy } = await makePutBackWorld()
+    const target = w.inFolder('saves', NEW_SLOT)
+    const other = w.inFolder('saves', 'Slot_0000000b.save')
+    const state = w.inData('state', 'x.json')
+    await expectRefusal(
+      w,
+      () =>
+        w.run(
+          [
+            { op: 'copy', from: copy, to: target },
+            { op: 'copy', from: copy, to: other }
+          ],
+          { reason: 'save-put-back' }
+        ),
+      { reason: 'outside-allowed-area', path: '' }
+    )
+    await expectRefusal(w, () => w.run([], { reason: 'save-put-back' }), { reason: 'outside-allowed-area', path: '' })
+    for (const op of [
+      { op: 'write', path: state, data: '{}', mode: 'create' },
+      { op: 'mkdir', path: w.inData('state') },
+      { op: 'copy', from: copy, to: w.inData('elsewhere.save') },
+      { op: 'copy', from: copy, to: w.inFolder('Mods', NEW_SLOT) }
+    ] as WriteOp[]) {
+      const path = 'path' in op ? op.path : op.to
+      await expectRefusal(w, () => w.run([op], { reason: 'save-put-back' }), { reason: 'outside-allowed-area', path })
+    }
+    expect(w.asked).toEqual([])
+  })
+
+  it('refuses a put-back with no Sims folder named', async () => {
+    const { w, copy } = await makePutBackWorld()
+    const target = w.inFolder('saves', NEW_SLOT)
+    await expectRefusal(w, () => putBack(w, copy, target, { folderPath: null }), {
+      reason: 'outside-allowed-area',
+      path: target
+    })
+  })
+
+  it('a slot taken while the game was asked is refused before anything runs', async () => {
+    const { w, copy } = await makePutBackWorld()
+    const target = w.inFolder('saves', NEW_SLOT)
+    w.deps.gameState = async () => {
+      await writeFile(target, 'the game saved here meanwhile')
+      return 'not-running'
+    }
+    expect(await putBack(w, copy, target)).toEqual(refusedWith({ reason: 'saves-or-tray', path: target }))
+    expect(await readFile(target, 'utf8')).toBe('the game saved here meanwhile')
+  })
+})
+
+/** A world with a Sims Helper Mods folder, as Google Drive for desktop shows it. */
+async function makeModWorld(): Promise<{ w: World; root: string }> {
+  const w = await makeWorld()
+  const root = join(w.root, 'pc', 'G', 'My Drive', 'Sims Helper Mods')
+  await mkdir(join(root, 'from-tyler', 'r-20261126-101500-a1b2', 'files'), { recursive: true })
+  await writeFile(join(root, 'from-tyler', 'r-20261126-101500-a1b2', 'files', 'outfits.package'), 'a mod from Tyler')
+  w.modRoot = root
+  return { w, root }
+}
+
+const REQUEST = 'r-20261126-101500-a1b2.json'
+
+function sendRequest(w: World, ops: WriteOp[], overrides: Partial<WriteRequest> = {}): Promise<GateResult> {
+  return w.run(ops, { reason: 'mod-request', folderPath: null, ...overrides })
+}
+
+describe('mod-folder: her request file goes into the Sims Helper Mods folder, and nothing else', () => {
+  it('yes: makes requests/ and writes one new request file, asking neither the game nor a backup', async () => {
+    const { w, root } = await makeModWorld()
+    w.game = 'running'
+    w.backup = { state: 'none' }
+    const target = join(root, 'requests', REQUEST)
+    expect(
+      await sendRequest(w, [
+        { op: 'mkdir', path: join(root, 'requests') },
+        { op: 'write', path: target, data: '{"format":1}', mode: 'create' }
+      ])
+    ).toEqual({ status: 'done' })
+    expect(await readFile(target, 'utf8')).toBe('{"format":1}')
+    expect(await readdir(join(root, 'requests'))).toEqual([REQUEST])
+    expect((await readdir(root)).sort()).toEqual(['from-tyler', 'requests'])
+    expect(w.asked).toEqual([])
+  })
+
+  it('yes: the same with a Sims folder named in the request', async () => {
+    const { w, root } = await makeModWorld()
+    await mkdir(join(root, 'requests'))
+    expect(
+      await sendRequest(w, [{ op: 'write', path: join(root, 'requests', REQUEST), data: '{}', mode: 'create' }], {
+        folderPath: w.folder
+      })
+    ).toEqual({ status: 'done' })
+  })
+
+  it('never writes over a request that is there', async () => {
+    const { w, root } = await makeModWorld()
+    const target = join(root, 'requests', REQUEST)
+    await mkdir(join(root, 'requests'))
+    await writeFile(target, 'first')
+    expect(await sendRequest(w, [{ op: 'write', path: target, data: 'second', mode: 'create' }])).toMatchObject({
+      status: 'failed',
+      opsDone: 0
+    })
+    expect(await readFile(target, 'utf8')).toBe('first')
+    expect(await readdir(join(root, 'requests'))).toEqual([REQUEST])
+  })
+
+  it('refuses replace, remove, move and copy on a request file, and every op on the folder itself', async () => {
+    const { w, root } = await makeModWorld()
+    const target = join(root, 'requests', REQUEST)
+    await mkdir(join(root, 'requests'))
+    await writeFile(target, 'first')
+    await mkdir(w.dataDir, { recursive: true })
+    await writeFile(w.inData('spare.json'), '{}')
+    const cases: [WriteOp, string][] = [
+      [{ op: 'write', path: target, data: 'x', mode: 'replace' }, target],
+      [{ op: 'remove', path: target }, target],
+      [{ op: 'move', from: target, to: w.inData('moved.json') }, target],
+      [{ op: 'move', from: w.inData('spare.json'), to: join(root, 'requests', 'r-20261126-101501-a1b2.json') }, join(root, 'requests', 'r-20261126-101501-a1b2.json')],
+      [{ op: 'copy', from: w.inData('spare.json'), to: join(root, 'requests', 'r-20261126-101502-a1b2.json') }, join(root, 'requests', 'r-20261126-101502-a1b2.json')],
+      [{ op: 'remove', path: join(root, 'requests') }, join(root, 'requests')],
+      [{ op: 'remove', path: root }, root],
+      [{ op: 'remove', path: join(root, 'from-tyler') }, join(root, 'from-tyler')],
+      [{ op: 'mkdir', path: root }, root],
+      [{ op: 'write', path: root, data: 'x', mode: 'create' }, root]
+    ]
+    for (const [op, path] of cases) {
+      for (const reason of ['mod-request', 'fix', 'mod-install'] as const) {
+        await expectRefusal(w, () => sendRequest(w, [op], { reason }), { reason: 'outside-allowed-area', path })
+      }
+    }
+  })
+
+  it('refuses every name but requests/r-<id>.json, and every folder but requests/', async () => {
+    const { w, root } = await makeModWorld()
+    await mkdir(join(root, 'requests', 'sub'), { recursive: true })
+    const writes = [
+      join(root, REQUEST),
+      join(root, 'requests', 'sub', REQUEST),
+      join(root, 'Requests', REQUEST),
+      join(root, 'requests', 'r-1.json'),
+      join(root, 'requests', 'R-20261126-101500-a1b2.json'),
+      join(root, 'requests', 'r-20261126-101500-A1B2.json'),
+      join(root, 'requests', 'r-20261126-101500-a1b.json'),
+      join(root, 'requests', 'r-20261126-101500-a1b2.json.txt'),
+      join(root, 'requests', 'r-20261126-101500-a1b2.JSON'),
+      join(root, 'requests', 'r-20261126-1015-a1b2.json'),
+      join(root, 'requests', `${REQUEST}.`),
+      join(root, 'from-tyler', 'r-20261126-101500-a1b2', 'ready.json'),
+      join(root, 'from-tyler', 'r-20261126-101500-a1b2', 'files', 'evil.package')
+    ]
+    for (const path of writes) {
+      await expectRefusal(w, () => sendRequest(w, [{ op: 'write', path, data: '{}', mode: 'create' }]), {
+        reason: 'outside-allowed-area',
+        path
+      })
+    }
+    for (const path of [join(root, 'from-tyler', 'x'), join(root, 'requests', 'more'), join(root, 'Requests'), join(root, 'other')]) {
+      await expectRefusal(w, () => sendRequest(w, [{ op: 'mkdir', path }]), { reason: 'outside-allowed-area', path })
+    }
+  })
+
+  it('refuses a request file with any reason but mod-request', async () => {
+    const { w, root } = await makeModWorld()
+    await mkdir(join(root, 'requests'))
+    const target = join(root, 'requests', REQUEST)
+    for (const reason of ['fix', 'state', 'share', 'mod-install', 'save-put-back'] as const) {
+      await expectRefusal(w, () => sendRequest(w, [{ op: 'write', path: target, data: '{}', mode: 'create' }], { reason }), {
+        reason: 'outside-allowed-area',
+        path: target
+      })
+    }
+    await expectRefusal(w, () => sendRequest(w, [{ op: 'mkdir', path: join(root, 'requests', 'x') }], { reason: 'fix' }), {
+      reason: 'outside-allowed-area',
+      path: join(root, 'requests', 'x')
+    })
+  })
+
+  it('a mod-request request writes into the Sims Helper Mods folder only', async () => {
+    const { w, root } = await makeModWorld()
+    await mkdir(join(root, 'requests'))
+    const state = w.inData('state', 'mod-folder.json')
+    await expectRefusal(
+      w,
+      () =>
+        sendRequest(w, [
+          { op: 'write', path: join(root, 'requests', REQUEST), data: '{}', mode: 'create' },
+          { op: 'write', path: state, data: '{}', mode: 'create' }
+        ]),
+      { reason: 'outside-allowed-area', path: state }
+    )
+    await expectRefusal(w, () => sendRequest(w, [{ op: 'mkdir', path: w.inData('state') }]), {
+      reason: 'outside-allowed-area',
+      path: w.inData('state')
+    })
+  })
+
+  // [what, where, made on the disk first]
+  const wrongRoots: [string, (w: World) => string, boolean][] = [
+    ['another name', (w) => join(w.root, 'pc', 'G', 'My Drive', 'Sims Helper Mods (1)'), true],
+    ['the name in small letters', (w) => join(w.root, 'pc', 'G', 'My Drive', 'sims helper mods'), true],
+    ['the name with a trailing space', (w) => `${join(w.root, 'pc', 'G', 'My Drive', 'Sims Helper Mods')} `, false],
+    ['a folder inside the Sims folder', (w) => w.inFolder('Sims Helper Mods'), true],
+    ['a folder inside Mods', (w) => w.inFolder('Mods', 'Sims Helper Mods'), true],
+    ['a folder inside app data', (w) => w.inData('Sims Helper Mods'), true],
+    ['a folder under any Sims folder name', (w) => join(w.root, 'pc', 'Old', 'The Sims 4', 'Sims Helper Mods'), true],
+    ['a folder inside saves', (w) => w.inFolder('saves', 'Sims Helper Mods'), true],
+    ['a folder under Windows', (w) => join(w.root, 'pc', 'Windows', 'Sims Helper Mods'), true],
+    ['a folder under Program Files', (w) => join(w.root, 'pc', 'Program Files', 'Sims Helper Mods'), true],
+    ['a folder under ProgramData', (w) => join(w.root, 'pc', 'ProgramData', 'Sims Helper Mods'), true],
+    ['a folder under AppData', (w) => join(w.root, 'pc', 'Users', 'Player', 'AppData', 'Roaming', 'Sims Helper Mods'), true],
+    ['a relative path', () => join('My Drive', 'Sims Helper Mods'), false],
+    ['a folder that is not there', (w) => join(w.root, 'pc', 'H', 'Sims Helper Mods'), false]
+  ]
+
+  it.each(wrongRoots)('no zone for %s: its request path is outside the allowed area', async (_name, place, made) => {
+    const { w } = await makeModWorld()
+    const root = place(w)
+    if (made) await mkdir(join(root, 'requests'), { recursive: true })
+    w.modRoot = root
+    const target = join(root, 'requests', REQUEST)
+    await expectRefusal(w, () => sendRequest(w, [{ op: 'write', path: target, data: '{}', mode: 'create' }]), {
+      reason: 'outside-allowed-area',
+      path: target
+    })
+  })
+
+  it('no zone for a folder that is reached through a link', async () => {
+    const { w, root } = await makeModWorld()
+    const linked = join(w.root, 'pc', 'Shortcut', 'Sims Helper Mods')
+    await mkdir(dirname(linked), { recursive: true })
+    await linkFolder(root, linked)
+    w.modRoot = linked
+    const target = join(linked, 'requests', REQUEST)
+    await expectRefusal(w, () => sendRequest(w, [{ op: 'mkdir', path: join(linked, 'requests') }, { op: 'write', path: target, data: '{}', mode: 'create' }]), {
+      reason: 'outside-allowed-area',
+      path: join(linked, 'requests')
+    })
+    // A folder above it that is a link counts too.
+    const above = join(w.root, 'pc', 'Drive link')
+    await linkFolder(join(w.root, 'pc', 'G', 'My Drive'), above)
+    w.modRoot = join(above, 'Sims Helper Mods')
+    const viaAbove = join(above, 'Sims Helper Mods', 'requests')
+    await expectRefusal(w, () => sendRequest(w, [{ op: 'mkdir', path: viaAbove }]), {
+      reason: 'outside-allowed-area',
+      path: viaAbove
+    })
+  })
+
+  it('no zone for a file by that name, a folder holding app data, or the folder holding the Sims folder', async () => {
+    const { w, root } = await makeModWorld()
+    const file = join(w.root, 'pc', 'F', 'Sims Helper Mods')
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, 'not a folder')
+    w.modRoot = file
+    await expectRefusal(w, () => sendRequest(w, [{ op: 'mkdir', path: join(file, 'requests') }]), {
+      reason: 'outside-allowed-area',
+      path: join(file, 'requests')
+    })
+    // App data inside the Sims Helper Mods folder.
+    w.modRoot = root
+    w.paths.dataDir = join(root, 'SimsHelper')
+    await expectRefusal(w, () => sendRequest(w, [{ op: 'mkdir', path: join(root, 'requests') }]), {
+      reason: 'outside-allowed-area',
+      path: join(root, 'requests')
+    })
+    w.paths.dataDir = w.dataDir
+    // The Sims folder inside the Sims Helper Mods folder.
+    const holder = join(w.root, 'pc', 'Users', 'Player', 'Documents', 'Electronic Arts', 'Sims Helper Mods')
+    await mkdir(holder)
+    w.modRoot = holder
+    const simsInside = await makeWorld('clean', 'Users/Player/Documents/Electronic Arts/Sims Helper Mods/x', w.root)
+    await mkdir(simsInside.folder, { recursive: true })
+    await writeFile(join(simsInside.folder, 'Options.ini'), '')
+    simsInside.modRoot = holder
+    const target = join(holder, 'requests')
+    await expectRefusal(w, () => simsInside.run([{ op: 'mkdir', path: target }], { reason: 'mod-request' }), {
+      reason: 'outside-allowed-area',
+      path: target
+    })
+  })
+
+  it('no zone when the folder cannot be asked for, or the answer is not a path', async () => {
+    const { w, root } = await makeModWorld()
+    const target = join(root, 'requests')
+    for (const answer of [
+      () => {
+        throw new Error('state unreadable')
+      },
+      null,
+      undefined,
+      42,
+      { path: root },
+      ''
+    ]) {
+      w.modRoot = answer
+      await expectRefusal(w, () => sendRequest(w, [{ op: 'mkdir', path: target }]), {
+        reason: 'outside-allowed-area',
+        path: target
+      })
+    }
+  })
+
+  it('a link inside the folder is refused', async () => {
+    const { w, root } = await makeModWorld()
+    await mkdir(w.dataDir, { recursive: true })
+    await linkFolder(w.dataDir, join(root, 'requests'))
+    const target = join(root, 'requests', REQUEST)
+    await expectRefusal(w, () => sendRequest(w, [{ op: 'write', path: target, data: '{}', mode: 'create' }]), {
+      reason: 'link-escape',
+      path: target
+    })
+  })
+
+  it('yes: copies a delivered mod into holding with reason mod-install, and leaves the folder as it was', async () => {
+    const { w, root } = await makeModWorld()
+    w.game = 'running'
+    w.backup = { state: 'none' }
+    const from = join(root, 'from-tyler', 'r-20261126-101500-a1b2', 'files', 'outfits.package')
+    const to = w.inData('holding', 'e1', 'Mods', 'From Tyler', 'Outfits', 'outfits.package')
+    const before = await snapshotTree(root)
+    expect(await w.run([{ op: 'copy', from, to }], { reason: 'mod-install', folderPath: null })).toEqual({
+      status: 'done'
+    })
+    expect(await sha256(to)).toBe(await sha256(from))
+    expect(await snapshotTree(root)).toEqual(before)
+    expect(w.asked).toEqual([])
+  })
+
+  it('refuses a read from the folder with any other reason, from outside from-tyler, or into anywhere but app data', async () => {
+    const { w, root } = await makeModWorld()
+    const from = join(root, 'from-tyler', 'r-20261126-101500-a1b2', 'files', 'outfits.package')
+    const to = w.inData('holding', 'e1', 'Mods', 'outfits.package')
+    await mkdir(join(root, 'requests'))
+    await writeFile(join(root, 'requests', REQUEST), '{}')
+    await writeFile(join(root, 'loose.package'), 'x')
+    for (const reason of ['fix', 'backup', 'mod-request', 'save-put-back'] as const) {
+      await expectRefusal(w, () => w.run([{ op: 'copy', from, to }], { reason, folderPath: null }), {
+        reason: 'outside-allowed-area',
+        path: from
+      })
+    }
+    for (const source of [join(root, 'requests', REQUEST), join(root, 'loose.package'), join(root, 'from-tyler')]) {
+      await expectRefusal(w, () => w.run([{ op: 'copy', from: source, to }], { reason: 'mod-install', folderPath: null }), {
+        reason: 'outside-allowed-area',
+        path: source
+      })
+    }
+    // Straight into Mods, into the Sims folder, or onto the Desktop: copy writes into app data only.
+    for (const target of [w.inFolder('Mods', 'From Tyler', 'outfits.package'), w.inFolder('outfits.package'), join(w.desktopDir, 'outfits.package')]) {
+      await expectRefusal(w, () => w.run([{ op: 'copy', from, to: target }], { reason: 'mod-install' }), {
+        reason: 'outside-allowed-area',
+        path: target
+      })
+    }
+    // A move out of the folder takes her copy away from Tyler's: never.
+    await expectRefusal(w, () => w.run([{ op: 'move', from, to }], { reason: 'mod-install' }), {
+      reason: 'outside-allowed-area',
+      path: from
+    })
+  })
+
+  it('refuses a read through a link inside the folder', async () => {
+    const { w, root } = await makeModWorld()
+    const delivery = join(root, 'from-tyler', 'r-20261126-101500-a1b2')
+    await rm(join(delivery, 'files'), { recursive: true })
+    await linkFolder(w.inFolder('saves'), join(delivery, 'files'))
+    const from = join(delivery, 'files', 'Slot_00000002.save')
+    await expectRefusal(
+      w,
+      () => w.run([{ op: 'copy', from, to: w.inData('holding', 'e1', 'x.save') }], { reason: 'mod-install', folderPath: null }),
+      { reason: 'link-escape', path: from }
+    )
+  })
+
+  it('with no folder set, a read from where it would be is refused', async () => {
+    const { w, root } = await makeModWorld()
+    w.modRoot = null
+    const from = join(root, 'from-tyler', 'r-20261126-101500-a1b2', 'files', 'outfits.package')
+    await expectRefusal(w, () => w.run([{ op: 'copy', from, to: w.inData('holding', 'x') }], { reason: 'mod-install', folderPath: null }), {
+      reason: 'outside-allowed-area',
+      path: from
+    })
+  })
+})
+
+describe('sortPath knows the mod folder', () => {
+  it('sorts paths under the mod folder root as mod-folder, and the root itself at root', () => {
+    const roots: GateRoots = {
+      folderPath: 'C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4',
+      dataDir: 'C:\\Users\\Lila\\AppData\\Local\\SimsHelper',
+      desktopDir: null,
+      modFolder: 'G:\\My Drive\\Sims Helper Mods'
+    }
+    expect(sortPath(win32, roots, 'G:\\My Drive\\Sims Helper Mods\\requests\\r-1.json').zone).toBe('mod-folder')
+    expect(sortPath(win32, roots, 'g:\\my drive\\sims helper mods\\requests').zone).toBe('mod-folder')
+    expect(sortPath(win32, roots, 'G:\\My Drive\\Sims Helper Mods')).toMatchObject({ zone: 'mod-folder', atRoot: true })
+    expect(sortPath(win32, roots, 'G:\\My Drive\\Other\\x').zone).toBe('none')
+    expect(sortPath(win32, { ...roots, modFolder: null }, 'G:\\My Drive\\Sims Helper Mods\\x').zone).toBe('none')
   })
 })

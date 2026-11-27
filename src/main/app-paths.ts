@@ -52,6 +52,7 @@ export function appPaths({ localAppData, appData, desktopDir, env = {} }: AppPat
     keyFile: join(dataDir, 'assist', 'key.bin'),
     oldSavesDir: join(dataDir, 'old-saves'),
     shareDir: join(dataDir, 'share'),
+    saveCopiesDir: join(dataDir, 'save-copies'),
     desktopDir,
     oneDriveRoots,
     curseForgeInstanceFile
