@@ -64,6 +64,18 @@ PRs own, each by the writer named here and nobody else:
   share kinds in `runAction`, `undo` and `recover`. Unit E also changes the one `closeUndo` line in
   `src/main/services.ts` and that stub's `closeUndo` line in `src/main/contract.test.ts`.
 
+### PRs 15 to 17 (Tyler, 2026-11-26)
+
+Builders: Opus through OpenCode and Neon only. No Fable and no Claude-app Opus, gate changes included.
+
+| PR | Branch | Builder | May create or edit |
+|---|---|---|---|
+| round 7 | `wells/round-7` | Opus (OpenCode) | every shared file listed in `briefs/pr-15.md` "Round 7", the round-7 parts of `briefs/pr-16.md` and `briefs/pr-17.md`, and `gate.ts`, `gate.test.ts`, `gate-lint.test.ts` for the `save-new-slot` and `mod-folder` zones |
+| 15 | `wells/p15-save-copies` | Opus (OpenCode) | `src/main/savecopies/**` · `src/renderer/savecopies/**` · `test/e2e/screens/p15-save-copies.spec.ts` · `scripts/fixtures/specs/p15-*.json` · the one before-change call in `src/main/fixes/handlers.ts` |
+| 16 | `wells/p16-patch-guard` | Neon | `src/main/patchguard/**` · `src/renderer/patchguard/**` · `src/renderer/patchday/**` · `test/e2e/screens/p16-patch-guard.spec.ts` · `scripts/fixtures/specs/p16-*.json` |
+| 17 | `wells/p17-ask-tyler` | Neon | `src/main/requests/**` · `src/renderer/requests/**` · `test/e2e/screens/p17-ask-tyler.spec.ts` · `scripts/fixtures/specs/p17-*.json` |
+| 17r | `wells/p17r-relay` | Opus (OpenCode) | `relay/**` |
+
 The PR 14 builders (Opus for folder, state, send and "Find where to get it"; Neon for the mods list and the
 screens) write everything else in that row. PR 14 adds no npm package and no workflow file.
 

@@ -410,6 +410,25 @@ Tyler asked for this on 2026-11-24. They live apart and want to play one save in
 - [ ] Tyler approves every screen and the wording before merge.
 - [ ] When it lands, `AGENTS.md`'s rule "Never write to `Saves/` or `Tray/`" is reworded as the brief says.
 
+## PRs 15 to 17 (Tyler, 2026-11-26)
+
+Picked from Grok's X research ([`grok-player-needs-x.md`](../research/grok-player-needs-x.md),
+[`grok-save-safety-x.md`](../research/grok-save-safety-x.md)): patch day breaking mods was the top complaint, lost
+saves came up often, and Tyler wants to build mods for her himself. Builders are Opus through OpenCode and Neon only
+(Tyler, 2026-11-26), so no Fable writes any of these, the gate zones included. Order: round 7 first, then 15, 17
+and 17r in parallel, then 16 (it uses 15's save copies).
+
+| PR | Change | Builder | Brief |
+|---|---|---|---|
+| round 7 | Shared types, IPC, paths, and two gate zones (`save-new-slot`, `mod-folder`) | Opus (OpenCode) | in [`briefs/pr-15.md`](briefs/pr-15.md), [`pr-16.md`](briefs/pr-16.md), [`pr-17.md`](briefs/pr-17.md) |
+| 15 | Save safety net: copies of saves and Tray, put one back as a new save | Opus (OpenCode) | [`briefs/pr-15.md`](briefs/pr-15.md) |
+| 16 | Patch day guard: notice an update, Play button, Waiting on list | Neon | [`briefs/pr-16.md`](briefs/pr-16.md) |
+| 17 | Ask Tyler for a mod, install what he sends | Neon | [`briefs/pr-17.md`](briefs/pr-17.md) |
+| 17r | M8 relay: email Tyler and deliver mods through the Drive folder | Opus (OpenCode) | [`briefs/pr-17.md`](briefs/pr-17.md) |
+
+Neon reviews the Opus PRs, Opus (OpenCode) reviews Neon's. Tyler approves every screen. Round 7 rewords the
+`AGENTS.md` saves rule (the gate zone lands there) and adds the PRs 15 to 17 builder line.
+
 ---
 
 ## After v1 (not planned in detail)

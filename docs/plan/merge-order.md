@@ -124,3 +124,14 @@ or CI, never by nine builders at once.
 | Is Google Drive for desktop on her PC, in stream or mirror mode? How does a folder Tyler owns appear there, and can the app read and write it? | PR 14's setup guide, `findShareRoot` and the gate's share zone | change the guide step and the places the app looks; a bad answer on the gate's checks changes the brief before the build |
 | What does a half-synced file look like in the Drive folder, and how long does a save take to arrive? | PR 14's "still arriving" check and its 30 minute limit | the size-and-hash check on the app's own copy already covers it; only the wait and the words change |
 | How are her slot files named, how big are they, and which is the autosave? Does the game load a save placed under another slot number? | PR 14's slot pattern and `pickFreeSlot` | fix the pattern; if a moved save does not load, PR 14 stops before any build |
+
+## PRs 15 to 17 (Tyler, 2026-11-26)
+
+| Step | Merge into `main` | Needs first | Notes |
+|---|---|---|---|
+| 14 | round 7 (`wells/round-7`) | v0.2.0 on `main` | shared files, the two gate zones and the `AGENTS.md` saves rule; no screen |
+| 15 | PR 15 save copies | step 14 | **Tyler approves the screens** |
+| 15b | PR 17 ask Tyler, PR 17r relay | step 14 | any order, beside step 15; **Tyler approves the screens** |
+| 16 | PR 16 patch guard | steps 14 and 15 | **Tyler approves the screens** |
+
+At most 3 builders run at once on this Mac. Round 7 runs alone; then 15, 17 and 17r; then 16.
