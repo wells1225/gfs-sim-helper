@@ -14,6 +14,7 @@ import type {
   BackupPruneResult,
   BackupRefusal,
   BackupSummary,
+  ClearHoldingResult,
   DisabledGroup,
   FiftyDamaged,
   FiftyStopPartWay,
@@ -536,6 +537,7 @@ describe('auto-update contract (PR 13)', () => {
         'savecopies:put-back',
         'patchguard:seen',
         'patchguard:play',
+        'patchguard:clear-holding',
         'requests:pick-folder',
         'requests:send',
         'requests:install'
@@ -896,7 +898,11 @@ describe('round 7 contract: save copies, patch day guard and mod requests (PRs 1
 
   const groups: [string, (ctx: ReturnType<typeof makeContext>) => object, (keyof IpcInvoke)[]][] = [
     ['savecopies', saveCopiesHandlers, ['savecopies:list', 'savecopies:make', 'savecopies:put-back']],
-    ['patchguard', patchGuardHandlers, ['patchguard:watch', 'patchguard:seen', 'patchguard:play', 'patchguard:waiting']],
+    [
+      'patchguard',
+      patchGuardHandlers,
+      ['patchguard:watch', 'patchguard:seen', 'patchguard:play', 'patchguard:waiting', 'patchguard:clear-holding']
+    ],
     [
       'requests',
       requestsHandlers,
@@ -942,6 +948,8 @@ describe('round 7 contract: save copies, patch day guard and mod requests (PRs 1
     const request: ModRequest = { id: 'r-20261126-101500-a1b2', at: '2026-11-26T10:15:00.000Z', text: 'x', status: 'sent', delivery: null }
     const sent: ModRequestSent[] = [{ kind: 'sent', request }, { kind: 'refused', why: 'too-long' }]
     const folders: ModFolderState[] = [{ kind: 'not-set' }, { kind: 'set', path: 'G:\\Sims Helper Mods' }, { kind: 'in-sims-folder', path: 'x' }]
+    const cleared: ClearHoldingResult[] = [{ kind: 'done' }, { kind: 'refused', why: 'not-back-in-mods' }]
+    expect(cleared).toHaveLength(2)
     const kinds: ActionKind[] = ['install-mod']
     const reasons: WriteRequest['reason'][] = ['save-copy', 'mod-request', 'mod-install']
     expect([made.length, putBack.length, play.length, waiting.state, sent.length, folders.length, kinds, reasons.length]).toEqual([
@@ -963,9 +971,52 @@ describe('round 7 contract: save copies, patch day guard and mod requests (PRs 1
   })
 
   it('has no way to open the game unless index.ts passes one', async () => {
-    await expect(makeContext().openGame('C:\\Games\\The Sims 4\\Game\\Bin\\TS4_x64.exe')).rejects.toThrow(
-      'The game could not be opened'
-    )
+    // A native path that passes the check, so the missing opener is what refuses it.
+    const exe =
+      process.platform === 'win32'
+        ? 'C:\\Games\\The Sims 4\\Game\\Bin\\TS4_x64.exe'
+        : join('/fake/Sims', 'Game', 'Bin', 'TS4_x64.exe')
+    const opened: string[] = []
+    await makeOpenGame(async (path) => void opened.push(path))(exe)
+    expect(opened).toEqual([exe])
+    await expect(makeContext().openGame(exe)).rejects.toThrow('The game could not be opened')
+  })
+
+  it('openGame refuses Windows paths that are not a plain drive path: share, device, no drive, stream, odd names', async () => {
+    const { win32, posix } = await import('node:path')
+    const opened: string[] = []
+    const open = makeOpenGame(async (exe) => void opened.push(exe), win32)
+    for (const refused of [
+      '\\\\evil\\share\\Game\\Bin\\TS4_x64.exe',
+      '\\\\?\\C:\\x\\Game\\Bin\\TS4_x64.exe',
+      '\\\\.\\C:\\x\\Game\\Bin\\TS4_x64.exe',
+      '\\Game\\Bin\\TS4_x64.exe',
+      '\\x\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x:stream\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x\\Game\\Bin\\TS4_x64.exe:stream',
+      'C:\\x\u0000\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x\u001f\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x?\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x<y\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x"\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x|\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x*\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x.\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x \\Game\\Bin\\TS4_x64.exe',
+      'C:\\x\\Game\\Bin\\TS4_x64.exe.',
+      'C:\\x\\Game\\Bin\\TS4_x64.exe ',
+      'C:/x/Game/Bin/TS4_x64.exe',
+      'C:\\x\\\\Game\\Bin\\TS4_x64.exe'
+    ]) {
+      await expect(open(refused), JSON.stringify(refused)).rejects.toThrow('The game could not be opened')
+    }
+    expect(opened).toEqual([])
+    const onPosix = makeOpenGame(async (exe) => void opened.push(exe), posix)
+    for (const refused of ['/x\\y/Game/Bin/TS4_x64.exe', '/x\u0000/Game/Bin/TS4_x64.exe', 'x/Game/Bin/TS4_x64.exe']) {
+      await expect(onPosix(refused), JSON.stringify(refused)).rejects.toThrow('The game could not be opened')
+    }
+    await onPosix('/home/l/Games/Game/Bin/TS4_x64.exe')
+    expect(opened).toEqual(['/home/l/Games/Game/Bin/TS4_x64.exe'])
   })
 
   it('openGame hands only <install>/Game/Bin/TS4_x64.exe to the opener, and one plain message for any failure', async () => {

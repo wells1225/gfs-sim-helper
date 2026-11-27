@@ -3499,6 +3499,31 @@ describe('save-new-slot: a save copy goes back only as a new slot file', () => {
     })
   })
 
+  it('on a disk with no hard links it fails and never renames over a save that appears at the last moment', async () => {
+    for (const code of ['EPERM', 'ENOTSUP', 'EINVAL', 'EACCES', 'EBUSY']) {
+      const { w, copy } = await makePutBackWorld()
+      const target = w.inFolder('saves', NEW_SLOT)
+      disk.noHardLinks = { code, hits: 0 }
+      let appeared = false
+      // The first last moment is the hard link, which fails. The file appears at the next one: after the gate has
+      // looked and found the name free, right before any rename would give the temp file that name.
+      disk.atTheLastMoment = async () => {
+        disk.atTheLastMoment = async () => {
+          await writeFile(target, 'the game saved here meanwhile')
+          appeared = true
+        }
+      }
+      const result = await putBack(w, copy, target)
+      expect(result, code).toMatchObject({ status: 'failed', opsDone: 0 })
+      expect(disk.noHardLinks.hits, `${code}: a hard link was tried`).toBe(1)
+      if (appeared) expect(await readFile(target, 'utf8'), code).toBe('the game saved here meanwhile')
+      else expect(await exists(target), `${code}: nothing was named`).toBe(false)
+      expect((await readdir(w.inFolder('saves'))).filter((name) => name.includes('sims-helper-tmp')), code).toEqual([])
+      disk.noHardLinks = null
+      disk.atTheLastMoment = null
+    }
+  })
+
   it('a slot taken while the game was asked is refused before anything runs', async () => {
     const { w, copy } = await makePutBackWorld()
     const target = w.inFolder('saves', NEW_SLOT)
@@ -3678,7 +3703,9 @@ describe('mod-folder: her request file goes into the Sims Helper Mods folder, an
     ['a folder under Windows', (w) => join(w.root, 'pc', 'Windows', 'Sims Helper Mods'), true],
     ['a folder under Program Files', (w) => join(w.root, 'pc', 'Program Files', 'Sims Helper Mods'), true],
     ['a folder under ProgramData', (w) => join(w.root, 'pc', 'ProgramData', 'Sims Helper Mods'), true],
-    ['a folder under AppData', (w) => join(w.root, 'pc', 'Users', 'Player', 'AppData', 'Roaming', 'Sims Helper Mods'), true],
+    ['a folder under Program Files (x86)', (w) => join(w.root, 'pc', 'Program Files (x86)', 'Sims Helper Mods'), true],
+    ['a folder under $Recycle.Bin', (w) => join(w.root, 'pc', '$Recycle.Bin', 'S-1-5-21', 'Sims Helper Mods'), true],
+    ['a folder under System Volume Information', (w) => join(w.root, 'pc', 'System Volume Information', 'Sims Helper Mods'), true],
     ['a relative path', () => join('My Drive', 'Sims Helper Mods'), false],
     ['a folder that is not there', (w) => join(w.root, 'pc', 'H', 'Sims Helper Mods'), false]
   ]
@@ -3769,6 +3796,28 @@ describe('mod-folder: her request file goes into the Sims Helper Mods folder, an
       reason: 'outside-allowed-area',
       path: target
     })
+  })
+
+  it('yes: a Sims Helper Mods folder under AppData that is not app data itself', async () => {
+    const { w } = await makeModWorld()
+    const root = join(w.root, 'pc', 'Users', 'Player', 'AppData', 'Roaming', 'Sims Helper Mods')
+    await mkdir(root, { recursive: true })
+    w.modRoot = root
+    expect(await sendRequest(w, [{ op: 'mkdir', path: join(root, 'requests') }])).toEqual({ status: 'done' })
+  })
+
+  it('no zone for a folder whose name on the disk is spelled another way, where the disk ignores letter case', async () => {
+    const { w } = await makeModWorld()
+    const onDisk = join(w.root, 'pc', 'D', 'sims helper mods')
+    await mkdir(onDisk, { recursive: true })
+    const asked = join(w.root, 'pc', 'D', 'Sims Helper Mods')
+    const caseBlind = await exists(asked)
+    w.modRoot = asked
+    await expectRefusal(w, () => sendRequest(w, [{ op: 'mkdir', path: join(asked, 'requests') }]), {
+      reason: 'outside-allowed-area',
+      path: join(asked, 'requests')
+    })
+    expect(caseBlind || !(await exists(asked)), 'on a disk that tells case apart the folder is simply missing').toBe(true)
   })
 
   it('no zone when the folder cannot be asked for, or the answer is not a path', async () => {
