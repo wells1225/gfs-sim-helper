@@ -1,7 +1,17 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
-import type { DisabledGroup, FixCall, FixOutcome, JournalEntry, ModGroup, Scan } from '../../shared/model.ts'
+import type {
+  DisabledGroup,
+  FixCall,
+  FixOutcome,
+  GameVersionWatch,
+  JournalEntry,
+  ModGroup,
+  SaveCopy,
+  Scan,
+  WaitingOnMod
+} from '../../shared/model.ts'
 import { sampleJournalEntry, sampleScan } from '../../shared/testing/sample.ts'
 import { ApiProvider } from '../api.tsx'
 import { LOAD_FAILED_COPY } from '../fixes/words.ts'
@@ -254,5 +264,145 @@ describe('PatchDayScreen', () => {
     expect(await screen.findByText(LOAD_FAILED_COPY.title)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Set aside all script mods' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+  })
+
+  it('auto-runs Step 1 save copy once after a game update and completes Step 3 with seen + play(ignoreUpdate: true)', async () => {
+    const user = userEvent.setup()
+    const watchChanged: GameVersionWatch = {
+      current: '1.130.12.1020',
+      lastSeen: '1.129.39.1030',
+      changed: true,
+      seenAt: '2026-11-20T10:00:00.000Z'
+    }
+    const copy: SaveCopy = {
+      id: '20261126-120000-sc01',
+      at: '2026-11-26T12:00:00.000Z',
+      reason: 'game-updated',
+      gameVersion: '1.130.12.1020',
+      saves: [{ name: 'Slot_00000002.save', bytes: 4_000_000, sha256: 'a'.repeat(64), savedAt: '2026-11-25T20:00:00.000Z' }],
+      trayFiles: 4,
+      bytes: 5_000_000,
+      status: 'checked'
+    }
+
+    const api = renderScreen(scanWith([scriptGroup('dir:mccc', 'MCCC')]), {
+      'patchguard:watch': watchChanged,
+      'savecopies:make': { kind: 'done', copy },
+      'patchguard:seen': { ...watchChanged, lastSeen: watchChanged.current, changed: false },
+      'patchguard:play': { kind: 'started' }
+    })
+
+    expect(await screen.findByText('Save a copy of my saves')).toBeInTheDocument()
+    expect(await screen.findByText(/Your saves and households are backed up/i)).toBeInTheDocument()
+    expect(screen.getByText("When you're ready, press below to start the game.")).toBeInTheDocument()
+    expect(api.calls.filter((c) => c.channel === 'savecopies:make')).toEqual([
+      { channel: 'savecopies:make', req: { reason: 'game-updated' } }
+    ])
+
+    await user.click(screen.getByRole('button', { name: "I'm ready, let's play" }))
+    await waitFor(() => {
+      expect(api.calls.filter((c) => c.channel === 'patchguard:seen')).toHaveLength(1)
+      expect(api.calls.filter((c) => c.channel === 'patchguard:play')).toEqual([
+        { channel: 'patchguard:play', req: { ignoreUpdate: true } }
+      ])
+    })
+  })
+
+  it('does not loop Step 1 save copy when refused after a game update', async () => {
+    const watchChanged: GameVersionWatch = {
+      current: '1.130.12.1020',
+      lastSeen: '1.129.39.1030',
+      changed: true,
+      seenAt: '2026-11-20T10:00:00.000Z'
+    }
+
+    const api = renderScreen(scanWith([scriptGroup('dir:mccc', 'MCCC')]), {
+      'patchguard:watch': watchChanged,
+      'savecopies:make': { kind: 'refused', why: 'game-running' }
+    })
+
+    expect(await screen.findByText('Close The Sims 4 first')).toBeInTheDocument()
+    expect(api.calls.filter((c) => c.channel === 'savecopies:make')).toHaveLength(1)
+  })
+
+  it('renders all four Waiting on states and handles Turn it back on and confirmed Clear the old copy', async () => {
+    const user = userEvent.setup()
+    let waitingList: WaitingOnMod[] = [
+      {
+        groupId: 'cf:160101',
+        label: 'Waiting Script Mod',
+        entryId: 'e-wait',
+        setAsideAt: '2026-11-22T12:00:00.000Z',
+        state: 'waiting',
+        updatedAt: null
+      },
+      {
+        groupId: 'cf:160102',
+        label: 'Updated Script Mod',
+        entryId: 'e-upd',
+        setAsideAt: '2026-11-22T12:00:00.000Z',
+        state: 'updated',
+        updatedAt: '2026-11-25T15:00:00.000Z'
+      },
+      {
+        groupId: 'cf:160103',
+        label: 'Back In Mods Script',
+        entryId: 'e-back',
+        setAsideAt: '2026-11-22T12:00:00.000Z',
+        state: 'back-in-mods',
+        updatedAt: '2026-11-26T14:00:00.000Z'
+      },
+      {
+        groupId: 'dir:manualscript',
+        label: 'Manual Script Mod',
+        entryId: 'e-man',
+        setAsideAt: '2026-11-22T12:00:00.000Z',
+        state: 'not-curseforge',
+        updatedAt: null
+      }
+    ]
+
+    const api = renderScreen(scanWith([HAIR]), {
+      'patchguard:waiting': () => [...waitingList],
+      'fix:apply': (req: FixCall): FixOutcome => {
+        if (req.via === 'group' && req.fix === 'enable-group') {
+          waitingList = waitingList.filter((w) => w.groupId !== req.groupId)
+          return { status: 'done', entry: setAsideEntry(req.groupId, 'Updated Script Mod') }
+        }
+        throw new Error('unexpected fix:apply')
+      },
+      'patchguard:clear-holding': (req) => {
+        waitingList = waitingList.filter((w) => w.entryId !== req.entryId)
+        return { kind: 'done' }
+      }
+    })
+
+    expect(await screen.findByText('Waiting on')).toBeInTheDocument()
+    expect(screen.getByText('Waiting Script Mod')).toBeInTheDocument()
+    expect(screen.getByText('Updated Script Mod')).toBeInTheDocument()
+    expect(screen.getByText('Back In Mods Script')).toBeInTheDocument()
+    expect(screen.getByText('Manual Script Mod')).toBeInTheDocument()
+    expect(screen.getByText("Check the creator's page.")).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/[\u2014\u2013]/)
+
+    // Turn back on the updated mod via enable-group
+    await user.click(screen.getByRole('button', { name: 'Turn it back on' }))
+    await waitFor(() => {
+      expect(fixCalls(api)).toEqual([{ via: 'group', fix: 'enable-group', groupId: 'cf:160102' }])
+    })
+    await waitFor(() => expect(screen.queryByText('Updated Script Mod')).not.toBeInTheDocument())
+
+    // Clear the old copy opens confirmation dialog before calling patchguard:clear-holding
+    await user.click(screen.getByRole('button', { name: 'Clear the old copy' }))
+    expect(await screen.findByText(/Clear the old copy of Back In Mods Script/i)).toBeInTheDocument()
+    expect(api.calls.filter((c) => c.channel === 'patchguard:clear-holding')).toHaveLength(0)
+
+    await user.click(screen.getByRole('button', { name: 'Yes, clear old copy' }))
+    await waitFor(() => {
+      expect(api.calls.filter((c) => c.channel === 'patchguard:clear-holding')).toEqual([
+        { channel: 'patchguard:clear-holding', req: { entryId: 'e-back' } }
+      ])
+    })
+    await waitFor(() => expect(screen.queryByText('Back In Mods Script')).not.toBeInTheDocument())
   })
 })
