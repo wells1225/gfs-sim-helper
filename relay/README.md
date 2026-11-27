@@ -75,7 +75,7 @@ Everything below runs as your own user, not root, except the two `sudo` lines.
    printf 'To: YOUR_ADDRESS@gmail.com\nSubject: msmtp test\n\nIt works.\n' | msmtp -t
    ```
 
-5. **The relay config.** The scripts refuse to run if any other user can read it.
+5. **The relay config.** The scripts refuse to run if any other user can read it, or if it is a link rather than a plain file.
 
    ```sh
    mkdir -p ~/.config/sims-helper-relay && chmod 700 ~/.config/sims-helper-relay
@@ -91,7 +91,7 @@ Everything below runs as your own user, not root, except the two `sudo` lines.
    }
    ```
 
-   `webhookUrl` is optional: leave that line out (and the comma before it) for email only. It must be `https://`. The relay POSTs the request JSON to it after the email is sent. If the POST fails
+   `webhookUrl` is optional: leave that line out (and the comma before it) for email only. It must be `https://` (plain `http://` is accepted only for `127.0.0.1`, `localhost` or `[::1]`, for local testing). Redirects are not followed. The relay POSTs the request JSON to it after the email is sent. If the POST fails
    it is logged and not retried (the email already went out).
 
 6. **Try one run by hand**, then turn on the timer.
@@ -115,7 +115,7 @@ To update later: `git -C ~/gfs-sim-helper pull`. The timer picks up the new scri
 ## Delivering a mod
 
 Put the finished files in one folder: only `.package` and `.ts4script`, no subfolders, no links, each 200 MB at
-most, with plain Windows-safe names. Then:
+most, with plain Windows-safe names: no `<>:"|?*`, no leading dot, no trailing dot or space, no Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, with or without an extension), and no two names that differ only in case. Then:
 
 ```sh
 node ~/gfs-sim-helper/relay/deliver.mjs r-20261126-143000-ab12 ~/mods/outfit-reactions \

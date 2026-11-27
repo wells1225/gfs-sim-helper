@@ -24,13 +24,12 @@ import {
   say,
   warn,
 } from './lib.mjs'
+import { badName, caseDuplicates } from './names.mjs'
 
 const MAX_FILE_BYTES = 200_000_000
 const MAX_TITLE_CHARS = 80
 const MAX_NOTE_CHARS = 1000
-const MAX_NAME_CHARS = 200
-const ALLOWED = ['.package', '.ts4script']
-const WINDOWS_BAD = /[<>:"|?*\\/]/
+const COPY_CHUNK = 1024 * 1024
 
 const USAGE =
   'Usage: node relay/deliver.mjs <request id> <folder with the mod files> --title "<title>" --note "<note>" [--has-script]'
@@ -63,17 +62,6 @@ function parse(argv) {
   return { id, folder: path.resolve(folder), title, note, hasScriptFlag: parsed.values['has-script'] === true }
 }
 
-/** Why a file name is refused, or null when it is fine. */
-function badName(name) {
-  if (name.length === 0 || name.length > MAX_NAME_CHARS) return 'its name is empty or too long'
-  if (name.includes('/') || name.includes('\\')) return 'its name has a slash'
-  if (name.includes('..')) return 'its name has ".."'
-  if (hasControl(name)) return 'its name has control characters'
-  if (WINDOWS_BAD.test(name) || /[ .]$/.test(name) || name.startsWith('.')) return 'its name is not a safe Windows file name'
-  if (!ALLOWED.some((ext) => name.endsWith(ext))) return 'only .package and .ts4script files can be delivered'
-  return null
-}
-
 function checkFolder(folder) {
   let st
   try {
@@ -101,15 +89,55 @@ function checkFolder(folder) {
     else if (lst.size > MAX_FILE_BYTES) problems.push(`${JSON.stringify(name)}: it is over 200 MB`)
     else files.push(name)
   }
+  for (const group of caseDuplicates(files)) {
+    problems.push(`${group.map((n) => JSON.stringify(n)).join(' and ')}: names that differ only in case clash on Windows`)
+  }
   if (problems.length > 0) throw new RefusedError(`Nothing was delivered. Fix these first:\n  ${problems.join('\n  ')}`)
   if (files.length === 0) throw new RefusedError(`${folder} has no .package or .ts4script files.`)
   return files
 }
 
-async function sha256(file) {
-  const hash = crypto.createHash('sha256')
-  for await (const chunk of fs.createReadStream(file)) hash.update(chunk)
-  return hash.digest('hex')
+/**
+ * Copies one source file into staging and hashes the bytes as they are written. The source is opened once without
+ * following a link and checked on that open file; the copy stops if it reads past MAX_FILE_BYTES, so a file that is
+ * swapped or grows after the folder check cannot get through.
+ */
+function copyAndHash(source, target, name) {
+  let src
+  try {
+    src = fs.openSync(source, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK)
+  } catch (e) {
+    if (e?.code === 'ELOOP' || e?.code === 'EMLINK') throw new RefusedError(`${JSON.stringify(name)} became a link.`)
+    throw new RefusedError(`${JSON.stringify(name)} cannot be opened (${e?.code ?? 'error'}).`)
+  }
+  try {
+    const st = fs.fstatSync(src)
+    if (!st.isFile()) throw new RefusedError(`${JSON.stringify(name)} is no longer a plain file.`)
+    if (st.size === 0 || st.size > MAX_FILE_BYTES) throw new RefusedError(`${JSON.stringify(name)} changed size.`)
+    const dst = fs.openSync(target, 'wx', 0o600)
+    const hash = crypto.createHash('sha256')
+    let bytes = 0
+    try {
+      const buf = Buffer.allocUnsafe(COPY_CHUNK)
+      for (;;) {
+        const n = fs.readSync(src, buf, 0, buf.length, null)
+        if (n === 0) break
+        bytes += n
+        if (bytes > MAX_FILE_BYTES) throw new RefusedError(`${JSON.stringify(name)} grew past 200 MB while copying.`)
+        const chunk = buf.subarray(0, n)
+        hash.update(chunk)
+        let off = 0
+        while (off < n) off += fs.writeSync(dst, chunk, off, n - off)
+      }
+      fs.fsyncSync(dst)
+    } finally {
+      fs.closeSync(dst)
+    }
+    if (bytes === 0) throw new RefusedError(`${JSON.stringify(name)} became empty while copying.`)
+    return { name, bytes, sha256: hash.digest('hex') }
+  } finally {
+    fs.closeSync(src)
+  }
 }
 
 async function rclone(args, what) {
@@ -118,8 +146,9 @@ async function rclone(args, what) {
   return r
 }
 
-async function remoteNames(target) {
-  const r = await run('rclone', ['lsjson', '--no-mimetype', target], { timeoutMs: 120_000 })
+async function remoteNames(target, { filesOnly = false } = {}) {
+  const flags = ['lsjson', '--no-mimetype', ...(filesOnly ? ['--files-only'] : [])]
+  const r = await run('rclone', [...flags, target], { timeoutMs: 120_000 })
   if (r.code === RCLONE_DIR_NOT_FOUND) return []
   if (r.code !== 0 || r.timedOut || r.overflow) throw new RefusedError(describeFailure('rclone lsjson', r))
   try {
@@ -136,28 +165,21 @@ async function main() {
   const remote = `${config.remote}:`
   const names = checkFolder(args.folder)
 
-  const requests = await remoteNames(`${remote}requests`)
+  const requests = await remoteNames(`${remote}requests`, { filesOnly: true })
   if (!requests.includes(`${args.id}.json`)) throw new RefusedError(`There is no request ${args.id} in the shared folder.`)
-  const existing = await remoteNames(`${remote}from-tyler/${args.id}`)
+  const existing = await remoteNames(`${remote}from-tyler/${args.id}`, { filesOnly: true })
   if (existing.includes('ready.json')) {
     throw new RefusedError(`Request ${args.id} already has a ready.json. A delivery is written once.`)
   }
 
-  const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'sims-helper-deliver-'))
+  const staging = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'sims-helper-deliver-'))
   try {
     fs.chmodSync(staging, 0o700)
     const filesDir = path.join(staging, 'files')
     fs.mkdirSync(filesDir, { mode: 0o700 })
 
     // Hash the copies that are uploaded, not the originals, so a file changed mid-run cannot slip past its hash.
-    const files = []
-    for (const name of names) {
-      const copy = path.join(filesDir, name)
-      fs.copyFileSync(path.join(args.folder, name), copy, fs.constants.COPYFILE_EXCL)
-      const bytes = fs.statSync(copy).size
-      if (bytes === 0 || bytes > MAX_FILE_BYTES) throw new RefusedError(`${JSON.stringify(name)} changed size while copying.`)
-      files.push({ name, bytes, sha256: await sha256(copy) })
-    }
+    const files = names.map((name) => copyAndHash(path.join(args.folder, name), path.join(filesDir, name), name))
 
     const hasScript = args.hasScriptFlag || names.some((n) => n.endsWith('.ts4script'))
     if (hasScript && !args.hasScriptFlag) say('A .ts4script file is included, so ready.json says hasScript: true.')

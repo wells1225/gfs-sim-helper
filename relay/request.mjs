@@ -63,8 +63,37 @@ export function validateRequest(raw, expectedId) {
   }
 }
 
+/**
+ * Quoted-printable (RFC 2045) for UTF-8 text: every line is at most 76 characters, far under SMTP's 998-byte limit,
+ * however long her text or the mod list is. A mail reader shows the original text unchanged.
+ */
+export function quotedPrintable(text) {
+  const out = []
+  for (const line of text.split('\n')) {
+    const bytes = Buffer.from(line, 'utf8')
+    const tokens = []
+    for (let i = 0; i < bytes.length; i++) {
+      const b = bytes[i]
+      const last = i === bytes.length - 1
+      const plain = (b >= 33 && b <= 126 && b !== 61) || ((b === 32 || b === 9) && !last)
+      tokens.push(plain ? String.fromCharCode(b) : `=${b.toString(16).toUpperCase().padStart(2, '0')}`)
+    }
+    let current = ''
+    for (const tok of tokens) {
+      if (current.length + tok.length > 75) {
+        out.push(`${current}=`)
+        current = ''
+      }
+      current += tok
+    }
+    out.push(current)
+  }
+  return out.join('\n')
+}
+
 /** The email as one RFC 5322 message for `msmtp -t`. The To address is the only config value in it. */
 export function buildEmail(to, request) {
+  if (typeof to !== 'string' || /[\r\n]/.test(to) || hasControl(to)) throw new Error('The To address has a line break.')
   const list = (items) => (items.length > 0 ? items.join(', ') : 'none listed')
   const body = [
     'Lila asked for a mod.',
@@ -90,8 +119,8 @@ export function buildEmail(to, request) {
     'Subject: Lila asked for a mod',
     'MIME-Version: 1.0',
     'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: 8bit',
+    'Content-Transfer-Encoding: quoted-printable',
     'Auto-Submitted: auto-generated',
   ].join('\n')
-  return `${headers}\n\n${body}`
+  return `${headers}\n\n${quotedPrintable(body)}`
 }

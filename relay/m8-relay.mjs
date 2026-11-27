@@ -28,17 +28,22 @@ import { MAX_REQUEST_BYTES, buildEmail, validateRequest } from './request.mjs'
 const WEBHOOK_TIMEOUT_MS = 15_000
 
 function loadSeen(file) {
+  // A broken seen.json would make every request email again; stop instead.
+  const broken = () => new RefusedError(`${file} cannot be read. Fix or remove it.`)
+  let data
   try {
-    const data = JSON.parse(fs.readFileSync(file, 'utf8'))
-    return {
-      seen: new Set(Array.isArray(data.seen) ? data.seen.filter((s) => typeof s === 'string') : []),
-      skipped: new Set(Array.isArray(data.skipped) ? data.skipped.filter((s) => typeof s === 'string') : []),
-    }
+    data = JSON.parse(fs.readFileSync(file, 'utf8'))
   } catch (e) {
     if (e?.code === 'ENOENT') return { seen: new Set(), skipped: new Set() }
-    // A broken seen.json would make every request email again; stop instead.
-    throw new RefusedError(`${file} cannot be read. Fix or remove it.`)
+    throw broken()
   }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) throw broken()
+  for (const key of ['seen', 'skipped']) {
+    if (data[key] !== undefined && (!Array.isArray(data[key]) || data[key].some((s) => typeof s !== 'string'))) {
+      throw broken()
+    }
+  }
+  return { seen: new Set(data.seen ?? []), skipped: new Set(data.skipped ?? []) }
 }
 
 function saveSeen(file, state) {
@@ -55,6 +60,7 @@ async function postWebhook(url, request) {
       signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS),
       redirect: 'error',
     })
+    await res.body?.cancel().catch(() => {})
     return res.ok ? null : `status ${res.status}`
   } catch (e) {
     return e?.name === 'TimeoutError' ? 'timed out' : 'could not connect'

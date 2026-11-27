@@ -7,6 +7,7 @@
 // - ~/.msmtprc is never read here: msmtp reads it itself.
 
 import { spawn } from 'node:child_process'
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -39,7 +40,12 @@ export function redact(text) {
   for (const s of [...secrets].sort((a, b) => b.length - a.length)) out = out.split(s).join(HIDDEN)
   out = out.replace(/[a-z][a-z0-9+.-]*:\/\/[^\s'"<>]+/gi, HIDDEN)
   out = out.replace(/[^\s@'"<>]+@[^\s@'"<>]+\.[^\s@'"<>]+/g, HIDDEN)
-  out = out.replace(/((?:pass|token|key|secret)[a-z_-]*\s*[=:]\s*)\S+/gi, `$1${HIDDEN}`)
+  out = out.replace(/\b(bearer|basic)\s+[^\s,"']+/gi, `$1 ${HIDDEN}`)
+  // key=value, key: value, and JSON "access_token": "value" (quoted or not), for any key naming a secret.
+  out = out.replace(
+    /((?:pass|token|key|secret|auth)[a-z_-]*["']?\s*[=:]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/gi,
+    `$1${HIDDEN}`,
+  )
   return out
 }
 
@@ -72,22 +78,34 @@ const EMAIL = /^[^\s@<>,;:"]+@[^\s@<>,;:"]+\.[^\s@<>,;:"]+$/
  */
 export function loadConfig() {
   const file = configPath()
-  let st
+  // Open once without following a link, then check and read that same open file, so nothing can be swapped in
+  // between the check and the read.
+  let fd
   try {
-    st = fs.statSync(file)
-  } catch {
-    throw new RefusedError(`No config file at ${file}. See relay/README.md.`)
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK)
+  } catch (e) {
+    if (e?.code === 'ELOOP' || e?.code === 'EMLINK') throw new RefusedError(`${file} is a link. Make it a plain file.`)
+    if (e?.code === 'ENOENT') throw new RefusedError(`No config file at ${file}. See relay/README.md.`)
+    throw new RefusedError(`${file} cannot be opened (${e?.code ?? 'error'}).`)
   }
-  if (!st.isFile()) throw new RefusedError(`${file} is not a file.`)
-  if (typeof process.getuid === 'function' && st.uid !== process.getuid()) {
-    throw new RefusedError(`${file} must be owned by you.`)
-  }
-  if ((st.mode & 0o077) !== 0) {
-    throw new RefusedError(`${file} can be read by other users. Run: chmod 600 ${file}`)
+  let text
+  try {
+    const st = fs.fstatSync(fd)
+    if (!st.isFile()) throw new RefusedError(`${file} is not a file.`)
+    if (typeof process.getuid === 'function' && st.uid !== process.getuid()) {
+      throw new RefusedError(`${file} must be owned by you.`)
+    }
+    if ((st.mode & 0o077) !== 0) {
+      throw new RefusedError(`${file} can be read by other users. Run: chmod 600 ${file}`)
+    }
+    if (st.size > 64 * 1024) throw new RefusedError(`${file} is too large.`)
+    text = fs.readFileSync(fd, 'utf8')
+  } finally {
+    fs.closeSync(fd)
   }
   let raw
   try {
-    raw = JSON.parse(fs.readFileSync(file, 'utf8'))
+    raw = JSON.parse(text)
   } catch {
     throw new RefusedError(`${file} is not valid JSON.`)
   }
@@ -98,7 +116,7 @@ export function loadConfig() {
   if (typeof raw.rcloneRemote === 'string') addSecret(raw.rcloneRemote.replace(/:$/, ''))
 
   const to = raw.to
-  if (typeof to !== 'string' || !EMAIL.test(to)) throw new RefusedError('Config field "to" is missing or not an email address.')
+  if (typeof to !== 'string' || hasControl(to) || !EMAIL.test(to)) throw new RefusedError('Config field "to" is missing or not an email address.')
 
   const remote = typeof raw.rcloneRemote === 'string' ? raw.rcloneRemote.replace(/:$/, '') : ''
   if (!REMOTE_NAME.test(remote)) {
@@ -194,23 +212,7 @@ export const RCLONE_DIR_NOT_FOUND = 3
 // ---------------------------------------------------------------------------------------------------------------
 // Files
 
-/** Writes `data` to `file` atomically: a temp file in the same folder, fsync, then rename. */
-export function writeFileAtomic(file, data, mode = 0o600) {
-  const dir = path.dirname(file)
-  const tmp = path.join(dir, `.${path.basename(file)}.${process.pid}.${Date.now()}.tmp`)
-  const fd = fs.openSync(tmp, 'wx', mode)
-  try {
-    fs.writeFileSync(fd, data)
-    fs.fsyncSync(fd)
-  } finally {
-    fs.closeSync(fd)
-  }
-  try {
-    fs.renameSync(tmp, file)
-  } catch (e) {
-    fs.rmSync(tmp, { force: true })
-    throw e
-  }
+function fsyncDir(dir) {
   try {
     const dfd = fs.openSync(dir, 'r')
     try {
@@ -219,11 +221,47 @@ export function writeFileAtomic(file, data, mode = 0o600) {
       fs.closeSync(dfd)
     }
   } catch {
-    // Some systems cannot fsync a folder; the rename is still atomic.
+    // Some systems cannot fsync a folder; the rename or link is still atomic.
   }
 }
 
+function tempName(file) {
+  return path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`)
+}
+
+/** Writes `data` to a new file (never an existing one) and fsyncs it. Removes it again if anything fails. */
+function writeNewFile(file, data, mode) {
+  const fd = fs.openSync(file, 'wx', mode)
+  try {
+    fs.writeFileSync(fd, data)
+    fs.fsyncSync(fd)
+    fs.closeSync(fd)
+  } catch (e) {
+    try {
+      fs.closeSync(fd)
+    } catch {
+      // already closed
+    }
+    fs.rmSync(file, { force: true })
+    throw e
+  }
+}
+
+/** Writes `data` to `file` atomically: a temp file in the same folder, fsync, then rename. */
+export function writeFileAtomic(file, data, mode = 0o600) {
+  const tmp = tempName(file)
+  writeNewFile(tmp, data, mode)
+  try {
+    fs.renameSync(tmp, file)
+  } catch (e) {
+    fs.rmSync(tmp, { force: true })
+    throw e
+  }
+  fsyncDir(path.dirname(file))
+}
+
 const LOCK_STALE_MS = 60 * 60 * 1000
+const RECOVER_STALE_MS = 5 * 60 * 1000
 
 function pidAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false
@@ -235,38 +273,107 @@ function pidAlive(pid) {
   }
 }
 
+/** Reads a lock file without following a link: { dev, ino, mtimeMs, holder } (holder null if unreadable), or null. */
+function readLock(file) {
+  let fd
+  try {
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK)
+  } catch (e) {
+    if (e?.code === 'ENOENT') return null
+    throw e
+  }
+  try {
+    const st = fs.fstatSync(fd)
+    let holder = null
+    try {
+      if (st.isFile() && st.size <= 4096) holder = JSON.parse(fs.readFileSync(fd, 'utf8'))
+    } catch {
+      holder = null
+    }
+    return { dev: st.dev, ino: st.ino, mtimeMs: st.mtimeMs, holder }
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
+function sameFile(a, b) {
+  return a !== null && b !== null && a.dev === b.dev && a.ino === b.ino
+}
+
+function lstatOrNull(file) {
+  try {
+    return fs.lstatSync(file)
+  } catch (e) {
+    if (e?.code === 'ENOENT') return null
+    throw e
+  }
+}
+
 /**
- * Takes an exclusive lock file. Returns a release function, or null when another live run holds it.
- * A lock whose process is gone, or that is older than an hour, is taken over.
+ * Removes `file` if its holder is gone or it is older than an hour. Only one process recovers at a time: it holds
+ * `<file>.recover` while it re-reads the lock and checks that the file it removes is the one it judged stale.
+ * Returns true when the lock was removed (or had already gone), so the caller may try again.
+ */
+function recoverStaleLock(file) {
+  const recover = `${file}.recover`
+  try {
+    fs.closeSync(fs.openSync(recover, 'wx', 0o600))
+  } catch (e) {
+    if (e?.code !== 'EEXIST') throw e
+    // Another run is recovering. A recover lock left by a run that crashed is cleared for the next run.
+    const st = lstatOrNull(recover)
+    if (st && Date.now() - st.mtimeMs > RECOVER_STALE_MS) fs.rmSync(recover, { force: true })
+    return false
+  }
+  try {
+    const seen = readLock(file)
+    if (seen === null) return true
+    const live = seen.holder && pidAlive(seen.holder.pid) && Date.now() - seen.mtimeMs <= LOCK_STALE_MS
+    if (live) return false
+    if (!sameFile(seen, lstatOrNull(file))) return false
+    fs.rmSync(file, { force: true })
+    return true
+  } finally {
+    fs.rmSync(recover, { force: true })
+  }
+}
+
+/**
+ * Takes an exclusive lock file. Returns a release function, or null when another run holds it.
+ *
+ * The lock is written whole to a temp file first and then hard-linked into place, so `file` is never seen empty or
+ * half written. A lock whose process is gone, or that is older than an hour, is taken over (see recoverStaleLock).
+ * Release removes the lock only while it is still this run's own file.
  */
 export function takeLock(file) {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const fd = fs.openSync(file, 'wx', 0o600)
-      fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }))
-      fs.closeSync(fd)
+  const token = crypto.randomBytes(16).toString('hex')
+  const tmp = tempName(file)
+  writeNewFile(tmp, JSON.stringify({ pid: process.pid, token, at: new Date().toISOString() }), 0o600)
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        fs.linkSync(tmp, file)
+      } catch (e) {
+        if (e?.code !== 'EEXIST') throw e
+        if (!recoverStaleLock(file)) return null
+        continue
+      }
+      fsyncDir(path.dirname(file))
+      const mine = lstatOrNull(file)
       let released = false
       return () => {
         if (released) return
         released = true
-        fs.rmSync(file, { force: true })
+        const now = readLock(file)
+        if (sameFile(mine, now) && now.holder?.token === token && sameFile(now, lstatOrNull(file))) {
+          fs.rmSync(file, { force: true })
+        }
       }
-    } catch (e) {
-      if (e?.code !== 'EEXIST') throw e
     }
-    let holder = null
-    let age = 0
-    try {
-      holder = JSON.parse(fs.readFileSync(file, 'utf8'))
-      age = Date.now() - fs.statSync(file).mtimeMs
-    } catch {
-      holder = null
-    }
-    const stale = !holder || !pidAlive(holder.pid) || age > LOCK_STALE_MS
-    if (!stale) return null
-    fs.rmSync(file, { force: true })
+    return null
+  } finally {
+    fs.rmSync(tmp, { force: true })
   }
-  return null
 }
 
 // ---------------------------------------------------------------------------------------------------------------

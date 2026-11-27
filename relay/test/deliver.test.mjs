@@ -84,6 +84,14 @@ describe('deliver', () => {
       },
       /not a plain file/,
     ],
+    ...['CON.package', 'NUL.ts4script', 'aux.v2.package', 'COM1.package', 'LPT9.ts4script', 'prn.package'].map((n) => [
+      `the Windows device name ${n}`,
+      () => fs.writeFileSync(path.join(mod, n), 'x'),
+      /Windows/,
+    ]),
+    ...['a<b.package', 'a>b.package', 'a:b.package', 'a|b.package', 'a?b.package', 'a*b.package', 'a"b.package'].map(
+      (n) => [`the name ${n}`, () => fs.writeFileSync(path.join(mod, n), 'x'), /Windows/],
+    ),
     ['an empty file', () => fs.writeFileSync(path.join(mod, 'empty.package'), ''), /empty/],
     [
       'a file over 200 MB',
@@ -105,6 +113,19 @@ describe('deliver', () => {
       assert.equal(t.rcloneCalls().length, 0)
     })
   }
+
+  it('refuses two files whose names differ only in case, where the disk allows them', async (ctx) => {
+    fs.writeFileSync(path.join(mod, 'MyMod.package'), 'a')
+    fs.writeFileSync(path.join(mod, 'mymod.package'), 'b')
+    if (fs.readdirSync(mod).length < 2) {
+      ctx.skip('this disk is case-insensitive; names.test.mjs covers the check')
+      return
+    }
+    const r = await t.run(DELIVER, args())
+    assert.equal(r.code, 2)
+    assert.match(r.stderr, /differ only in case/)
+    assert.equal(t.rcloneCalls().length, 0)
+  })
 
   it('refuses a folder with no mod files', async () => {
     const r = await t.run(DELIVER, args())

@@ -149,6 +149,68 @@ describe('m8-relay', () => {
     assert.ok(!r.stderr.includes('bad remote'))
   })
 
+  it('refuses a config file that is a symlink', async () => {
+    t.addRequest(ID)
+    const real = path.join(t.root, 'elsewhere.json')
+    fs.renameSync(t.configFile, real)
+    fs.symlinkSync(real, t.configFile)
+    const r = await t.run(RELAY)
+    assert.equal(r.code, 2)
+    assert.match(r.stderr, /link/)
+    assert.equal(t.rcloneCalls().length, 0)
+    assert.equal(t.mails().length, 0)
+  })
+
+  for (const to of [`${SECRET_TO}\r\nBcc: x@y.test`, `${SECRET_TO}\nBcc: x@y.test`]) {
+    it(`refuses a "to" with a line break (${JSON.stringify(to.slice(-14))})`, async () => {
+      t.addRequest(ID)
+      fs.writeFileSync(t.configFile, JSON.stringify({ to, rcloneRemote: 'zzhiddenremote' }))
+      const r = await t.run(RELAY)
+      assert.equal(r.code, 2)
+      assert.match(r.stderr, /"to"/)
+      assert.equal(t.mails().length, 0)
+    })
+  }
+
+  it('refuses a webhook that is plain http to another machine', async () => {
+    fs.writeFileSync(
+      t.configFile,
+      JSON.stringify({ to: SECRET_TO, rcloneRemote: 'zzhiddenremote', webhookUrl: 'http://hooks.example.test/x' }),
+    )
+    const r = await t.run(RELAY)
+    assert.equal(r.code, 2)
+    assert.match(r.stderr, /"webhookUrl" must start with https/)
+  })
+
+  for (const [what, content] of [
+    ['a list', '[]'],
+    ['a number', '123'],
+    ['null', 'null'],
+    ['broken JSON', '{"seen": ['],
+  ]) {
+    it(`stops when seen.json is ${what}, instead of emailing everything again`, async () => {
+      t.addRequest(ID)
+      fs.mkdirSync(path.dirname(t.seenFile), { recursive: true })
+      fs.writeFileSync(t.seenFile, content)
+      const r = await t.run(RELAY)
+      assert.equal(r.code, 2)
+      assert.match(r.stderr, /seen\.json cannot be read/)
+      assert.equal(t.mails().length, 0)
+    })
+  }
+
+  it('keeps every email line under 998 bytes for a long request', async () => {
+    t.addRequest(ID, {
+      text: 'é'.repeat(2000),
+      mods: Array.from({ length: 300 }, (_, i) => `${'M'.repeat(150)} ${i}`),
+    })
+    const r = await t.run(RELAY)
+    assert.equal(r.code, 0, r.stderr)
+    const [raw] = t.rawMails()
+    for (const line of raw.split('\n')) assert.ok(Buffer.byteLength(line) <= 998)
+    assert.ok(t.mails()[0].includes('é'.repeat(2000)))
+  })
+
   it('does not run while another live run holds the lock', async () => {
     t.addRequest(ID)
     fs.mkdirSync(path.dirname(t.lockFile), { recursive: true })
@@ -202,6 +264,34 @@ describe('m8-relay webhook', () => {
       assert.match(r2.stderr, /Webhook for request r-20261126-150000-cd34 failed \(status 500\)/)
       assert.equal(t.mails().length, 2)
       assert.deepEqual(t.seen().seen, [ID, ID2])
+      t.assertNoSecrets()
+    } finally {
+      server.close()
+      t.cleanup()
+    }
+  })
+
+  it('does not follow a webhook redirect', async () => {
+    let redirectedTo = 0
+    const server = http.createServer((req, res) => {
+      if (req.url.startsWith('/elsewhere')) {
+        redirectedTo++
+        res.writeHead(200).end()
+        return
+      }
+      req.resume()
+      req.on('end', () => res.writeHead(302, { location: '/elsewhere' }).end())
+    })
+    await new Promise((r) => server.listen(0, '127.0.0.1', r))
+    const t = makeEnv({ webhookUrl: `http://127.0.0.1:${server.address().port}/hook/SECRET-HOOK-TOKEN-42` })
+    try {
+      t.addRequest(ID)
+      const r = await t.run(RELAY)
+      assert.equal(r.code, 0, r.stderr)
+      assert.match(r.stderr, /Webhook for request r-20261126-143000-ab12 failed/)
+      assert.equal(redirectedTo, 0)
+      assert.equal(t.mails().length, 1)
+      assert.deepEqual(t.seen().seen, [ID])
       t.assertNoSecrets()
     } finally {
       server.close()
