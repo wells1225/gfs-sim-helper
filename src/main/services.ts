@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import nativePath from 'node:path'
 import type {
   FixRequest,
   JournalEntry,
@@ -36,6 +37,7 @@ import type {
   WriteRequest
 } from './ports.ts'
 import { makeRedactor } from './redact.ts'
+import { modFolderRoot } from './requests/mod-folder.ts'
 import { readFolderFacts, runRules } from './rules/index.ts'
 import { runGate } from './safety/gate.ts'
 import { createShare } from './share/index.ts'
@@ -66,6 +68,9 @@ export interface CreateContextInput {
   pickFolder?: () => Promise<string | null>
   // index.ts passes shell.openExternal. It only ever gets a url safeWebLink gave back. Without one, nothing opens.
   openExternal?: (url: string) => Promise<void>
+  // PR 16: index.ts passes shell.openPath, wrapped to reject on failure. It only ever gets the game's own exe path
+  // (makeOpenGame). Without one, nothing opens and every call rejects.
+  openGame?: (exePath: string) => Promise<void>
 }
 
 /**
@@ -162,6 +167,28 @@ export function makeOpenWeb(
   }
 }
 
+/**
+ * openGame for the context (PR 16): only an absolute path ending in Game\Bin\TS4_x64.exe reaches the opener, never
+ * TS4_DX9_x64.exe or anything else. Any other path, no opener, or an opener that fails rejects with one plain message.
+ */
+export function makeOpenGame(
+  open: ((exePath: string) => Promise<void>) | undefined,
+  pathApi: typeof nativePath = nativePath
+): (exePath: string) => Promise<void> {
+  return async (exePath) => {
+    const parts = typeof exePath === 'string' && pathApi.isAbsolute(exePath) ? exePath.split(pathApi.sep) : []
+    const [game, bin, exe] = parts.slice(-3).map((part) => part.toLowerCase())
+    const isTheGame =
+      parts.length >= 4 && exe === 'ts4_x64.exe' && bin === 'bin' && game === 'game' && pathApi.normalize(exePath) === exePath
+    if (!isTheGame || !open) throw new Error('The game could not be opened')
+    try {
+      await open(exePath)
+    } catch {
+      throw new Error('The game could not be opened')
+    }
+  }
+}
+
 // Only tests reach this: index.ts always passes an updater, which knows the real version.
 const UPDATES_OFF: UpdateState = { state: 'off', why: 'switched-off', current: '0.0.0' }
 
@@ -235,7 +262,8 @@ export function createContext(input: CreateContextInput): AppContext {
     paths,
     gameState,
     backupStatus: (folderPath) => safety.backupStatus(folderPath),
-    shareRoot: () => share.shareRoot()
+    shareRoot: () => share.shareRoot(),
+    modFolderRoot
   }
 
   const gate: Gate = {
@@ -328,6 +356,7 @@ export function createContext(input: CreateContextInput): AppContext {
     share,
     pickFolder,
     openWeb: makeOpenWeb(safeWebLink, input.openExternal),
+    openGame: makeOpenGame(input.openGame),
     startupRecovery,
     updater: typeof input.updater === 'function' ? input.updater({ busy }) : (input.updater ?? NO_UPDATER),
     busy,

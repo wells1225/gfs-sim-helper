@@ -296,6 +296,9 @@ export interface AppContext {
   share: Share
   pickFolder(): Promise<string | null> // Electron's folder dialog on the app window; null when she cancels
   openWeb(url: string): Promise<'opened' | 'refused'> // only what safeWebLink passes reaches the browser, as its url
+  // PR 16: starts the game from <install>\Game\Bin\TS4_x64.exe (Electron shell.openPath). Rejects when it could not,
+  // and for any other path: makeOpenGame in services.ts passes only that exe name in that place.
+  openGame(exePath: string): Promise<void>
   // The start-up recovery: index.ts calls it once before the window opens. Lazy, run once, never rejects; every later
   // call gives the same promise. The journal channels, every changing fix call, and every share:* handler except
   // share:open-link and the two share:find-* wait for it. A 'failed' recovery does not stop a share call: the checks

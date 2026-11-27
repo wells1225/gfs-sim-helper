@@ -163,7 +163,12 @@ if (!gotSingleInstanceLock) {
         return picked.canceled ? null : (picked.filePaths[0] ?? null)
       },
       // services.ts hands this only the url safeWebLink gave back.
-      openExternal: (url) => shell.openExternal(url)
+      openExternal: (url) => shell.openExternal(url),
+      // services.ts hands this only <install>\Game\Bin\TS4_x64.exe. openPath answers '' on success, else its error.
+      openGame: async (exePath) => {
+        const failed = await shell.openPath(exePath)
+        if (failed !== '') throw new Error('The game could not be opened')
+      }
     })
 
     registerIpc(ipcMain, ctx, isAppWindowEvent)

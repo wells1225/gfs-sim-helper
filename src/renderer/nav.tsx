@@ -18,6 +18,9 @@ export type Route =
   | { screen: 'share-old-saves' }
   | { screen: 'share-settings' }
   | { screen: 'patch-day' }
+  | { screen: 'save-copies' }
+  | { screen: 'ask-tyler' }
+  | { screen: 'ask-tyler-setup' }
 
 export interface NavContextValue {
   route: Route

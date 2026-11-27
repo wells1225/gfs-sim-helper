@@ -1,5 +1,12 @@
 import type { IpcInvoke, SimsHelperApi } from '../../shared/ipc.ts'
-import type { BackupSummary, Progress, ShareView, StartupRecovery, UpdateState } from '../../shared/model.ts'
+import type {
+  BackupSummary,
+  GameVersionWatch,
+  Progress,
+  ShareView,
+  StartupRecovery,
+  UpdateState
+} from '../../shared/model.ts'
 
 export type FakeAnswer<K extends keyof IpcInvoke> =
   | IpcInvoke[K]['res']
@@ -39,10 +46,13 @@ const SHARE_NOT_SET_UP: ShareView = {
   aiFind: 'hide'
 }
 
+// No game update since last time, so no patch day banner (PR 16).
+const NO_GAME_UPDATE: GameVersionWatch = { current: null, lastSeen: null, changed: false, seenAt: null }
+
 /**
  * Every test gets these unless it passes its own: no update banner, and the About row shows the version and a note
  * saying why updates are off; a start-up recovery that touched nothing; no safety copies yet; Share saves not set up,
- * with empty lists.
+ * with empty lists; no save copies; no game update and nothing waiting; no Sims Helper Mods folder and no requests.
  */
 const DEFAULT_ANSWERS: FakeApiAnswers = {
   'update:get': UPDATES_OFF,
@@ -51,7 +61,12 @@ const DEFAULT_ANSWERS: FakeApiAnswers = {
   'backup:summary': NO_BACKUPS_SUMMARY,
   'share:get': SHARE_NOT_SET_UP,
   'share:local-saves': [],
-  'share:old-saves': []
+  'share:old-saves': [],
+  'savecopies:list': [],
+  'patchguard:watch': NO_GAME_UPDATE,
+  'patchguard:waiting': [],
+  'requests:folder': { kind: 'not-set' },
+  'requests:list': []
 }
 
 export function fakeApi(given: FakeApiAnswers = {}): FakeApi {
