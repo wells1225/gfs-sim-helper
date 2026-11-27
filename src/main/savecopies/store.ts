@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { GameRunState, SaveCopy, SaveCopyFile, SaveCopyReason } from '../../shared/model.ts'
 import type { AppPaths, Clock, Gate } from '../ports.ts'
-import { isStrictIsoTime } from '../safety/manifest.ts'
+import { isStrictIsoTime, normalizeIsoTime } from '../safety/manifest.ts'
 import { isSafeId } from '../safety/where.ts'
 import { newestFirst } from './keep.ts'
 
@@ -19,8 +19,8 @@ export interface SaveCopyDeps {
 
 /** Written last into each copy's folder: a folder without it is a copy that never finished, and is not listed. */
 export const COPY_FILE = 'copy.json'
-/** A saved game in saves/: Slot_ and 8 hex digits. Its .ver0 to .ver4 files are not copies of it. */
-export const SAVE_NAME = /^Slot_[0-9a-fA-F]{8}\.save$/
+/** A saved game in saves/: Slot_ and 8 hex digits, in any letter case (Windows). Its .ver0 to .ver4 files are not. */
+export const SAVE_NAME = /^Slot_[0-9a-f]{8}\.save$/i
 
 const REASONS: readonly SaveCopyReason[] = ['by-hand', 'game-updated', 'before-change']
 const SHA256 = /^[0-9a-f]{64}$/
@@ -59,7 +59,8 @@ export function readCopyRecord(raw: string, folderName: string): SaveCopy | null
     if (file === null) return null
     files.push(file)
   }
-  return { id, at, reason: reason as SaveCopyReason, gameVersion, saves: files, trayFiles, bytes, status }
+  // Stored as Date.toISOString() gives it, so newest first can sort the text and get the time order.
+  return { id, at: normalizeIsoTime(at), reason: reason as SaveCopyReason, gameVersion, saves: files, trayFiles, bytes, status }
 }
 
 /** One copy by id, or null when there is no finished copy of that id. */

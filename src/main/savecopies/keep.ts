@@ -24,12 +24,14 @@ export function compareVersions(a: string, b: string): number {
 
 /**
  * The ids of the copies to keep (briefs/pr-15.md): the newest 10, plus the oldest checked copy of each of the
- * last 3 game versions. Every other copy may be removed.
+ * last 3 game versions. Only versions with a checked copy count: a version with only broken copies has nothing
+ * to put back, and must not push out an older version's copy. Every other copy may be removed.
  */
 export function copiesToKeep(copies: readonly SaveCopy[]): Set<string> {
   const sorted = [...copies].sort(newestFirst)
   const keep = new Set(sorted.slice(0, KEEP_NEWEST).map((copy) => copy.id))
-  const versions = [...new Set(copies.flatMap((copy) => (copy.gameVersion === null ? [] : [copy.gameVersion])))]
+  const checked = copies.filter((copy) => copy.status === 'checked')
+  const versions = [...new Set(checked.flatMap((copy) => (copy.gameVersion === null ? [] : [copy.gameVersion])))]
     .sort((a, b) => compareVersions(b, a))
     .slice(0, KEEP_VERSIONS)
   for (const version of versions) {

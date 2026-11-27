@@ -94,8 +94,20 @@ describe('nextSlotName', () => {
     )
     expect(nextSlotName(['Slot_0000000a.save.ver4', 'Options.ini', 'scratch'])).toBe('Slot_0000000b.save')
     expect(nextSlotName(['Slot_0000000A.save'])).toBe('Slot_0000000b.save')
-    expect(nextSlotName([])).toBe('Slot_00000001.save')
     expect(nextSlotName(['Slot_0ffffffe.save'])).toBe('Slot_0fffffff.save')
+    expect(nextSlotName(['Slot_0ffffffe.save'])).toBe('Slot_0fffffff.save')
+  })
+
+  it('matches Slot_ and .save in any letter case, as Windows does', () => {
+    expect(nextSlotName(['SLOT_0000000A.SAVE'])).toBe('Slot_0000000b.save')
+    expect(nextSlotName(['slot_0000000c.save.ver0'])).toBe('Slot_0000000d.save')
+    expect(nextSlotName(['Slot_00000002.save', 'SLOT_00000010.SAVE.VER1'])).toBe('Slot_00000011.save')
+  })
+
+  it('never gives Slot_00000001.save, the old autosave slot the Load menu hides: an empty saves/ starts at 02', () => {
+    expect(nextSlotName([])).toBe('Slot_00000002.save')
+    expect(nextSlotName(['Slot_00000001.save'])).toBe('Slot_00000002.save')
+    expect(nextSlotName(['Options.ini', 'scratch'])).toBe('Slot_00000002.save')
   })
 
   it('has no free slot above Slot_0fffffff.save', () => {
@@ -132,6 +144,28 @@ describe('putBackSave', () => {
     expect(await putBackSave(w.deps, w.folder, copy.id, 'Slot_00000005.save')).toEqual({
       kind: 'done',
       newSlot: 'Slot_0000000b.save'
+    })
+  })
+
+  it('copies and puts back a save whose name is in capitals, as Windows may spell it', async () => {
+    const w = await makeWorld()
+    await writeFile(join(w.folder, 'saves', 'SLOT_00000003.SAVE'), 'the capital save')
+    const copy = await madeCopy(w)
+    expect(copy.saves.map((s) => s.name)).toContain('SLOT_00000003.SAVE')
+    expect(await putBackSave(w.deps, w.folder, copy.id, 'SLOT_00000003.SAVE')).toEqual({
+      kind: 'done',
+      newSlot: 'Slot_0000000a.save'
+    })
+    expect(await readFile(join(w.folder, 'saves', 'Slot_0000000a.save'), 'utf8')).toBe('the capital save')
+  })
+
+  it('puts a save back into an emptied saves/ as Slot_00000002.save', async () => {
+    const w = await makeWorld()
+    const copy = await madeCopy(w)
+    for (const name of await readdir(join(w.folder, 'saves'))) await rm(join(w.folder, 'saves', name), { recursive: true })
+    expect(await putBackSave(w.deps, w.folder, copy.id, 'Slot_00000005.save')).toEqual({
+      kind: 'done',
+      newSlot: 'Slot_00000002.save'
     })
   })
 

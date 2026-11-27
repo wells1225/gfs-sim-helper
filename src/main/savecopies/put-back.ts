@@ -8,14 +8,20 @@ import { askGame, isSimsFolder, readSaveCopy, SAVE_NAME, type SaveCopyDeps } fro
 /** The highest slot the gate's save-new-slot zone takes: Slot_0 and 7 hex digits. */
 const HIGHEST_SLOT = 0x0fffffff
 /** Any name in saves/ that starts with a slot number: the save itself, its .ver files, anything else of it. */
-const SLOT_NUMBER = /^Slot_([0-9a-fA-F]{8})(?:\.|$)/
+const SLOT_NUMBER = /^Slot_([0-9a-f]{8})(?:\.|$)/i
+/**
+ * Slot_00000001.save is the game's old autosave slot, and its Load menu hides it: the game counts its saves from
+ * 02. So the lowest new slot is Slot_00000002.save, even in an empty saves/.
+ */
+const LOWEST_SLOT = 2
 
 /**
  * The new save's name: the lowest unused 8-digit lower-case hex number above the highest slot in saves/
- * (Slot_00000009.save there gives Slot_0000000a.save). Null above Slot_0fffffff.save.
+ * (Slot_00000009.save there gives Slot_0000000a.save), and never below Slot_00000002.save. Null above
+ * Slot_0fffffff.save. Names are matched in any letter case, as Windows does.
  */
 export function nextSlotName(names: readonly string[]): string | null {
-  let highest = 0
+  let highest = LOWEST_SLOT - 1
   for (const name of names) {
     const match = SLOT_NUMBER.exec(name)
     if (match) highest = Math.max(highest, Number.parseInt(match[1]!, 16))

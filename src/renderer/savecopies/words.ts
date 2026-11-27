@@ -78,7 +78,7 @@ export function putBackRefusalWords(why: Extract<SavePutBack, { kind: 'refused' 
       return {
         title: 'There is no free save slot',
         detail:
-          'The game has used up its save numbers. Delete an old save from inside the game, then try again. Nothing was changed.',
+          'The game has used up its save numbers. Nothing was changed. Delete your newest save or ask Tyler for help.',
         tone: 'warn'
       }
     case 'error':

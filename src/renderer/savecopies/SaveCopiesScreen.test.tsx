@@ -112,15 +112,28 @@ describe('SaveCopiesScreen', () => {
     const rows = within(await screen.findByRole('list', { name: 'Saves in this copy' }))
     const buttons = rows.getAllByRole('button', { name: 'Put this one back' })
     expect(buttons).toHaveLength(2)
+    // by date and size, as the brief says: no raw file names for her to puzzle over
+    const list = screen.getByRole('list', { name: 'Saves in this copy' })
+    expect(list).toHaveTextContent('9.3 MB')
+    expect(list).not.toHaveTextContent('Slot_')
     // newest save first
     await user.click(buttons[0]!)
     expect(await screen.findByText(PUT_BACK_DONE)).toBeInTheDocument()
-    expect(screen.getByText('Added as Slot_0000000a.save')).toBeInTheDocument()
+    expect(screen.getByText('Added as file Slot_0000000a.save')).toBeInTheDocument()
     expect(screen.getByText('Saves you put back')).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: 'Saves you put back' })).toHaveTextContent('added as file Slot_0000000a.save')
     expect(api.calls.find((c) => c.channel === 'savecopies:put-back')?.req).toEqual({
       copyId: '20261126-120000-0001',
       save: 'Slot_00000005.save'
     })
+  })
+
+  it('when no slot is free, it says to delete the newest save, since an older one would not free a number', async () => {
+    const user = userEvent.setup()
+    renderScreen({ 'savecopies:list': [copy()], 'savecopies:put-back': { kind: 'refused', why: 'no-free-slot' } })
+    await user.click(await screen.findByRole('button', { name: 'Put a save back' }))
+    await user.click((await screen.findAllByRole('button', { name: 'Put this one back' }))[0]!)
+    expect(await screen.findByText(/Delete your newest save or ask Tyler for help\./)).toBeInTheDocument()
   })
 
   it('a put back that fails stays on the picker and explains', async () => {

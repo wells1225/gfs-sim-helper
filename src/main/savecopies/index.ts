@@ -6,6 +6,7 @@ import { readGameVersionFromTxt } from '../locate/game-install.ts'
 import type { GateResult, WriteOp } from '../ports.ts'
 import { freeBytes as diskFreeBytes } from '../safety/disk.ts'
 import { copiesToKeep } from './keep.ts'
+import { isSafeId } from '../safety/where.ts'
 import { askGame, COPY_FILE, isSimsFolder, listSaveCopies, SAVE_NAME, type SaveCopyDeps } from './store.ts'
 
 export { listSaveCopies, readSaveCopy, type SaveCopyDeps } from './store.ts'
@@ -76,12 +77,12 @@ async function removeFolder(deps: SaveCopyDeps, folder: string): Promise<void> {
   }
 }
 
-/** Removes the copies the keep rule drops. Only called once a new copy is checked. */
-async function pruneCopies(deps: SaveCopyDeps): Promise<void> {
+/** Removes the copies the keep rule drops. Only called once a new copy is checked, and never removes that copy. */
+async function pruneCopies(deps: SaveCopyDeps, newCopyId: string): Promise<void> {
   const copies = await listSaveCopies(deps.paths)
   const keep = copiesToKeep(copies)
   const ops: WriteOp[] = copies
-    .filter((copy) => !keep.has(copy.id))
+    .filter((copy) => copy.id !== newCopyId && !keep.has(copy.id))
     .map((copy) => ({ op: 'remove', path: join(deps.paths.saveCopiesDir, copy.id) }))
   if (ops.length > 0) await deps.gate.run({ reason: 'save-copy', folderPath: null, ops })
 }
@@ -128,8 +129,17 @@ export async function makeSaveCopy(
   const before = new Map<string, string | null>()
   for (const save of saves) before.set(save.parts[1]!, await hashOrNull(join(folderPath, ...save.parts)))
 
+  // An id that is not a plain name, or one whose folder is there, could make the clean-up below remove a copy
+  // that is not this one, or the whole save-copies folder. Neither is ever written to.
   const id = deps.newId()
+  if (typeof id !== 'string' || !isSafeId(id)) return refused('error')
   const copyDir = join(deps.paths.saveCopiesDir, id)
+  try {
+    await lstat(copyDir)
+    return refused('error')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code !== 'ENOENT') return refused('error')
+  }
   const ops: WriteOp[] = [...saves, ...tray].map((file) => ({
     op: 'copy',
     from: join(folderPath, ...file.parts),
@@ -182,7 +192,7 @@ export async function makeSaveCopy(
   }
   if (copy.status === 'checked') {
     try {
-      await pruneCopies(deps)
+      await pruneCopies(deps, copy.id)
     } catch {
       // an old copy kept a little longer is no harm
     }
@@ -199,7 +209,11 @@ export async function copyBeforeChange(deps: SaveCopyDeps, folderPath: string | 
     const now = deps.clock.now().getTime()
     const copies = await listSaveCopies(deps.paths)
     const recent = copies.some(
-      (copy) => copy.reason === 'before-change' && Math.abs(now - Date.parse(copy.at)) < BEFORE_CHANGE_EVERY_MS
+      // A broken copy cannot be put back, so it does not count.
+      (copy) =>
+        copy.reason === 'before-change' &&
+        copy.status === 'checked' &&
+        Math.abs(now - Date.parse(copy.at)) < BEFORE_CHANGE_EVERY_MS
     )
     if (recent) return
     await makeSaveCopy(deps, folderPath, 'before-change')

@@ -102,7 +102,7 @@ function NoticeView({ notice }: { notice: Notice }) {
           <div className="flex flex-1 flex-col gap-1">
             <AlertTitle>Your save is back</AlertTitle>
             <AlertDescription>{PUT_BACK_DONE}</AlertDescription>
-            <AlertDescription className="text-sm opacity-80">Added as {notice.newSlot}</AlertDescription>
+            <AlertDescription className="text-sm opacity-80">Added as file {notice.newSlot}</AlertDescription>
           </div>
         </div>
       </Alert>
@@ -176,9 +176,7 @@ function SaveRow({
     <li className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-card px-4 py-3">
       <div className="flex flex-col">
         <span className="font-semibold text-foreground">Saved {formatWhen(save.savedAt)}</span>
-        <span className="text-sm text-muted-foreground tabular-nums">
-          {formatBytes(save.bytes)} · {save.name}
-        </span>
+        <span className="text-sm text-muted-foreground tabular-nums">{formatBytes(save.bytes)}</span>
       </div>
       <Button disabled={busy} onClick={onPutBack}>
         {working ? <Loader2 className="animate-spin" aria-hidden="true" /> : <ArchiveRestore aria-hidden="true" />}
@@ -309,7 +307,7 @@ export function SaveCopiesScreen() {
   )
 
   const history = putBacks.length > 0 && (
-    <Card className="gap-3" aria-label="Saves you put back">
+    <Card className="gap-3" role="region" aria-label="Saves you put back">
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
           <ShieldCheck className="size-5 text-primary" aria-hidden="true" />
@@ -321,7 +319,7 @@ export function SaveCopiesScreen() {
         <ul className="flex flex-col gap-1.5 text-sm">
           {putBacks.map((record) => (
             <li key={`${record.newSlot}-${record.at}`} className="text-foreground">
-              The save from {formatWhen(record.savedAt)} was added as{' '}
+              The save from {formatWhen(record.savedAt)} was added as file{' '}
               <span className="font-medium">{record.newSlot}</span>
               <span className="text-muted-foreground"> · put back {formatWhen(record.at)}</span>
             </li>

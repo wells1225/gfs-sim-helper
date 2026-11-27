@@ -12,6 +12,7 @@ import type { Gate, GateDeps, WriteRequest } from '../ports.ts'
 import { runGate } from '../safety/gate.ts'
 import { copiesToKeep } from './keep.ts'
 import { copyBeforeChange, listSaveCopies, makeSaveCopy, type SaveCopyDeps } from './index.ts'
+import { readCopyRecord } from './store.ts'
 
 const SPECS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../../scripts/fixtures/specs')
 const SIMS_REL = ['Users', 'Player', 'Documents', 'Electronic Arts', 'The Sims 4']
@@ -139,6 +140,36 @@ describe('makeSaveCopy', () => {
     }
   })
 
+  it('copies saves whose names are in another letter case, and still leaves out their .ver files', async () => {
+    const w = await makeWorld()
+    await writeFile(join(w.folder, 'saves', 'SLOT_0000000C.SAVE'), 'capitals')
+    await writeFile(join(w.folder, 'saves', 'slot_0000000c.save.ver0'), 'older capitals')
+    const made = await makeSaveCopy(w.deps, w.folder, 'by-hand')
+    if (made.kind !== 'done') throw new Error(made.why)
+    expect(made.copy.saves.map((s) => s.name)).toContain('SLOT_0000000C.SAVE')
+    const copied = await filesUnder(join(w.deps.paths.saveCopiesDir, made.copy.id, 'saves'))
+    expect(copied).toContain('SLOT_0000000C.SAVE')
+    expect(copied.some((name) => /\.ver\d$/i.test(name))).toBe(false)
+  })
+
+  it('refuses an unsafe id, or an id whose folder is already there, and leaves that folder alone', async () => {
+    const w = await makeWorld()
+    w.deps.newId = () => '..'
+    expect(await makeSaveCopy(w.deps, w.folder, 'by-hand')).toEqual({ kind: 'refused', why: 'error' })
+    w.deps.newId = () => ''
+    expect(await makeSaveCopy(w.deps, w.folder, 'by-hand')).toEqual({ kind: 'refused', why: 'error' })
+    expect(w.requests).toEqual([])
+    w.deps.newId = () => 'same-id'
+    const first = await makeSaveCopy(w.deps, w.folder, 'by-hand')
+    if (first.kind !== 'done') throw new Error('expected a copy')
+    const before = await filesUnder(join(w.deps.paths.saveCopiesDir, 'same-id'))
+    w.requests.length = 0
+    expect(await makeSaveCopy(w.deps, w.folder, 'by-hand')).toEqual({ kind: 'refused', why: 'error' })
+    expect(w.requests).toEqual([])
+    expect(await filesUnder(join(w.deps.paths.saveCopiesDir, 'same-id'))).toEqual(before)
+    expect(await listSaveCopies(w.deps.paths)).toEqual([first.copy])
+  })
+
   it.each([
     ['running', 'game-running'],
     ['unknown', 'game-state-unknown'],
@@ -218,6 +249,51 @@ describe('makeSaveCopy', () => {
   })
 })
 
+describe('the keep rule never removes the copy just made', () => {
+  it('keeps the new copy even when the clock went back and 10 copies are dated after it', async () => {
+    const w = await makeWorld()
+    const fake = async (id: string, at: string): Promise<void> => {
+      const record: SaveCopy = {
+        id,
+        at,
+        reason: 'by-hand',
+        gameVersion: '1.130.12.1020',
+        saves: [],
+        trayFiles: 0,
+        bytes: 0,
+        status: 'checked'
+      }
+      await mkdir(join(w.deps.paths.saveCopiesDir, id), { recursive: true })
+      await writeFile(join(w.deps.paths.saveCopiesDir, id, 'copy.json'), JSON.stringify(record))
+    }
+    await fake('anchor', '2026-01-01T00:00:00.000Z') // the oldest copy of this game version
+    for (let i = 0; i < 10; i += 1) await fake(`future-${i}`, new Date(Date.UTC(2027, 0, 1 + i)).toISOString())
+    const made = await makeSaveCopy(w.deps, w.folder, 'by-hand')
+    if (made.kind !== 'done') throw new Error(made.why)
+    expect(made.copy.status).toBe('checked')
+    const ids = (await listSaveCopies(w.deps.paths)).map((c) => c.id)
+    expect(ids).toContain(made.copy.id)
+    expect(ids).toContain('anchor')
+    expect(ids).toHaveLength(12)
+  })
+})
+
+describe('readCopyRecord', () => {
+  it('stores the date as UTC with milliseconds, so newest first sorts by time', () => {
+    const raw = JSON.stringify({
+      id: 'c1',
+      at: '2026-11-26T14:00:00+02:00',
+      reason: 'by-hand',
+      gameVersion: null,
+      saves: [],
+      trayFiles: 0,
+      bytes: 0,
+      status: 'checked'
+    })
+    expect(readCopyRecord(raw, 'c1')?.at).toBe('2026-11-26T12:00:00.000Z')
+  })
+})
+
 describe('listSaveCopies', () => {
   it('lists newest first and skips a folder without copy.json or with a bad one', async () => {
     const w = await makeWorld()
@@ -278,6 +354,22 @@ describe('copiesToKeep', () => {
     expect(keep.has('old-a')).toBe(false)
     expect(keep.size).toBe(13)
   })
+
+  it('a newer game version with only broken copies does not push out an older version anchor', () => {
+    const copies: SaveCopy[] = [
+      copyAt('v1-first', '2026-01-01T00:00:00.000Z', '1.10.0.0'),
+      copyAt('v2-first', '2026-02-01T00:00:00.000Z', '1.11.0.0'),
+      copyAt('v3-first', '2026-03-01T00:00:00.000Z', '1.12.0.0'),
+      copyAt('v4-broken', '2026-04-01T00:00:00.000Z', '1.13.0.0', 'broken')
+    ]
+    for (let i = 0; i < 10; i += 1) {
+      copies.push(copyAt(`n${i}`, new Date(Date.UTC(2026, 5, 1 + i)).toISOString(), '1.12.0.0'))
+    }
+    const keep = copiesToKeep(copies)
+    expect(keep.has('v1-first')).toBe(true)
+    expect(keep.has('v2-first')).toBe(true)
+    expect(keep.has('v3-first')).toBe(true)
+  })
 })
 
 describe('copyBeforeChange', () => {
@@ -303,6 +395,26 @@ describe('copyBeforeChange', () => {
     w.now.at = new Date(w.now.at.getTime() + 60_000)
     await copyBeforeChange(w.deps, w.folder)
     expect((await listSaveCopies(w.deps.paths)).map((c) => c.reason)).toEqual(['before-change', 'by-hand'])
+  })
+
+  it('a broken before-change copy today does not count: the next fix tries again', async () => {
+    const w = await makeWorld()
+    const run = w.deps.gate.run
+    let spoil = true
+    w.deps.gate = {
+      run: async (request) => {
+        if (spoil && request.ops.some((op) => op.op === 'copy')) {
+          await writeFile(join(w.folder, 'saves', 'Slot_00000005.save'), 'written mid-copy')
+        }
+        return await run(request)
+      }
+    }
+    await copyBeforeChange(w.deps, w.folder)
+    expect((await listSaveCopies(w.deps.paths)).map((c) => c.status)).toEqual(['broken'])
+    spoil = false
+    w.now.at = new Date(w.now.at.getTime() + 60_000)
+    await copyBeforeChange(w.deps, w.folder)
+    expect((await listSaveCopies(w.deps.paths)).map((c) => c.status)).toEqual(['checked', 'broken'])
   })
 
   it('swallows every failure', async () => {
