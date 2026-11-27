@@ -84,7 +84,18 @@ describe('deliver', () => {
       },
       /not a plain file/,
     ],
-    ...['CON.package', 'NUL.ts4script', 'aux.v2.package', 'COM1.package', 'LPT9.ts4script', 'prn.package'].map((n) => [
+    ...[
+      'CON.package',
+      'NUL.ts4script',
+      'aux.v2.package',
+      'COM1.package',
+      'LPT9.ts4script',
+      'prn.package',
+      'COM\u00b9.package',
+      'LPT\u00b3.ts4script',
+      'CONIN$.package',
+      'CON .package',
+    ].map((n) => [
       `the Windows device name ${n}`,
       () => fs.writeFileSync(path.join(mod, n), 'x'),
       /Windows/,
@@ -113,6 +124,27 @@ describe('deliver', () => {
       assert.equal(t.rcloneCalls().length, 0)
     })
   }
+
+  it('refuses more than 500 files, the most her app accepts, and uploads nothing', async () => {
+    for (let i = 0; i < 501; i++) fs.writeFileSync(path.join(mod, `part${String(i).padStart(3, '0')}.package`), 'x')
+    const r = await t.run(DELIVER, args())
+    assert.equal(r.code, 2)
+    assert.match(r.stderr, /500/)
+    assert.ok(!fs.existsSync(out()))
+    assert.equal(t.rcloneCalls().length, 0)
+  })
+
+  it('refuses before uploading anything when ready.json would be over 256 KiB', async () => {
+    // 450 long non-ASCII names (each under the 200-character limit) make a ready.json of about 300 KiB.
+    for (let i = 0; i < 450; i++) {
+      fs.writeFileSync(path.join(mod, `${String(i).padStart(3, '0')}${'\u6a21'.repeat(185)}.package`), 'x')
+    }
+    const r = await t.run(DELIVER, args())
+    assert.equal(r.code, 2)
+    assert.match(r.stderr, /256 KiB/)
+    assert.ok(!fs.existsSync(out()))
+    assert.equal(t.rcloneCalls().filter((a) => a[0] === 'copy' || a[0] === 'copyto').length, 0)
+  })
 
   it('refuses two files whose names differ only in case, where the disk allows them', async (ctx) => {
     fs.writeFileSync(path.join(mod, 'MyMod.package'), 'a')
