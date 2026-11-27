@@ -3370,8 +3370,8 @@ describe('save-new-slot: a save copy goes back only as a new slot file', () => {
     await expectRefusal(w, () => putBack(w, copy, target), { reason: 'saves-or-tray', path: target })
   })
 
-  it('refuses a source outside saveCopiesDir', async () => {
-    const { w } = await makePutBackWorld()
+  it('refuses a source outside saveCopiesDir, or not written out in full', async () => {
+    const { w, copy } = await makePutBackWorld()
     const backup = w.inData('backups', 'b1', 'saves', 'Slot_00000002.save')
     const beside = join(`${w.paths.saveCopiesDir}-old`, 'c1', 'saves', 'Slot_00000002.save')
     const loose = join(w.root, 'pc', 'Downloads', 'Slot_00000002.save')
@@ -3380,7 +3380,8 @@ describe('save-new-slot: a save copy goes back only as a new slot file', () => {
       await writeFile(file, 'not a save copy')
     }
     const target = w.inFolder('saves', NEW_SLOT)
-    for (const from of [backup, beside, loose, w.inFolder(...SAVE), w.inFolder(...MOD), w.paths.saveCopiesDir]) {
+    const malformed = [`${copy}.`, `${copy} `, `${copy}:stream`, [w.paths.saveCopiesDir, 'c1', '..', 'c1', 'saves', 'Slot_00000002.save'].join(sep)]
+    for (const from of [backup, beside, loose, w.inFolder(...SAVE), w.inFolder(...MOD), w.paths.saveCopiesDir, ...malformed]) {
       await expectRefusal(w, () => putBack(w, from, target), { reason: 'outside-allowed-area', path: from })
     }
     expect(w.asked).toEqual([])
@@ -3672,6 +3673,8 @@ describe('mod-folder: her request file goes into the Sims Helper Mods folder, an
     ['a folder inside app data', (w) => w.inData('Sims Helper Mods'), true],
     ['a folder under any Sims folder name', (w) => join(w.root, 'pc', 'Old', 'The Sims 4', 'Sims Helper Mods'), true],
     ['a folder inside saves', (w) => w.inFolder('saves', 'Sims Helper Mods'), true],
+    ['a folder under any folder named saves', (w) => join(w.root, 'pc', 'Backup', 'saves', 'Sims Helper Mods'), true],
+    ['a folder under any folder named Tray', (w) => join(w.root, 'pc', 'Backup', 'Tray', 'Sims Helper Mods'), true],
     ['a folder under Windows', (w) => join(w.root, 'pc', 'Windows', 'Sims Helper Mods'), true],
     ['a folder under Program Files', (w) => join(w.root, 'pc', 'Program Files', 'Sims Helper Mods'), true],
     ['a folder under ProgramData', (w) => join(w.root, 'pc', 'ProgramData', 'Sims Helper Mods'), true],
@@ -3798,6 +3801,13 @@ describe('mod-folder: her request file goes into the Sims Helper Mods folder, an
       reason: 'link-escape',
       path: target
     })
+    // Into a delivery folder, in the mod folder itself: still not its own name.
+    await rm(join(root, 'requests'))
+    await linkFolder(join(root, 'from-tyler', 'r-20261126-101500-a1b2'), join(root, 'requests'))
+    await expectRefusal(w, () => sendRequest(w, [{ op: 'write', path: target, data: '{}', mode: 'create' }]), {
+      reason: 'link-escape',
+      path: target
+    })
   })
 
   it('yes: copies a delivered mod into holding with reason mod-install, and leaves the folder as it was', async () => {
@@ -3859,6 +3869,23 @@ describe('mod-folder: her request file goes into the Sims Helper Mods folder, an
       () => w.run([{ op: 'copy', from, to: w.inData('holding', 'e1', 'x.save') }], { reason: 'mod-install', folderPath: null }),
       { reason: 'link-escape', path: from }
     )
+    // A link to another place in the mod folder, or into app data, which a copy may read from by itself.
+    await mkdir(join(root, 'requests'))
+    await writeFile(join(root, 'requests', REQUEST), '{}')
+    await linkFolder(join(root, 'requests'), join(delivery, 'mine'))
+    await mkdir(w.inData('state'), { recursive: true })
+    await writeFile(w.inData('state', 'settings.json'), '{}')
+    await linkFolder(w.inData('state'), join(delivery, 'app'))
+    // And the other way: a link in app data that leads into the mod folder.
+    await linkFolder(join(root, 'from-tyler'), w.inData('drive'))
+    const viaData = w.inData('drive', 'r-20261126-101500-a1b2', 'mine', REQUEST)
+    for (const source of [join(delivery, 'mine', REQUEST), join(delivery, 'app', 'settings.json'), viaData]) {
+      await expectRefusal(
+        w,
+        () => w.run([{ op: 'copy', from: source, to: w.inData('holding', 'e1', 'x') }], { reason: 'mod-install', folderPath: null }),
+        { reason: 'link-escape', path: source }
+      )
+    }
   })
 
   it('with no folder set, a read from where it would be is refused', async () => {
