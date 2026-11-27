@@ -2,6 +2,7 @@ import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import type { ClearHoldingResult, CurseForgeAddon, JournalEntry, WaitingOnMod } from '../../shared/model.ts'
 import { samePath } from '../fixes/index.ts'
+import { sha256File } from '../fs-read.ts'
 import { readCurseForge } from '../inventory/curseforge.ts'
 import type { AppContext } from '../ports.ts'
 import { entryFile, findEntry } from '../safety/journal.ts'
@@ -139,11 +140,15 @@ async function collectModsIndex(modsDir: string): Promise<ModsIndex> {
 }
 
 /**
- * True only when EVERY mod file the entry set aside is accounted for back in Mods/, so "Clear the old copy" can
- * never delete a held file that has no replacement. A moved file is accounted for when:
+ * True only when EVERY file the entry set aside is accounted for back in Mods/, so "Clear the old copy" can never
+ * delete a held file that has no replacement. An entry with any step that is not a move (an edit keeps its saved
+ * copy in holding too), or with no mod-file move at all, is never back. A moved mod file is accounted for when:
  * (a) a file sits again at its exact original path, or
  * (b) CurseForge has a newer file for the addon than the set-aside time (fileDate > at) AND a .package or
  *     .ts4script with the same file name, modified after the set-aside time, is somewhere in Mods/.
+ * A moved file that is not a mod file (a .cfg, .ini or .txt, say) is accounted for only when nothing is left of it
+ * in holding, or when a plain file byte for byte the same as the held one sits at its exact original path. Rule (b)
+ * never applies to it: a newer or shipped default settings file is not her old one.
  * One file back after a partial reinstall, or an unrelated mod that happens to share a file name while the addon has
  * no newer CurseForge file, never counts for the whole group.
  */
@@ -152,16 +157,20 @@ async function isEntryBackInMods(
   addon: CurseForgeAddon | null,
   modsIndex: ModsIndex
 ): Promise<boolean> {
-  const movedModFiles = entry.steps.flatMap((step) =>
-    step.kind === 'move' && isModFileName(step.from) ? [step.from] : []
-  )
-  if (movedModFiles.length === 0) return false
+  if (entry.steps.some((step) => step.kind !== 'move')) return false
+  const moves = entry.steps.flatMap((step) => (step.kind === 'move' ? [step] : []))
+  if (!moves.some((step) => isModFileName(step.from))) return false
 
   const setAsideMs = Date.parse(entry.at)
   const addonMs = addon !== null ? Date.parse(addon.fileDate) : Number.NaN
   const addonIsNewer = Number.isFinite(setAsideMs) && Number.isFinite(addonMs) && addonMs > setAsideMs
 
-  for (const from of movedModFiles) {
+  for (const step of moves) {
+    if (!isModFileName(step.from)) {
+      if (await isHeldCopyAccountedFor(step.from, step.to)) continue
+      return false
+    }
+    const from = step.from
     if (await isFileAt(from)) continue
     if (addonIsNewer) {
       const lowerBase = baseNameOf(normalizeSlashPath(from)).toLowerCase()
@@ -171,6 +180,24 @@ async function isEntryBackInMods(
     return false
   }
   return true
+}
+
+/** A held non-mod file: nothing left in holding to lose, or the same plain file, byte for byte, back at `from`. */
+async function isHeldCopyAccountedFor(from: string, to: string): Promise<boolean> {
+  let atTo: Awaited<ReturnType<typeof lstat>>
+  try {
+    atTo = await lstat(to)
+  } catch (err) {
+    return (err as NodeJS.ErrnoException | undefined)?.code === 'ENOENT'
+  }
+  try {
+    const atFrom = await lstat(from)
+    if (!atFrom.isFile() || !atTo.isFile() || atFrom.size !== atTo.size) return false
+    const [fromSha, toSha] = await Promise.all([sha256File(from), sha256File(to)])
+    return fromSha === toSha
+  } catch {
+    return false
+  }
 }
 
 async function isFileAt(path: string): Promise<boolean> {
