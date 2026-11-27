@@ -533,10 +533,7 @@ export function PatchDayScreen() {
           <Badge variant="secondary">Step 3</Badge>
           <span>Start The Sims 4</span>
         </CardTitle>
-        <CardDescription>
-          Once your saves are backed up and any older script mods are set aside, press below to mark this update
-          handled and launch the game.
-        </CardDescription>
+        <CardDescription>When you&apos;re ready, press below to start the game.</CardDescription>
       </CardHeader>
       <CardContent>
         <Button disabled={isBusy || guardState.starting || !store} onClick={() => void handleReadyAndPlay()}>

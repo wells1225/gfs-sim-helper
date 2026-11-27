@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -284,5 +284,129 @@ describe('patchguard waiting and clear-holding', () => {
     ) as JournalEntry
     expect(journalEntry.status).toBe('undone')
     expect(journalEntry.undo).toBe('cannot-undo')
+  })
+
+  it('ignores non-mod files like readme.txt in CurseForge modules so unrelated docs never trigger back-in-mods', async () => {
+    const { ctx, paths, modsDir, addSetAsideEntry } = await makeWaitingHarness()
+
+    // Overwrite AddonGameInstance.json so addon 160101 includes a readme.txt module
+    const cfFile = paths.curseForgeInstanceFile!
+    const raw = JSON.parse(await readFile(cfFile, 'utf8')) as Array<{
+      gameID: number
+      installedAddons: Array<{ addonID: number; installedFile: { modules: Array<{ name: string; fingerprint: number }> } }>
+    }>
+    const addon = raw[0]!.installedAddons.find((a) => a.addonID === 160101)!
+    addon.installedFile.modules.push({ name: 'readme.txt', fingerprint: 999999 })
+    await writeFile(cfFile, JSON.stringify(raw, null, 2), 'utf8')
+
+    // Put an unrelated newer readme.txt in Mods/Other/
+    const otherReadme = join(modsDir, 'Other', 'readme.txt')
+    await mkdir(dirname(otherReadme), { recursive: true })
+    await writeFile(otherReadme, 'some other mod readme')
+    const newerDate = new Date('2026-11-26T15:00:00.000Z')
+    await utimes(otherReadme, newerDate, newerDate)
+
+    const waitingEntry = await addSetAsideEntry({
+      id: '20261122-120001-wdoc',
+      at: '2026-11-22T12:00:01.000Z',
+      groupId: 'cf:160101',
+      label: 'Waiting Script Mod',
+      relPath: 'WaitingMod/waiting_mod.ts4script'
+    })
+
+    const list = await listWaitingOnMods(ctx)
+    expect(list).toEqual([
+      {
+        groupId: 'cf:160101',
+        label: 'Waiting Script Mod',
+        entryId: waitingEntry.entry.id,
+        setAsideAt: '2026-11-22T12:00:01.000Z',
+        state: 'waiting',
+        updatedAt: null
+      }
+    ])
+
+    expect(await clearHoldingEntry(ctx, waitingEntry.entry.id)).toEqual({
+      kind: 'refused',
+      why: 'not-back-in-mods'
+    })
+    expect((await stat(waitingEntry.heldFile)).isFile()).toBe(true)
+  })
+
+  it('ignores an unrelated .package in another folder whose mtime is older than setAsideAt', async () => {
+    const { ctx, paths, modsDir, addSetAsideEntry } = await makeWaitingHarness()
+
+    const cfFile = paths.curseForgeInstanceFile!
+    const raw = JSON.parse(await readFile(cfFile, 'utf8')) as Array<{
+      gameID: number
+      installedAddons: Array<{ addonID: number; installedFile: { modules: Array<{ name: string; fingerprint: number }> } }>
+    }>
+    const addon = raw[0]!.installedAddons.find((a) => a.addonID === 160101)!
+    addon.installedFile.modules.push({ name: 'shared_tuning.package', fingerprint: 888888 })
+    await writeFile(cfFile, JSON.stringify(raw, null, 2), 'utf8')
+
+    // Put an older shared_tuning.package in another folder (older than setAsideAt 2026-11-22T12:00:01Z)
+    const olderPkg = join(modsDir, 'Other', 'shared_tuning.package')
+    await mkdir(dirname(olderPkg), { recursive: true })
+    await writeFile(olderPkg, 'old-package')
+    const olderDate = new Date('2026-11-10T10:00:00.000Z')
+    await utimes(olderPkg, olderDate, olderDate)
+
+    const waitingEntry = await addSetAsideEntry({
+      id: '20261122-120001-wold',
+      at: '2026-11-22T12:00:01.000Z',
+      groupId: 'cf:160101',
+      label: 'Waiting Script Mod',
+      relPath: 'WaitingMod/waiting_mod.ts4script'
+    })
+
+    const list = await listWaitingOnMods(ctx)
+    expect(list).toEqual([
+      {
+        groupId: 'cf:160101',
+        label: 'Waiting Script Mod',
+        entryId: waitingEntry.entry.id,
+        setAsideAt: '2026-11-22T12:00:01.000Z',
+        state: 'waiting',
+        updatedAt: null
+      }
+    ])
+    expect(await clearHoldingEntry(ctx, waitingEntry.entry.id)).toEqual({
+      kind: 'refused',
+      why: 'not-back-in-mods'
+    })
+  })
+
+  it('clear-holding settles the journal entry BEFORE removing the holding folder', async () => {
+    const { ctx, paths, addSetAsideEntry } = await makeWaitingHarness()
+
+    const backInMods = await addSetAsideEntry({
+      id: '20261122-120003-ord1',
+      at: '2026-11-22T12:00:03.000Z',
+      groupId: 'cf:160103',
+      label: 'Back In Mods Script',
+      relPath: 'BackInMods/back_in_mods.ts4script'
+    })
+
+    const observedOps: string[] = []
+    const origRun = ctx.gate.run
+    const wrappedCtx = {
+      ...ctx,
+      gate: {
+        async run(req: Parameters<typeof origRun>[0]) {
+          for (const op of req.ops) {
+            observedOps.push(`${op.op}:${'path' in op ? op.path : ''}`)
+          }
+          return origRun(req)
+        }
+      }
+    }
+
+    const result = await clearHoldingEntry(wrappedCtx, backInMods.entry.id)
+    expect(result).toEqual({ kind: 'done' })
+    expect(observedOps).toEqual([
+      `write:${join(paths.journalDir, `${backInMods.entry.id}.json`)}`,
+      `remove:${join(paths.holdingDir, backInMods.entry.id)}`
+    ])
   })
 })

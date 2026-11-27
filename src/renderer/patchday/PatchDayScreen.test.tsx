@@ -294,6 +294,7 @@ describe('PatchDayScreen', () => {
 
     expect(await screen.findByText('Save a copy of my saves')).toBeInTheDocument()
     expect(await screen.findByText(/Your saves and households are backed up/i)).toBeInTheDocument()
+    expect(screen.getByText("When you're ready, press below to start the game.")).toBeInTheDocument()
     expect(api.calls.filter((c) => c.channel === 'savecopies:make')).toEqual([
       { channel: 'savecopies:make', req: { reason: 'game-updated' } }
     ])

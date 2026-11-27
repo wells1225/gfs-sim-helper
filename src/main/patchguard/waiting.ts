@@ -9,10 +9,17 @@ import { isSafeId } from '../safety/where.ts'
 import { locateCurrentInstall } from './watch.ts'
 
 const CF_GROUP_ID = /^cf:(\d+)$/i
+const MOD_FILE_EXT = /\.(package|ts4script)$/i
 
 interface ModsIndex {
-  relPaths: Set<string>
-  baseNames: Set<string>
+  /** Lowercased forward-slash relative path under Mods/ -> file mtimeMs (.package / .ts4script only). */
+  relPaths: Map<string, number>
+  /** Lowercased basename -> newest mtimeMs among matching files in Mods/ (.package / .ts4script only). */
+  baseNames: Map<string, number>
+}
+
+function isModFileName(pathOrName: string): boolean {
+  return MOD_FILE_EXT.test(pathOrName)
 }
 
 function parseCurseForgeAddonId(groupId: string): number | null {
@@ -74,8 +81,8 @@ async function readVersionChangeTimeMs(ctx: AppContext): Promise<number | null> 
 }
 
 async function collectModsIndex(modsDir: string): Promise<ModsIndex> {
-  const relPaths = new Set<string>()
-  const baseNames = new Set<string>()
+  const relPaths = new Map<string, number>()
+  const baseNames = new Map<string, number>()
 
   let modsRealRoot: string
   try {
@@ -114,9 +121,19 @@ async function collectModsIndex(modsDir: string): Promise<ModsIndex> {
         await walk(fullPath, relPath, depth + 1)
         continue
       }
-      if (entry.isFile()) {
-        relPaths.add(relPath.toLowerCase())
-        baseNames.add(entry.name.toLowerCase())
+      if (entry.isFile() && isModFileName(entry.name)) {
+        try {
+          const info = await lstat(fullPath)
+          if (!info.isFile()) continue
+          relPaths.set(relPath.toLowerCase(), info.mtimeMs)
+          const lowerBase = entry.name.toLowerCase()
+          const prev = baseNames.get(lowerBase)
+          if (prev === undefined || info.mtimeMs > prev) {
+            baseNames.set(lowerBase, info.mtimeMs)
+          }
+        } catch {
+          // Skip unreadable file
+        }
       }
     }
   }
@@ -131,7 +148,7 @@ async function isEntryBackInMods(
   modsIndex: ModsIndex
 ): Promise<boolean> {
   for (const step of entry.steps) {
-    if (step.kind !== 'move') continue
+    if (step.kind !== 'move' || !isModFileName(step.from)) continue
     try {
       const info = await lstat(step.from)
       if (info.isFile()) return true
@@ -140,23 +157,22 @@ async function isEntryBackInMods(
     }
   }
 
-  if (addon !== null) {
-    const diskPath = normalizeSlashPath(addon.fileNameOnDisk)
-    if (diskPath !== '') {
-      const lowerRel = diskPath.toLowerCase()
-      const lowerBase = baseNameOf(diskPath).toLowerCase()
-      if (modsIndex.relPaths.has(lowerRel) || (lowerBase !== '' && modsIndex.baseNames.has(lowerBase))) {
-        return true
-      }
-    }
-    for (const modName of addon.moduleNames) {
-      const normalized = normalizeSlashPath(modName)
-      if (normalized === '') continue
+  const setAsideMs = Date.parse(entry.at)
+  if (addon !== null && Number.isFinite(setAsideMs)) {
+    const matchesNewerModFile = (candidate: string): boolean => {
+      const normalized = normalizeSlashPath(candidate)
+      if (normalized === '' || !isModFileName(normalized)) return false
       const lowerRel = normalized.toLowerCase()
+      const relMtime = modsIndex.relPaths.get(lowerRel)
+      if (relMtime !== undefined && relMtime > setAsideMs) return true
       const lowerBase = baseNameOf(normalized).toLowerCase()
-      if (modsIndex.relPaths.has(lowerRel) || (lowerBase !== '' && modsIndex.baseNames.has(lowerBase))) {
-        return true
-      }
+      const baseMtime = lowerBase !== '' ? modsIndex.baseNames.get(lowerBase) : undefined
+      return baseMtime !== undefined && baseMtime > setAsideMs
+    }
+
+    if (matchesNewerModFile(addon.fileNameOnDisk)) return true
+    for (const modName of addon.moduleNames) {
+      if (matchesNewerModFile(modName)) return true
     }
   }
 
@@ -320,12 +336,14 @@ export async function clearHoldingEntry(ctx: AppContext, entryId: string): Promi
   const journalPath = entryFile(ctx.paths.journalDir, found.id)
 
   try {
+    // Settle the journal entry first so a failed write leaves holding untouched, and a failed remove leaves
+    // only a harmless holding copy without offering a broken Undo in History.
     const result = await ctx.gate.run({
       reason: 'journal',
       folderPath: null,
       ops: [
-        { op: 'remove', path: holdingEntryDir },
-        { op: 'write', path: journalPath, data: JSON.stringify(updatedEntry), mode: 'replace' }
+        { op: 'write', path: journalPath, data: JSON.stringify(updatedEntry), mode: 'replace' },
+        { op: 'remove', path: holdingEntryDir }
       ]
     })
     return result.status === 'done' ? { kind: 'done' } : { kind: 'refused', why: 'error' }
