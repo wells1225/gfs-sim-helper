@@ -405,8 +405,9 @@ export function requestsHandlers(ctx: AppContext): Handlers<RequestsChannel> {
         }
 
         const { delivery } = check
+        // One folder deep: the game loads .ts4script files only at depth 0 or 1 inside Mods.
         const safeTitle = safeModFolderName(delivery.title, requestId)
-        const targetModDir = join(simsFolderPath, 'Mods', 'From Tyler', safeTitle)
+        const targetModDir = join(simsFolderPath, 'Mods', safeTitle)
 
         // Never overwrite an existing file in Mods.
         for (const file of delivery.files) {
@@ -417,7 +418,7 @@ export function requestsHandlers(ctx: AppContext): Handlers<RequestsChannel> {
 
         const entryId = ctx.newId()
         const holdingEntryDir = join(ctx.paths.holdingDir, entryId)
-        const holdingModDir = join(holdingEntryDir, 'Mods', 'From Tyler', safeTitle)
+        const holdingModDir = join(holdingEntryDir, 'Mods', safeTitle)
         const sourceFilesDir = join(folder.path, 'from-tyler', requestId, 'files')
 
         const copyOps: WriteOp[] = [{ op: 'mkdir', path: holdingModDir }]

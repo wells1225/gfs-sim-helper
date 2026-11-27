@@ -126,7 +126,7 @@ node ~/gfs-sim-helper/relay/deliver.mjs r-20261126-143000-ab12 ~/mods/outfit-rea
 
 - The request id is in the email.
 - `--title`: 80 characters at most. Her app shows "Tyler made you a mod: <title>" and installs into
-  `Mods/From Tyler/<title>/`.
+  `Mods/From Tyler - <title>/` (one folder deep, so script mods load).
 - `--note`: your plain words for her, 1,000 characters at most. Name any mod she must also have (for example
   XML Injector).
 - `--has-script`: the mod has a script part. It is turned on by itself when a `.ts4script` file is in the folder.
