@@ -915,7 +915,8 @@ describe('round 7 contract: save copies, patch day guard and mod requests (PRs 1
     expect(INVOKE_CHANNELS.filter((c) => c.startsWith(`${prefix}:`))).toEqual(channels)
   })
 
-  it.each(groups)('each %s stub throws not implemented, naming its channel', async (_prefix, make, channels) => {
+  // PR 15 has landed its savecopies handlers; the other groups are still stubs.
+  it.each(groups.filter(([prefix]) => prefix !== 'savecopies'))('each %s stub throws not implemented, naming its channel', async (_prefix, make, channels) => {
     const handlers = make(makeContext()) as Record<string, (req?: unknown) => Promise<unknown>>
     for (const channel of channels) {
       await expect(handlers[channel]!(undefined)).rejects.toThrow(`not implemented: ${channel}`)

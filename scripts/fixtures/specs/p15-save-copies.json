@@ -1,0 +1,34 @@
+{
+  "name": "p15-save-copies",
+  "description": "PR 15: a healthy Sims 4 folder with a save, its rolling .ver files and a Tray household, for save copies and putting a save back.",
+  "seed": 1501,
+  "baseTime": "2026-11-26T18:00:00.000Z",
+  "gameInstall": {
+    "relPath": "Program Files/EA Games/The Sims 4",
+    "version": "1.130.12.1020",
+    "packs": ["EP01", "GP02"]
+  },
+  "userFolders": [
+    {
+      "relPath": "Users/Player/Documents/Electronic Arts/The Sims 4",
+      "gameVersion": "1.130.12.1020",
+      "gameVersionMtime": "2026-11-20T18:00:00.000Z",
+      "options": {
+        "modsdisabled": 0,
+        "scriptmodsenabled": 1,
+        "showmodliststartup": 1
+      },
+      "resourceCfgDepth": 5,
+      "thumbCacheMtime": "2026-11-26T18:00:00.000Z",
+      "packages": [
+        {
+          "relPath": "cozy_rug.package",
+          "mtime": "2026-11-15T12:00:00.000Z",
+          "keys": [
+            { "type": "0x319E4F1D", "group": "0x00000000", "instance": "0x0001000000001501" }
+          ]
+        }
+      ]
+    }
+  ]
+}

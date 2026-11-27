@@ -794,3 +794,78 @@ describe('backup:summary and backup:prune handlers (PR 23)', () => {
     }
   })
 })
+
+describe('PR 15: fix:apply makes a before-change save copy first, at most once a day, and never waits on it', () => {
+  async function withSimsFolder(ctx: AppContext, root: string): Promise<string> {
+    const { generateFixture, loadSpec } = await import('../../../scripts/fixtures/make-fixture.ts')
+    const specs = join(import.meta.dirname, '../../../scripts/fixtures/specs')
+    await generateFixture(await loadSpec(join(specs, 'p15-save-copies.json')), join(root, 'pc'))
+    const folder = join(root, 'pc', 'Users', 'Player', 'Documents', 'Electronic Arts', 'The Sims 4')
+    const scan = sampleScan()
+    ctx.session.scan = { ...scan, folder: { ...scan.folder, path: folder } }
+    return folder
+  }
+
+  async function copyReasons(ctx: AppContext): Promise<string[]> {
+    const { readdir, readFile } = await import('node:fs/promises')
+    let ids: string[]
+    try {
+      ids = await readdir(ctx.paths.saveCopiesDir)
+    } catch {
+      return []
+    }
+    const reasons: string[] = []
+    for (const id of ids) {
+      const raw = await readFile(join(ctx.paths.saveCopiesDir, id, 'copy.json'), 'utf8')
+      reasons.push((JSON.parse(raw) as { reason: string }).reason)
+    }
+    return reasons
+  }
+
+  it('copies her saves before the first fix of the day, not before the second', async () => {
+    const applySpy = vi.fn<Fixes['apply']>(async () => ({ status: 'done', entry: sampleJournalEntry() }))
+    const { ctx, root } = await makeContext({ fixes: { apply: applySpy } })
+    await withSimsFolder(ctx, root)
+    const handlers = fixHandlers(ctx)
+    expect((await handlers['fix:apply']({ via: 'finding', findingId: 'mods-off', fix: 'turn-mods-on' })).status).toBe(
+      'done'
+    )
+    expect(await copyReasons(ctx)).toEqual(['before-change'])
+    expect((await handlers['fix:apply']({ via: 'finding', findingId: 'mods-off', fix: 'turn-mods-on' })).status).toBe(
+      'done'
+    )
+    expect(await copyReasons(ctx)).toEqual(['before-change'])
+    expect(applySpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('a refused or failing save copy never blocks the fix', async () => {
+    const applySpy = vi.fn<Fixes['apply']>(async () => ({ status: 'done', entry: sampleJournalEntry() }))
+    const { ctx, root } = await makeContext({ fixes: { apply: applySpy } })
+    await withSimsFolder(ctx, root)
+    const handlers = fixHandlers(ctx)
+
+    ctx.gameState = async () => 'unknown'
+    expect((await handlers['fix:apply']({ via: 'finding', findingId: 'mods-off', fix: 'turn-mods-on' })).status).toBe(
+      'done'
+    )
+    ctx.gameState = async () => {
+      throw new Error('no process list')
+    }
+    const realGate = ctx.gate
+    ctx.gate = {
+      run: async () => {
+        throw new Error('the gate broke')
+      }
+    }
+    expect((await handlers['fix:apply']({ via: 'finding', findingId: 'mods-off', fix: 'turn-mods-on' })).status).toBe(
+      'done'
+    )
+    ctx.gameState = async () => 'not-running'
+    expect((await handlers['fix:apply']({ via: 'finding', findingId: 'mods-off', fix: 'turn-mods-on' })).status).toBe(
+      'done'
+    )
+    ctx.gate = realGate
+    expect(applySpy).toHaveBeenCalledTimes(3)
+    expect(await copyReasons(ctx)).toEqual([])
+  })
+})
