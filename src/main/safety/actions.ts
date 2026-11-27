@@ -170,17 +170,12 @@ async function fromLeadsToItsOwnName(folderPath: string, from: string): Promise<
 
 /**
  * True only when `file` leads to its own name strictly inside the real `holdingDir` (no link on the way), does not
- * resolve to the same real path as `step.from`, and `step.from` leads to its own name in the real Mods folder. Hard
+ * resolve to the same real path as `modsSide`, and `modsSide` leads to its own name in the real Mods folder. Hard
  * links (same-drive interrupted moves) have two distinct real paths and still pass; a symlink escaping to backupsDir,
  * crossing into another holding entry, or leading back to Mods never passes, and neither does a file in Mods reached
  * through a link.
  */
-async function isHoldingCopy(
-  deps: SafetyDeps,
-  entry: JournalEntry,
-  step: Extract<JournalStep, { kind: 'move' }>,
-  file: string
-): Promise<boolean> {
+async function isHoldingCopy(deps: SafetyDeps, entry: JournalEntry, file: string, modsSide: string): Promise<boolean> {
   if (!isInside(file, deps.paths.holdingDir) || samePath(file, deps.paths.holdingDir)) return false
   const holding =
     deps.paths.holdingDir.length > 1 && deps.paths.holdingDir.endsWith(sep)
@@ -196,13 +191,26 @@ async function isHoldingCopy(
     const [realFile, realHolding, realFrom] = await Promise.all([
       realpath(file),
       realpath(holding),
-      realpath(step.from)
+      realpath(modsSide)
     ])
     if (fold(realFile) !== fold(realHolding + below) || samePath(realFile, realFrom)) return false
   } catch {
     return false
   }
-  return await fromLeadsToItsOwnName(entry.folderPath, step.from)
+  return await fromLeadsToItsOwnName(entry.folderPath, modsSide)
+}
+
+/** install-mod only: `from` is the checked copy still in this entry's own holding folder, and `to` is the same file placed in Mods. */
+async function isInstallSourceLeft(
+  deps: SafetyDeps,
+  entry: JournalEntry,
+  step: Extract<JournalStep, { kind: 'move' }>
+): Promise<boolean> {
+  if (entry.action !== 'install-mod' || !isSafeId(entry.id)) return false
+  const own = join(deps.paths.holdingDir, entry.id)
+  if (!isInside(step.from, own) || samePath(step.from, own)) return false
+  if (isInside(step.to, deps.paths.holdingDir)) return false
+  return await isHoldingCopy(deps, entry, step.from, step.to)
 }
 
 /**
@@ -227,7 +235,7 @@ async function removeCopiesLeft(deps: SafetyDeps, entry: JournalEntry, indexes: 
       detail ??= notBack(deps, entry, step, now)
       continue
     }
-    if (!(await isHoldingCopy(deps, entry, step, now.file))) {
+    if (!(await isHoldingCopy(deps, entry, now.file, step.from))) {
       // A file in Mods reached through a link is not back as it was, whatever its bytes: say so, not "back".
       if (await fromLeadsToItsOwnName(entry.folderPath, step.from)) copyDetail ??= notBack(deps, entry, step, now)
       else detail ??= notBack(deps, entry, step, { where: 'done' })
@@ -407,6 +415,24 @@ export async function revert(deps: SafetyDeps, entry: JournalEntry, onProgress?:
         if (onDisk.where === 'done') step.state = 'applied'
       } else if (onDisk.where !== 'not-done') {
         step.state = 'applied'
+      }
+    }
+  }
+
+  // An install whose move to another drive was cut off after the copy has the same file in holding and in Mods. The
+  // file in Mods can never be removed, so the identical copy in this entry's own holding folder is, hashed again just
+  // before, and the ordinary move back below then runs. A refused or failed remove leaves the step copy-left.
+  if (entry.action === 'install-mod') {
+    for (const [i, step] of entry.steps.entries()) {
+      if (step.kind !== 'move' || step.state !== 'applied') continue
+      const now = await inspect(step)
+      if (now.where === 'copy-left' && (await isInstallSourceLeft(deps, entry, step))) {
+        try {
+          await deps.gate.run({ reason: 'undo', folderPath: entry.folderPath, ops: [{ op: 'remove', path: step.from }] })
+        } catch {
+          // What ran is read from the disk below.
+        }
+        inspected.set(i, await inspect(step))
       }
     }
   }
