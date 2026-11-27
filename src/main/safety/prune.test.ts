@@ -257,6 +257,117 @@ describe('backupSummary and pruneBackups', () => {
     }
   })
 
+  it('still prunes old backups after an Ask Tyler install (done and undone), keeping the install backup and holding', async () => {
+    const ws = await makeWorkspace(TOOLS)
+    const b1 = await makeVerifiedBackup(ws, 'item.package', 'one')
+    const b2 = await makeVerifiedBackup(ws, 'item.package', 'two')
+    const b3 = await makeVerifiedBackup(ws, 'item.package', 'three')
+    const b4 = await makeVerifiedBackup(ws, 'item.package', 'four')
+    const b5 = await makeVerifiedBackup(ws, 'item.package', 'five')
+    await mkdir(ws.paths.journalDir, { recursive: true })
+
+    // Done install: the file moved from holding/<id>/Mods/From Tyler - X/ into Mods/From Tyler - X/.
+    const doneId = '20261126-143000-in01'
+    const doneHeldDir = join(ws.paths.holdingDir, doneId, 'Mods', 'From Tyler - Cozy')
+    const doneLive = join(ws.mods, 'From Tyler - Cozy', 'cozy.package')
+    await mkdir(doneHeldDir, { recursive: true })
+    await mkdir(dirname(doneLive), { recursive: true })
+    await writeFile(doneLive, 'cozy-bytes')
+    const doneEntry = sampleJournalEntry({
+      id: doneId,
+      action: 'install-mod',
+      groupId: 'request:r-20261126-143000-ab12',
+      groupLabel: 'Cozy',
+      folderPath: ws.simsFolder,
+      backupId: b1.id,
+      status: 'done',
+      undo: 'can-undo',
+      steps: [
+        {
+          kind: 'move',
+          from: join(doneHeldDir, 'cozy.package'),
+          to: doneLive,
+          bytes: 10,
+          sha256: await sha256File(doneLive),
+          state: 'applied'
+        }
+      ]
+    })
+    await writeFile(join(ws.paths.journalDir, `${doneId}.json`), JSON.stringify(doneEntry))
+
+    // Undone install: Undo moved the file back into holding.
+    const undoneId = '20261126-143100-in02'
+    const undoneHeld = join(ws.paths.holdingDir, undoneId, 'Mods', 'From Tyler - Rugs', 'rugs.package')
+    await mkdir(dirname(undoneHeld), { recursive: true })
+    await writeFile(undoneHeld, 'rugs-bytes')
+    const undoneEntry = sampleJournalEntry({
+      id: undoneId,
+      action: 'install-mod',
+      groupId: 'request:r-20261126-143100-cd34',
+      groupLabel: 'Rugs',
+      folderPath: ws.simsFolder,
+      backupId: b2.id,
+      status: 'undone',
+      undo: 'cannot-undo',
+      undoneAt: '2026-11-26T15:00:00.000Z',
+      steps: [
+        {
+          kind: 'move',
+          from: undoneHeld,
+          to: join(ws.mods, 'From Tyler - Rugs', 'rugs.package'),
+          bytes: 10,
+          sha256: await sha256File(undoneHeld),
+          state: 'reverted'
+        }
+      ]
+    })
+    await writeFile(join(ws.paths.journalDir, `${undoneId}.json`), JSON.stringify(undoneEntry))
+
+    const summary = await backupSummary(ws.deps, ws.simsFolder)
+    expect(summary.canPrune).toBe(true)
+
+    const pruned = await pruneBackups(ws.deps, ws.simsFolder)
+    expect(pruned.status).toBe('done')
+    if (pruned.status !== 'done') return
+
+    // b1 is protected by the done install; b4 and b5 are the newest two; b2 and b3 go.
+    expect(await pathExists(manifestFile(ws.paths.backupsDir, b1.id))).toBe(true)
+    expect(await pathExists(manifestFile(ws.paths.backupsDir, b2.id))).toBe(false)
+    expect(await pathExists(manifestFile(ws.paths.backupsDir, b3.id))).toBe(false)
+    expect(await pathExists(manifestFile(ws.paths.backupsDir, b4.id))).toBe(true)
+    expect(await pathExists(manifestFile(ws.paths.backupsDir, b5.id))).toBe(true)
+
+    // Both holding folders stay: the done one can still be undone, the undone one holds the only copy.
+    expect(await pathExists(doneHeldDir)).toBe(true)
+    expect(await readFile(undoneHeld, 'utf8')).toBe('rugs-bytes')
+    expect(await readFile(doneLive, 'utf8')).toBe('cozy-bytes')
+  })
+
+  it('still refuses to prune when a non-install entry moves a file out of holding', async () => {
+    const ws = await makeWorkspace(TOOLS)
+    await makeVerifiedBackup(ws, 'item.package', 'one')
+    await makeVerifiedBackup(ws, 'item.package', 'two')
+    await makeVerifiedBackup(ws, 'item.package', 'three')
+    await mkdir(ws.paths.journalDir, { recursive: true })
+    const id = '20261126-143200-dg01'
+    const held = join(ws.paths.holdingDir, id, 'Mods', 'x.package')
+    await mkdir(dirname(held), { recursive: true })
+    await writeFile(held, 'x-bytes')
+    const entry = sampleJournalEntry({
+      id,
+      action: 'disable-group',
+      folderPath: ws.simsFolder,
+      status: 'done',
+      undo: 'can-undo',
+      steps: [
+        { kind: 'move', from: held, to: join(ws.mods, 'x.package'), bytes: 7, sha256: await sha256File(held), state: 'applied' }
+      ]
+    })
+    await writeFile(join(ws.paths.journalDir, `${id}.json`), JSON.stringify(entry))
+
+    expect((await backupSummary(ws.deps, ws.simsFolder)).canPrune).toBe(false)
+  })
+
   it('protects recent or future copying manifests and prunes abandoned copying (> 1h) and failed manifests', async () => {
     const ws = await makeWorkspace(TOOLS)
     const now = new Date('2026-11-25T15:00:00.000Z')

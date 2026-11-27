@@ -82,12 +82,18 @@ async function makeWaitingHarness() {
     groupId: string
     label: string
     relPath: string
+    /** Extra mod files moved by the same entry (a multi-file mod group). */
+    moreRelPaths?: string[]
     origin?: JournalEntry['origin']
     status?: JournalEntry['status']
   }) {
-    const heldFile = join(paths.holdingDir, input.id, 'Mods', ...input.relPath.split('/'))
-    await mkdir(dirname(heldFile), { recursive: true })
-    await writeFile(heldFile, 'old-mod-bytes')
+    const relPaths = [input.relPath, ...(input.moreRelPaths ?? [])]
+    const heldFiles = relPaths.map((rel) => join(paths.holdingDir, input.id, 'Mods', ...rel.split('/')))
+    for (const held of heldFiles) {
+      await mkdir(dirname(held), { recursive: true })
+      await writeFile(held, 'old-mod-bytes')
+    }
+    const heldFile = heldFiles[0]!
     const entry: JournalEntry = {
       id: input.id,
       at: input.at,
@@ -99,25 +105,42 @@ async function makeWaitingHarness() {
       groupLabel: input.label,
       hasScript: true,
       backupId: '20261122-120000-b001',
-      steps: [
-        {
-          kind: 'move',
-          from: join(modsDir, ...input.relPath.split('/')),
-          to: heldFile,
-          bytes: 13,
-          sha256: SAMPLE_SHA_A,
-          state: 'applied'
-        }
-      ],
+      steps: relPaths.map((rel, i) => ({
+        kind: 'move' as const,
+        from: join(modsDir, ...rel.split('/')),
+        to: heldFiles[i]!,
+        bytes: 13,
+        sha256: SAMPLE_SHA_A,
+        state: 'applied' as const
+      })),
       status: input.status ?? 'done',
       undo: 'can-undo',
       undoneAt: null
     }
     await writeFile(join(paths.journalDir, `${input.id}.json`), JSON.stringify(entry), 'utf8')
-    return { entry, heldFile }
+    return { entry, heldFile, heldFiles }
   }
 
-  return { ctx, paths, simsFolder, modsDir, addSetAsideEntry }
+  async function addModuleToAddon(addonId: number, name: string) {
+    const cfFile = paths.curseForgeInstanceFile!
+    const raw = JSON.parse(await readFile(cfFile, 'utf8')) as Array<{
+      installedAddons: Array<{ addonID: number; installedFile: { modules: Array<{ name: string; fingerprint: number }> } }>
+    }>
+    const addon = raw[0]!.installedAddons.find((a) => a.addonID === addonId)!
+    addon.installedFile.modules.push({ name, fingerprint: 700000 + addon.installedFile.modules.length })
+    await writeFile(cfFile, JSON.stringify(raw, null, 2), 'utf8')
+  }
+
+  async function putInMods(relPath: string, when: string) {
+    const file = join(modsDir, ...relPath.split('/'))
+    await mkdir(dirname(file), { recursive: true })
+    await writeFile(file, 'new-mod-bytes')
+    const date = new Date(when)
+    await utimes(file, date, date)
+    return file
+  }
+
+  return { ctx, paths, simsFolder, modsDir, addSetAsideEntry, addModuleToAddon, putInMods }
 }
 
 describe('patchguard waiting and clear-holding', () => {
@@ -375,6 +398,82 @@ describe('patchguard waiting and clear-holding', () => {
       kind: 'refused',
       why: 'not-back-in-mods'
     })
+  })
+
+  it('a multi-file mod is back in Mods only when every set-aside file is back, never after a partial reinstall', async () => {
+    const { ctx, addSetAsideEntry, putInMods } = await makeWaitingHarness()
+
+    const multi = await addSetAsideEntry({
+      id: '20261122-120001-mf01',
+      at: '2026-11-22T12:00:01.000Z',
+      groupId: 'cf:160101',
+      label: 'Multi File Mod',
+      relPath: 'MultiMod/multi_a.package',
+      moreRelPaths: ['MultiMod/multi_b.package']
+    })
+
+    // Only one of the two files came back at its old place.
+    await putInMods('MultiMod/multi_a.package', '2026-11-26T15:00:00.000Z')
+    const partial = await listWaitingOnMods(ctx)
+    expect(partial).toHaveLength(1)
+    expect(partial[0]!.state).not.toBe('back-in-mods')
+    expect(['waiting', 'updated']).toContain(partial[0]!.state)
+    expect(await clearHoldingEntry(ctx, multi.entry.id)).toEqual({ kind: 'refused', why: 'not-back-in-mods' })
+    for (const held of multi.heldFiles) expect((await stat(held)).isFile()).toBe(true)
+
+    // Both files are back: now it is back in Mods.
+    await putInMods('MultiMod/multi_b.package', '2026-11-26T15:00:00.000Z')
+    const both = await listWaitingOnMods(ctx)
+    expect(both[0]!.state).toBe('back-in-mods')
+  })
+
+  it('a multi-file CurseForge mod with a newer version is not back in Mods when only one file name came back', async () => {
+    const { ctx, addSetAsideEntry, putInMods } = await makeWaitingHarness()
+
+    // Addon 160102 has a newer CurseForge file (2026-11-25) than the set-aside time.
+    const multi = await addSetAsideEntry({
+      id: '20261122-120002-mf02',
+      at: '2026-11-22T12:00:02.000Z',
+      groupId: 'cf:160102',
+      label: 'Updated Multi Mod',
+      relPath: 'UpdatedMod/updated_mod.ts4script',
+      moreRelPaths: ['UpdatedMod/updated_tuning.package']
+    })
+    await putInMods('Reinstalled/updated_mod.ts4script', '2026-11-26T15:00:00.000Z')
+
+    const list = await listWaitingOnMods(ctx)
+    expect(list[0]).toMatchObject({ entryId: multi.entry.id, state: 'updated' })
+    expect(await clearHoldingEntry(ctx, multi.entry.id)).toEqual({ kind: 'refused', why: 'not-back-in-mods' })
+  })
+
+  it('an unrelated mod with the same file name never makes a set-aside CurseForge mod back in Mods', async () => {
+    const { ctx, addSetAsideEntry, addModuleToAddon, putInMods } = await makeWaitingHarness()
+
+    // Addon 160101's CurseForge file (2026-11-15) has NOT advanced past the set-aside time.
+    await addModuleToAddon(160101, 'helper.package')
+    const entry = await addSetAsideEntry({
+      id: '20261122-120001-hc01',
+      at: '2026-11-22T12:00:01.000Z',
+      groupId: 'cf:160101',
+      label: 'Waiting Script Mod',
+      relPath: 'WaitingMod/helper.package'
+    })
+    // An Ask Tyler delivery drops a newer file with the same name in its own folder.
+    await putInMods('From Tyler - Other/helper.package', '2026-11-26T15:00:00.000Z')
+
+    const list = await listWaitingOnMods(ctx)
+    expect(list).toEqual([
+      {
+        groupId: 'cf:160101',
+        label: 'Waiting Script Mod',
+        entryId: entry.entry.id,
+        setAsideAt: '2026-11-22T12:00:01.000Z',
+        state: 'waiting',
+        updatedAt: null
+      }
+    ])
+    expect(await clearHoldingEntry(ctx, entry.entry.id)).toEqual({ kind: 'refused', why: 'not-back-in-mods' })
+    expect((await stat(entry.heldFile)).isFile()).toBe(true)
   })
 
   it('clear-holding settles the journal entry BEFORE removing the holding folder', async () => {

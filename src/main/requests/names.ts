@@ -87,8 +87,18 @@ export function hasCaseDuplicates(names: readonly string[]): boolean {
   return false
 }
 
-/** Turns a delivery title into a safe Windows folder name for Mods/From Tyler/<folder>/. */
+export const MOD_FOLDER_PREFIX = 'From Tyler - '
+
+/**
+ * Turns a delivery title into a safe Windows folder name for Mods/From Tyler - <title>/. The folder sits directly
+ * in Mods, so a .ts4script inside is at depth 1, the deepest the game loads scripts from. With the 80-character
+ * title cap the whole name stays at most 93 code points (173 UTF-16 units), under the 255-unit Windows limit.
+ */
 export function safeModFolderName(title: string, requestId: string): string {
+  return `${MOD_FOLDER_PREFIX}${safeTitlePart(title, requestId)}`
+}
+
+function safeTitlePart(title: string, requestId: string): string {
   let cleaned = title
     .replace(new RegExp(CONTROL_ANY.source, 'g'), ' ')
     .replace(/[<>:"/\\|?*]+/g, ' ')

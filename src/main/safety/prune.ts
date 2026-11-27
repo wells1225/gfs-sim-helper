@@ -249,6 +249,11 @@ function isValidJournalEntry(entry: JournalEntry, holdingDir: string, realHoldin
 
   for (const step of entry.steps) {
     if (step.kind === 'move') {
+      // An Ask Tyler install moves the checked copies from this entry's own holding folder into the Sims folder.
+      if (entry.action === 'install-mod' && inEntryHolding(step.from)) {
+        if (!inFolder(step.to) || inHolding(step.to)) return false
+        continue
+      }
       if (!inFolder(step.from) || inHolding(step.from)) return false
       if (inHolding(step.to)) {
         if (!inEntryHolding(step.to)) return false

@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { appPaths } from '../app-paths.ts'
 import type { Host } from '../locate/host.ts'
+import { oneAtATime } from '../safety/lock.ts'
 import { createContext } from '../services.ts'
 import { patchGuardHandlers } from './handlers.ts'
 
@@ -16,55 +17,60 @@ afterEach(async () => {
   }
 })
 
+async function makeWorld() {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'sims-p16-handlers-')))
+  temps.push(root)
+
+  const programFiles = join(root, 'Program Files')
+  const installDir = join(programFiles, 'EA Games', 'The Sims 4')
+  const documentsDir = join(root, 'Documents')
+  const localAppData = join(root, 'LocalAppData')
+  const appData = join(root, 'Roaming')
+  const desktopDir = join(root, 'Desktop')
+
+  await mkdir(join(installDir, 'Game', 'Bin'), { recursive: true })
+  await writeFile(join(installDir, 'Game', 'Bin', 'TS4_x64.exe'), 'fake-exe')
+  await mkdir(documentsDir, { recursive: true })
+  await mkdir(localAppData, { recursive: true })
+  await mkdir(appData, { recursive: true })
+  await mkdir(desktopDir, { recursive: true })
+
+  const world = { version: '1.129.39.1030' }
+  const opened: string[] = []
+  const host: Host = {
+    documentsDir,
+    env: { USERNAME: 'Lila', ProgramFiles: programFiles },
+    async readRegistry() {
+      return installDir
+    },
+    async listProcesses() {
+      return []
+    },
+    async fileVersion() {
+      return world.version
+    }
+  }
+
+  const ctx = createContext({
+    host,
+    paths: appPaths({ localAppData, appData, desktopDir, env: {} }),
+    clock: { now: () => new Date('2026-11-26T12:00:00.000Z') },
+    safeStorage: {
+      isEncryptionAvailable: () => false,
+      encryptString: (t) => Buffer.from(t, 'utf8'),
+      decryptString: (b) => Buffer.from(b).toString('utf8')
+    },
+    emit: () => {},
+    reveal: () => {},
+    openGame: async (exe) => void opened.push(exe)
+  })
+
+  return { ctx, opened, installDir, world }
+}
+
 describe('patchGuardHandlers', () => {
   it('wires all 5 patchguard IPC channels end-to-end', async () => {
-    const root = await realpath(await mkdtemp(join(tmpdir(), 'sims-p16-handlers-')))
-    temps.push(root)
-
-    const programFiles = join(root, 'Program Files')
-    const installDir = join(programFiles, 'EA Games', 'The Sims 4')
-    const documentsDir = join(root, 'Documents')
-    const localAppData = join(root, 'LocalAppData')
-    const appData = join(root, 'Roaming')
-    const desktopDir = join(root, 'Desktop')
-
-    await mkdir(join(installDir, 'Game', 'Bin'), { recursive: true })
-    await writeFile(join(installDir, 'Game', 'Bin', 'TS4_x64.exe'), 'fake-exe')
-    await mkdir(documentsDir, { recursive: true })
-    await mkdir(localAppData, { recursive: true })
-    await mkdir(appData, { recursive: true })
-    await mkdir(desktopDir, { recursive: true })
-
-    let version = '1.129.39.1030'
-    const opened: string[] = []
-    const host: Host = {
-      documentsDir,
-      env: { USERNAME: 'Lila', ProgramFiles: programFiles },
-      async readRegistry() {
-        return installDir
-      },
-      async listProcesses() {
-        return []
-      },
-      async fileVersion() {
-        return version
-      }
-    }
-
-    const ctx = createContext({
-      host,
-      paths: appPaths({ localAppData, appData, desktopDir, env: {} }),
-      clock: { now: () => new Date('2026-11-26T12:00:00.000Z') },
-      safeStorage: {
-        isEncryptionAvailable: () => false,
-        encryptString: (t) => Buffer.from(t, 'utf8'),
-        decryptString: (b) => Buffer.from(b).toString('utf8')
-      },
-      emit: () => {},
-      reveal: () => {},
-      openGame: async (exe) => void opened.push(exe)
-    })
-
+    const { ctx, opened, installDir, world } = await makeWorld()
     const h = patchGuardHandlers(ctx)
 
     // 1. First watch stores version
@@ -73,7 +79,7 @@ describe('patchGuardHandlers', () => {
     expect(w1.current).toBe('1.129.39.1030')
 
     // 2. Game updates -> watch sees change, play stops
-    version = '1.130.12.1020'
+    world.version = '1.130.12.1020'
     const w2 = await h['patchguard:watch']()
     expect(w2.changed).toBe(true)
 
@@ -95,5 +101,29 @@ describe('patchGuardHandlers', () => {
       kind: 'refused',
       why: 'not-found'
     })
+  })
+
+  it('patchguard:play waits for an in-flight save copy or fix instead of launching mid-copy', async () => {
+    const { ctx, opened, installDir } = await makeWorld()
+    const h = patchGuardHandlers(ctx)
+    await h['patchguard:watch']()
+
+    let release!: () => void
+    const copying = oneAtATime(ctx, () => new Promise<void>((resolve) => (release = resolve)))
+
+    let settled = false
+    const play = h['patchguard:play']({ ignoreUpdate: false }).then((answer) => {
+      settled = true
+      return answer
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(settled).toBe(false)
+    expect(opened).toEqual([])
+
+    release()
+    await copying
+    expect(await play).toEqual({ kind: 'started' })
+    expect(opened).toEqual([join(installDir, 'Game', 'Bin', 'TS4_x64.exe')])
   })
 })

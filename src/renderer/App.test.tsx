@@ -12,7 +12,7 @@ import { SHARE_READY } from './share/feature.ts'
 import type { Route } from './nav.tsx'
 import { fakeApi } from './testing/fake-api.ts'
 
-const FOOTER = 'Your saves and households are never touched · A backup is made before any change'
+const FOOTER = 'Your existing saves and households are never overwritten · A backup is made before any change'
 const SIMS_FOLDER = 'C:\\Users\\Lila\\Documents\\Electronic Arts\\The Sims 4'
 
 afterEach(() => {

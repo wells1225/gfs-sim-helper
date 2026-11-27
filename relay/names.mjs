@@ -2,11 +2,16 @@
 
 import { hasControl } from './lib.mjs'
 
-const MAX_NAME_CHARS = 200
+// These limits match her app (src/main/requests/names.ts and delivery.ts): anything past them makes the app mark the
+// delivery broken, and a delivery is written once.
+export const MAX_NAME_CHARS = 200
+export const MAX_FILES = 500
+export const MAX_READY_BYTES = 256 * 1024
 const ALLOWED = ['.package', '.ts4script']
 const WINDOWS_BAD = /[<>:"|?*\\/]/
-// Windows device names, with or without an extension (CON.package, aux.v2.package, LPT9.ts4script).
-const WINDOWS_DEVICE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i
+// Windows device names, with or without an extension or spaces before the dot (CON.package, aux.v2.package,
+// LPT9.ts4script, COM¹.package, CONIN$.package, CON .package). Same pattern as the app.
+const WINDOWS_DEVICE = /^(?:con|prn|aux|nul|conin\$|conout\$|(?:com|lpt)[0-9\u00b9\u00b2\u00b3]) *(?:\..*)?$/i
 
 /** Why a file name is refused, or null when it is fine. */
 export function badName(name) {

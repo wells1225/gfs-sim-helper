@@ -370,7 +370,7 @@ export function HistoryScreen() {
                           {formatEntryTimestamp(entry.at)}
                         </span>
                         <span>· {formatStepSummary(entry)}</span>
-                        {entry.undo === 'cannot-undo' && (
+                        {entry.undo === 'cannot-undo' && entry.action === 'clear-caches' && (
                           <span>· Rebuilt automatically by the game</span>
                         )}
                       </div>

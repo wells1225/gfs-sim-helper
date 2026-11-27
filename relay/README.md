@@ -115,7 +115,7 @@ To update later: `git -C ~/gfs-sim-helper pull`. The timer picks up the new scri
 ## Delivering a mod
 
 Put the finished files in one folder: only `.package` and `.ts4script`, no subfolders, no links, each 200 MB at
-most, with plain Windows-safe names: no `<>:"|?*`, no leading dot, no trailing dot or space, no Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, with or without an extension), and no two names that differ only in case. Then:
+most, with plain Windows-safe names: no `<>:"|?*`, no leading dot, no trailing dot or space, no Windows device names (`CON`, `PRN`, `AUX`, `NUL`, `CONIN$`, `CONOUT$`, `COM0`-`COM9`, `LPT0`-`LPT9`, `COM¹²³`, `LPT¹²³`, with or without an extension), and no two names that differ only in case. At most 500 files, and the `ready.json` they make must stay within 256 KiB; these are her app's limits, checked before anything is uploaded. Then:
 
 ```sh
 node ~/gfs-sim-helper/relay/deliver.mjs r-20261126-143000-ab12 ~/mods/outfit-reactions \
@@ -126,7 +126,7 @@ node ~/gfs-sim-helper/relay/deliver.mjs r-20261126-143000-ab12 ~/mods/outfit-rea
 
 - The request id is in the email.
 - `--title`: 80 characters at most. Her app shows "Tyler made you a mod: <title>" and installs into
-  `Mods/From Tyler/<title>/`.
+  `Mods/From Tyler - <title>/` (one folder deep, so script mods load).
 - `--note`: your plain words for her, 1,000 characters at most. Name any mod she must also have (for example
   XML Injector).
 - `--has-script`: the mod has a script part. It is turned on by itself when a `.ts4script` file is in the folder.

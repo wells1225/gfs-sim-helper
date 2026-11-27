@@ -255,13 +255,45 @@ export async function syncModFolder(ctx: AppContext): Promise<ModFolderState> {
   return state
 }
 
+const DRIVE_SHORTCUT_TARGETS = '.shortcut-targets-by-id'
+const DRIVE_ITEM_ID = /^[A-Za-z0-9_-]+$/
+
+/**
+ * Google Drive for desktop shows a folder added with "Add shortcut to Drive" in My Drive as a junction to
+ * <drive>\.shortcut-targets-by-id\<folder id>\<folder name>. When the folder she picked resolves to exactly
+ * .shortcut-targets-by-id\<one id>\Sims Helper Mods, this returns that real target; any other link gives null.
+ */
+async function driveShortcutTarget(picked: string): Promise<string | null> {
+  let real: string
+  try {
+    real = await realpath(picked)
+  } catch {
+    return null
+  }
+  if (fold(real) === fold(picked)) return null
+  const parts = (looseParts(real) ?? []).slice(1)
+  if (parts.length < 3) return null
+  const [targets, id, leaf] = parts.slice(-3) as [string, string, string]
+  if (fold(targets) !== DRIVE_SHORTCUT_TARGETS || !DRIVE_ITEM_ID.test(id) || leaf !== MOD_FOLDER_NAME) return null
+  return real
+}
+
 export async function pickAndSaveModFolder(ctx: AppContext): Promise<ModFolderState> {
   const picked = await ctx.pickFolder()
   if (picked === null) {
     return await syncModFolder(ctx)
   }
 
-  const state = await validateModFolder(picked, ctx)
+  let state = await validateModFolder(picked, ctx)
+  if (state.kind === 'wrong-name') {
+    // A Google Drive shortcut is saved as its real target, which resolves to itself and passes every check
+    // (and the gate's own check) unchanged.
+    const target = await driveShortcutTarget(picked)
+    if (target !== null) {
+      const targetState = await validateModFolder(target, ctx)
+      if (targetState.kind === 'set') state = targetState
+    }
+  }
   if (state.kind !== 'set') {
     return state
   }

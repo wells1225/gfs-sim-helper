@@ -12,8 +12,6 @@ const CF_GROUP_ID = /^cf:(\d+)$/i
 const MOD_FILE_EXT = /\.(package|ts4script)$/i
 
 interface ModsIndex {
-  /** Lowercased forward-slash relative path under Mods/ -> file mtimeMs (.package / .ts4script only). */
-  relPaths: Map<string, number>
   /** Lowercased basename -> newest mtimeMs among matching files in Mods/ (.package / .ts4script only). */
   baseNames: Map<string, number>
 }
@@ -81,16 +79,15 @@ async function readVersionChangeTimeMs(ctx: AppContext): Promise<number | null> 
 }
 
 async function collectModsIndex(modsDir: string): Promise<ModsIndex> {
-  const relPaths = new Map<string, number>()
   const baseNames = new Map<string, number>()
 
   let modsRealRoot: string
   try {
     const rootInfo = await stat(modsDir)
-    if (!rootInfo.isDirectory()) return { relPaths, baseNames }
+    if (!rootInfo.isDirectory()) return { baseNames }
     modsRealRoot = await realpath(modsDir)
   } catch {
-    return { relPaths, baseNames }
+    return { baseNames }
   }
 
   const visitedDirs = new Set<string>([normalizePathKey(modsRealRoot)])
@@ -125,7 +122,6 @@ async function collectModsIndex(modsDir: string): Promise<ModsIndex> {
         try {
           const info = await lstat(fullPath)
           if (!info.isFile()) continue
-          relPaths.set(relPath.toLowerCase(), info.mtimeMs)
           const lowerBase = entry.name.toLowerCase()
           const prev = baseNames.get(lowerBase)
           if (prev === undefined || info.mtimeMs > prev) {
@@ -139,44 +135,50 @@ async function collectModsIndex(modsDir: string): Promise<ModsIndex> {
   }
 
   await walk(modsDir, '', 0)
-  return { relPaths, baseNames }
+  return { baseNames }
 }
 
+/**
+ * True only when EVERY mod file the entry set aside is accounted for back in Mods/, so "Clear the old copy" can
+ * never delete a held file that has no replacement. A moved file is accounted for when:
+ * (a) a file sits again at its exact original path, or
+ * (b) CurseForge has a newer file for the addon than the set-aside time (fileDate > at) AND a .package or
+ *     .ts4script with the same file name, modified after the set-aside time, is somewhere in Mods/.
+ * One file back after a partial reinstall, or an unrelated mod that happens to share a file name while the addon has
+ * no newer CurseForge file, never counts for the whole group.
+ */
 async function isEntryBackInMods(
   entry: JournalEntry,
   addon: CurseForgeAddon | null,
   modsIndex: ModsIndex
 ): Promise<boolean> {
-  for (const step of entry.steps) {
-    if (step.kind !== 'move' || !isModFileName(step.from)) continue
-    try {
-      const info = await lstat(step.from)
-      if (info.isFile()) return true
-    } catch {
-      // Not at original path; check CurseForge filenames below.
-    }
-  }
+  const movedModFiles = entry.steps.flatMap((step) =>
+    step.kind === 'move' && isModFileName(step.from) ? [step.from] : []
+  )
+  if (movedModFiles.length === 0) return false
 
   const setAsideMs = Date.parse(entry.at)
-  if (addon !== null && Number.isFinite(setAsideMs)) {
-    const matchesNewerModFile = (candidate: string): boolean => {
-      const normalized = normalizeSlashPath(candidate)
-      if (normalized === '' || !isModFileName(normalized)) return false
-      const lowerRel = normalized.toLowerCase()
-      const relMtime = modsIndex.relPaths.get(lowerRel)
-      if (relMtime !== undefined && relMtime > setAsideMs) return true
-      const lowerBase = baseNameOf(normalized).toLowerCase()
+  const addonMs = addon !== null ? Date.parse(addon.fileDate) : Number.NaN
+  const addonIsNewer = Number.isFinite(setAsideMs) && Number.isFinite(addonMs) && addonMs > setAsideMs
+
+  for (const from of movedModFiles) {
+    if (await isFileAt(from)) continue
+    if (addonIsNewer) {
+      const lowerBase = baseNameOf(normalizeSlashPath(from)).toLowerCase()
       const baseMtime = lowerBase !== '' ? modsIndex.baseNames.get(lowerBase) : undefined
-      return baseMtime !== undefined && baseMtime > setAsideMs
+      if (baseMtime !== undefined && baseMtime > setAsideMs) continue
     }
-
-    if (matchesNewerModFile(addon.fileNameOnDisk)) return true
-    for (const modName of addon.moduleNames) {
-      if (matchesNewerModFile(modName)) return true
-    }
+    return false
   }
+  return true
+}
 
-  return false
+async function isFileAt(path: string): Promise<boolean> {
+  try {
+    return (await lstat(path)).isFile()
+  } catch {
+    return false
+  }
 }
 
 async function classifyEntry(

@@ -308,6 +308,48 @@ describe('PatchDayScreen', () => {
     })
   })
 
+  it("keeps I'm ready, let's play off while Step 1 is still making the save copy", async () => {
+    const user = userEvent.setup()
+    const watchChanged: GameVersionWatch = {
+      current: '1.130.12.1020',
+      lastSeen: '1.129.39.1030',
+      changed: true,
+      seenAt: '2026-11-20T10:00:00.000Z'
+    }
+    const copy: SaveCopy = {
+      id: '20261126-120000-sc02',
+      at: '2026-11-26T12:00:00.000Z',
+      reason: 'game-updated',
+      gameVersion: '1.130.12.1020',
+      saves: [{ name: 'Slot_00000002.save', bytes: 4_000_000, sha256: 'a'.repeat(64), savedAt: '2026-11-25T20:00:00.000Z' }],
+      trayFiles: 4,
+      bytes: 5_000_000,
+      status: 'checked'
+    }
+    let finishCopy!: () => void
+    const copyDone = new Promise<{ kind: 'done'; copy: SaveCopy }>((resolve) => {
+      finishCopy = () => resolve({ kind: 'done', copy })
+    })
+
+    const api = renderScreen(scanWith([scriptGroup('dir:mccc', 'MCCC')]), {
+      'patchguard:watch': watchChanged,
+      'savecopies:make': () => copyDone,
+      'patchguard:seen': { ...watchChanged, lastSeen: watchChanged.current, changed: false },
+      'patchguard:play': { kind: 'started' }
+    })
+
+    expect(await screen.findByText('Saving a copy of your saves first...')).toBeInTheDocument()
+    const play = screen.getByRole('button', { name: "I'm ready, let's play" })
+    expect(play).toBeDisabled()
+    await user.click(play)
+    expect(api.calls.filter((c) => c.channel === 'patchguard:play')).toHaveLength(0)
+
+    finishCopy()
+    expect(await screen.findByText(/Your saves and households are backed up/i)).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: "I'm ready, let's play" })).toBeEnabled())
+    expect(screen.queryByText('Saving a copy of your saves first...')).not.toBeInTheDocument()
+  })
+
   it('does not loop Step 1 save copy when refused after a game update', async () => {
     const watchChanged: GameVersionWatch = {
       current: '1.130.12.1020',

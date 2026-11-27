@@ -3,9 +3,10 @@
 //
 //   node relay/deliver.mjs <request id> <folder with the mod files> --title "<title>" --note "<note>" [--has-script]
 //
-// Checks every file (only .package and .ts4script, plain names, 200 MB at most), copies them to a private staging
-// folder, hashes the copies (sha256), uploads them with rclone to `from-tyler/<id>/files/`, and only then writes
-// `from-tyler/<id>/ready.json`. Her app treats a folder without ready.json as not finished.
+// Checks every file (only .package and .ts4script, plain names, 200 MB at most, 500 files at most), copies them to
+// a private staging folder, hashes the copies (sha256), checks ready.json stays within 256 KiB, uploads the files with
+// rclone to `from-tyler/<id>/files/`, and only then writes `from-tyler/<id>/ready.json`. These are the limits her
+// app enforces. Her app treats a folder without ready.json as not finished.
 
 import crypto from 'node:crypto'
 import fs from 'node:fs'
@@ -24,7 +25,7 @@ import {
   say,
   warn,
 } from './lib.mjs'
-import { badName, caseDuplicates } from './names.mjs'
+import { MAX_FILES, MAX_READY_BYTES, badName, caseDuplicates } from './names.mjs'
 
 const MAX_FILE_BYTES = 200_000_000
 const MAX_TITLE_CHARS = 80
@@ -92,6 +93,7 @@ function checkFolder(folder) {
   for (const group of caseDuplicates(files)) {
     problems.push(`${group.map((n) => JSON.stringify(n)).join(' and ')}: names that differ only in case clash on Windows`)
   }
+  if (files.length > MAX_FILES) problems.push(`${files.length} files: her app accepts ${MAX_FILES} files at most`)
   if (problems.length > 0) throw new RefusedError(`Nothing was delivered. Fix these first:\n  ${problems.join('\n  ')}`)
   if (files.length === 0) throw new RefusedError(`${folder} has no .package or .ts4script files.`)
   return files
@@ -184,11 +186,20 @@ async function main() {
     const hasScript = args.hasScriptFlag || names.some((n) => n.endsWith('.ts4script'))
     if (hasScript && !args.hasScriptFlag) say('A .ts4script file is included, so ready.json says hasScript: true.')
 
+    // Build and size-check ready.json before uploading anything: her app marks a ready.json over 256 KiB broken.
+    const ready = { format: 1, requestId: args.id, title: args.title, note: args.note, files, hasScript }
+    const readyText = `${JSON.stringify(ready, null, 2)}\n`
+    const readyBytes = Buffer.byteLength(readyText, 'utf8')
+    if (readyBytes > MAX_READY_BYTES) {
+      throw new RefusedError(
+        `Nothing was delivered: ready.json would be ${readyBytes} bytes, over the 256 KiB (${MAX_READY_BYTES} bytes) her app accepts. Use fewer files or shorter names.`,
+      )
+    }
+    const readyFile = path.join(staging, 'ready.json')
+    fs.writeFileSync(readyFile, readyText, { mode: 0o600 })
+
     await rclone(['copy', filesDir, `${remote}from-tyler/${args.id}/files`], 'rclone copy of the mod files')
 
-    const ready = { format: 1, requestId: args.id, title: args.title, note: args.note, files, hasScript }
-    const readyFile = path.join(staging, 'ready.json')
-    fs.writeFileSync(readyFile, `${JSON.stringify(ready, null, 2)}\n`, { mode: 0o600 })
     await rclone(['copyto', readyFile, `${remote}from-tyler/${args.id}/ready.json`], 'rclone copyto of ready.json')
 
     say(`Delivered ${files.length} file(s) for request ${args.id}: ${args.title}`)
