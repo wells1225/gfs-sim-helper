@@ -9,8 +9,11 @@ import { appPaths } from '../app-paths.ts'
 import type { Host } from '../locate/host.ts'
 import type { AppContext } from '../ports.ts'
 import { createContext } from '../services.ts'
+import { buildInventory } from '../inventory/index.ts'
+import { scriptTooDeep } from '../rules/rules.ts'
 import { requestsHandlers } from './handlers.ts'
 import { modFolderRoot, resetModFolderRoot } from './mod-folder.ts'
+import { safeModFolderName } from './names.ts'
 
 function sha256Of(data: string | Uint8Array): string {
   return createHash('sha256').update(data).digest('hex')
@@ -674,12 +677,12 @@ describe('requests:list and broken ready.json cases', () => {
 
     const install = await w.handlers['requests:install']({ requestId: id })
     expect(install.status).toBe('refused')
-    expect(await exists(join(w.simsFolder, 'Mods', 'From Tyler'))).toBe(false)
+    expect(await readdir(join(w.simsFolder, 'Mods'))).toEqual(['existing.package'])
   })
 })
 
 describe('requests:install and Undo', () => {
-  it('installs a good delivery into Mods/From Tyler/<title>/ with backup + journal, and Undo removes it', async () => {
+  it('installs a good delivery into Mods/From Tyler - <title>/ with backup + journal, and Undo removes it', async () => {
     const w = await createWorld()
     await saveModFolderState(w, w.modFolder)
     const id = 'r-20261126-143000-ok01'
@@ -710,7 +713,7 @@ describe('requests:install and Undo', () => {
     expect(outcome.entry.hasScript).toBe(true)
     expect(outcome.entry.backupId).not.toBeNull()
 
-    const destDir = join(w.simsFolder, 'Mods', 'From Tyler', 'Outfit Reactions')
+    const destDir = join(w.simsFolder, 'Mods', 'From Tyler - Outfit Reactions')
     expect(await readFile(join(destDir, 'outfit_reactions.package'), 'utf8')).toBe('DBPF-outfit-reactions')
     expect(await readFile(join(destDir, 'outfit_reactions.ts4script'), 'utf8')).toBe('PK-script-bytes')
     // Source in shared folder stays untouched
@@ -746,7 +749,7 @@ describe('requests:install and Undo', () => {
     expect(outcome).toEqual({ status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } })
 
     // Nothing touched in Mods
-    expect(await exists(join(w.simsFolder, 'Mods', 'From Tyler'))).toBe(false)
+    expect(await readdir(join(w.simsFolder, 'Mods'))).toEqual(['existing.package'])
     // Holding cleaned up completely
     const holdingEntries = (await exists(w.holdingDir)) ? await readdir(w.holdingDir) : []
     expect(holdingEntries).toEqual([])
@@ -761,7 +764,7 @@ describe('requests:install and Undo', () => {
       title: 'Cozy Slippers',
       files: [{ name: 'cozy_slippers.package', content: 'new-bytes' }]
     })
-    const existingDest = join(w.simsFolder, 'Mods', 'From Tyler', 'Cozy Slippers', 'cozy_slippers.package')
+    const existingDest = join(w.simsFolder, 'Mods', 'From Tyler - Cozy Slippers', 'cozy_slippers.package')
     await mkdir(dirname(existingDest), { recursive: true })
     await writeFile(existingDest, 'her-existing-file')
 
@@ -781,7 +784,7 @@ describe('requests:install and Undo', () => {
 
     const outcome = await w.handlers['requests:install']({ requestId: id })
     expect(outcome).toEqual({ status: 'refused', refusal: { why: 'backup', reason: 'game-running' } })
-    expect(await exists(join(w.simsFolder, 'Mods', 'From Tyler'))).toBe(false)
+    expect(await readdir(join(w.simsFolder, 'Mods'))).toEqual(['existing.package'])
     const holdingEntries = (await exists(w.holdingDir)) ? await readdir(w.holdingDir) : []
     expect(holdingEntries).toEqual([])
   })
@@ -810,7 +813,44 @@ describe('requests:install and Undo', () => {
 
     const outcome = await w.handlers['requests:install']({ requestId: id })
     expect(outcome.status).toBe('done')
-    expect(await exists(join(w.simsFolder, 'Mods', 'From Tyler', id, 'safe.package'))).toBe(true)
+    expect(await exists(join(w.simsFolder, 'Mods', `From Tyler - ${id}`, 'safe.package'))).toBe(true)
+  })
+
+  it('installs a script mod one folder deep so the game loads it and the scanner finds no script-too-deep', async () => {
+    const w = await createWorld()
+    await saveModFolderState(w, w.modFolder)
+    const id = 'r-20261126-143000-sd01'
+    await writeRequestFile(w.modFolder, id)
+    await writeGoodDelivery(w.modFolder, id, {
+      title: 'Outfit Reactions',
+      files: [
+        { name: 'outfit_reactions.package', content: 'DBPF-outfit-reactions' },
+        { name: 'outfit_reactions.ts4script', content: 'PK-script-bytes' }
+      ]
+    })
+
+    const outcome = await w.handlers['requests:install']({ requestId: id })
+    expect(outcome.status).toBe('done')
+
+    const inventory = await buildInventory({
+      modsDir: join(w.simsFolder, 'Mods'),
+      curseForgeInstanceFile: null
+    })
+    const script = inventory.files.find((f) => f.relPath.endsWith('outfit_reactions.ts4script'))
+    expect(script?.kind).toBe('script')
+    expect(script?.depth).toBe(1)
+    expect(scriptTooDeep({ inventory } as unknown as Parameters<typeof scriptTooDeep>[0])).toEqual([])
+  })
+
+  it('keeps the From Tyler folder name a safe Windows folder name even for a very long title', async () => {
+    const title = `${'Very Long Mod Title '.repeat(20)}. `
+    const name = safeModFolderName(title, 'r-20261126-143000-lt01')
+    expect(name.startsWith('From Tyler - ')).toBe(true)
+    expect(name.length).toBeLessThanOrEqual(100)
+    expect(name).not.toMatch(/[. ]$/)
+    expect(name).not.toMatch(/[<>:"/\\|?*\u0000-\u001f]/)
+    expect(safeModFolderName('CON', 'r-20261126-143000-lt01')).toBe('From Tyler - r-20261126-143000-lt01')
+    expect(safeModFolderName('a/b:c', 'r-20261126-143000-lt01')).toBe('From Tyler - a b c')
   })
 
   it('keeps status installed even if the delivery folder is later broken or removed', async () => {
@@ -867,6 +907,6 @@ describe('requests:install and Undo', () => {
     if (outcome.status === 'stopped-part-way') {
       expect(outcome.detail).toMatch(/History/i)
     }
-    expect(await exists(join(w.simsFolder, 'Mods', 'From Tyler'))).toBe(false)
+    expect(await readdir(join(w.simsFolder, 'Mods'))).toEqual(['existing.package'])
   })
 })
