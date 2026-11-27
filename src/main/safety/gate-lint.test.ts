@@ -346,6 +346,34 @@ export function gateExportProblems(source: string): string[] {
   return problems
 }
 
+// The one write into saves/ (briefs/pr-15.md, round 7): only these files may name its reason. ports.ts declares it
+// once, in WriteRequest.reason; this file names it to check it.
+const PUT_BACK_REASON = 'save-put-back'
+const PUT_BACK_NAMED_IN: Readonly<Record<string, number>> = {
+  'main/safety/gate.ts': Infinity,
+  'main/safety/gate.test.ts': Infinity,
+  'main/safety/gate-lint.test.ts': Infinity,
+  'main/savecopies/put-back.ts': Infinity,
+  'main/ports.ts': 1
+}
+
+/** Every file under src/ that names the put-back reason where it may not, or more often than it may. */
+export function putBackReasonProblems(texts: ReadonlyMap<string, string>): string[] {
+  const problems: string[] = []
+  for (const [rel, text] of texts) {
+    const file = rel.replaceAll('\\', '/')
+    const count = text.split(PUT_BACK_REASON).length - 1
+    if (count > (PUT_BACK_NAMED_IN[file] ?? 0)) problems.push(`${file} names ${PUT_BACK_REASON}`)
+  }
+  return problems
+}
+
+async function readTree(root: string): Promise<Map<string, string>> {
+  const texts = new Map<string, string>()
+  for (const rel of await listFiles(root)) texts.set(rel, await readFile(join(root, rel), 'utf8'))
+  return texts
+}
+
 async function listFiles(root: string, rel = ''): Promise<string[]> {
   const found: string[] = []
   for (const entry of await readdir(join(root, rel), { withFileTypes: true })) {
@@ -442,6 +470,35 @@ describe('read and write gate lint', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  it('names the put-back reason only in the gate, its tests, put-back.ts, and once in ports.ts', async () => {
+    expect(putBackReasonProblems(await readTree(SRC_ROOT))).toEqual([])
+    const reason = PUT_BACK_REASON
+    const planted = new Map<string, string>([
+      ['main/safety/gate.ts', `'${reason}' '${reason}'`],
+      ['main/savecopies/put-back.ts', `reason: '${reason}'`],
+      ['main/ports.ts', `| '${reason}'`],
+      ['main/savecopies/index.ts', `reason: '${reason}'`],
+      ['main/savecopies/index.test.ts', `'${reason}'`],
+      ['main/share/receive.ts', `const why = "${reason}"`],
+      ['renderer/savecopies/SaveCopiesScreen.tsx', `// ${reason}`],
+      ['main/fixes/notes.md', reason],
+      ['main/safety/actions.ts', `\`${reason}\``]
+    ])
+    expect(putBackReasonProblems(planted).sort()).toEqual(
+      [
+        'main/fixes/notes.md',
+        'main/safety/actions.ts',
+        'main/savecopies/index.test.ts',
+        'main/savecopies/index.ts',
+        'main/share/receive.ts',
+        'renderer/savecopies/SaveCopiesScreen.tsx'
+      ].map((file) => `${file} names ${reason}`)
+    )
+    expect(putBackReasonProblems(new Map([['main/ports.ts', `'${reason}' | '${reason}'`]]))).toEqual([
+      `main/ports.ts names ${reason}`
+    ])
   })
 
   it('gate.ts exports runGate, the pure path check and types, and nothing else', async () => {
