@@ -6,6 +6,7 @@ import type { AppContext } from '../ports.ts'
 import { oneAtATime } from '../safety/lock.ts'
 import { isStrictIsoTime, normalizeIsoTime } from '../safety/manifest.ts'
 import { isSafeId } from '../safety/where.ts'
+import { copyBeforeChange } from '../savecopies/index.ts'
 import { disabledGroupOf } from './index.ts'
 
 export type FixChannel =
@@ -178,6 +179,8 @@ export function fixHandlers(ctx: AppContext): Handlers<FixChannel> {
         if (!scan) {
           return { status: 'refused', refusal: { why: 'out-of-date', detail: 'no-scan' } }
         }
+        // PR 15: a copy of her saves before a change, at most once a day. It never throws and never blocks the fix.
+        await copyBeforeChange(ctx, scan.folder.path)
 
         if (call.via === 'finding') {
           const finding = scan.findings.find((f) => f.id === call.findingId)
