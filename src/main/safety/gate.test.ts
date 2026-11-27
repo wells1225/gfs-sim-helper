@@ -3574,20 +3574,25 @@ describe('mod-folder: her request file goes into the Sims Helper Mods folder, an
     await writeFile(target, 'first')
     await mkdir(w.dataDir, { recursive: true })
     await writeFile(w.inData('spare.json'), '{}')
-    const cases: [WriteOp, string][] = [
-      [{ op: 'write', path: target, data: 'x', mode: 'replace' }, target],
-      [{ op: 'remove', path: target }, target],
-      [{ op: 'move', from: target, to: w.inData('moved.json') }, target],
-      [{ op: 'move', from: w.inData('spare.json'), to: join(root, 'requests', 'r-20261126-101501-a1b2.json') }, join(root, 'requests', 'r-20261126-101501-a1b2.json')],
-      [{ op: 'copy', from: w.inData('spare.json'), to: join(root, 'requests', 'r-20261126-101502-a1b2.json') }, join(root, 'requests', 'r-20261126-101502-a1b2.json')],
-      [{ op: 'remove', path: join(root, 'requests') }, join(root, 'requests')],
-      [{ op: 'remove', path: root }, root],
-      [{ op: 'remove', path: join(root, 'from-tyler') }, join(root, 'from-tyler')],
-      [{ op: 'mkdir', path: root }, root],
-      [{ op: 'write', path: root, data: 'x', mode: 'create' }, root]
+    const spare = w.inData('spare.json')
+    const another = join(root, 'requests', 'r-20261126-101501-a1b2.json')
+    // [op, the path named for a mod-request, the path named for any other reason]
+    const cases: [WriteOp, string, string][] = [
+      [{ op: 'write', path: target, data: 'x', mode: 'replace' }, target, target],
+      [{ op: 'remove', path: target }, target, target],
+      [{ op: 'move', from: target, to: w.inData('moved.json') }, target, target],
+      // A mod-request touches nothing outside the mod folder, so the app data source is named first.
+      [{ op: 'move', from: spare, to: another }, spare, another],
+      [{ op: 'copy', from: spare, to: another }, another, another],
+      [{ op: 'remove', path: join(root, 'requests') }, join(root, 'requests'), join(root, 'requests')],
+      [{ op: 'remove', path: root }, root, root],
+      [{ op: 'remove', path: join(root, 'from-tyler') }, join(root, 'from-tyler'), join(root, 'from-tyler')],
+      [{ op: 'mkdir', path: root }, root, root],
+      [{ op: 'write', path: root, data: 'x', mode: 'create' }, root, root]
     ]
-    for (const [op, path] of cases) {
+    for (const [op, forRequest, forOthers] of cases) {
       for (const reason of ['mod-request', 'fix', 'mod-install'] as const) {
+        const path = reason === 'mod-request' ? forRequest : forOthers
         await expectRefusal(w, () => sendRequest(w, [op], { reason }), { reason: 'outside-allowed-area', path })
       }
     }
@@ -3737,6 +3742,27 @@ describe('mod-folder: her request file goes into the Sims Helper Mods folder, an
     simsInside.modRoot = holder
     const target = join(holder, 'requests')
     await expectRefusal(w, () => simsInside.run([{ op: 'mkdir', path: target }], { reason: 'mod-request' }), {
+      reason: 'outside-allowed-area',
+      path: target
+    })
+  })
+
+  it('no zone inside a Sims folder under any name, found by its Options.ini, with no Sims folder named', async () => {
+    const { w } = await makeModWorld()
+    const game = join(w.root, 'pc', 'Games', 'Lila game')
+    const root = join(game, 'Stuff', 'Sims Helper Mods')
+    await mkdir(join(root, 'requests'), { recursive: true })
+    await writeFile(join(game, 'Options.ini'), '')
+    w.modRoot = root
+    const target = join(root, 'requests', REQUEST)
+    await expectRefusal(w, () => sendRequest(w, [{ op: 'write', path: target, data: '{}', mode: 'create' }]), {
+      reason: 'outside-allowed-area',
+      path: target
+    })
+    // The folder itself holding Options.ini counts too.
+    await rm(join(game, 'Options.ini'))
+    await writeFile(join(root, 'Options.ini'), '')
+    await expectRefusal(w, () => sendRequest(w, [{ op: 'write', path: target, data: '{}', mode: 'create' }]), {
       reason: 'outside-allowed-area',
       path: target
     })
