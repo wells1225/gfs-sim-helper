@@ -265,7 +265,7 @@ function Shell() {
       <footer className="border-t border-border bg-card/60">
         <div className="mx-auto w-full max-w-3xl px-5 py-3 text-center text-sm text-muted-foreground">
           {/* PR 14 changes this line again when Share saves lands (briefs/pr-14.md, contract request 9). */}
-          Your saves and households are never touched · A backup is made before any change
+          Your existing saves and households are never overwritten · A backup is made before any change
         </div>
       </footer>
 
