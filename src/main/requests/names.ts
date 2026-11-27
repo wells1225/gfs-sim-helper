@@ -1,0 +1,190 @@
+import { randomBytes } from 'node:crypto'
+
+// Wire constants aligned with relay/deliver.mjs, relay/names.mjs, relay/request.mjs and gate.ts.
+export const MAX_FILE_BYTES = 200_000_000 // decimal 200 MB, matching relay/deliver.mjs
+export const MAX_TEXT_CHARS = 2000
+export const MAX_TITLE_CHARS = 80
+export const MAX_NOTE_CHARS = 1000
+export const MAX_REQUEST_BYTES = 64 * 1024
+export const MAX_READY_BYTES = 256 * 1024
+export const MAX_DELIVERY_FILES = 500
+export const MAX_NAME_CHARS = 200
+export const MAX_VERSION_CHARS = 40
+export const MAX_PACKS = 200
+export const MAX_PACK_CHARS = 80
+export const MAX_MODS = 1000
+export const MAX_MOD_CHARS = 200
+
+export const REQUEST_ID = /^r-\d{8}-\d{6}-[a-z0-9]{4}$/
+export const REQUEST_FILE = /^r-\d{8}-\d{6}-[a-z0-9]{4}\.json$/
+export const SHA256_HEX = /^[0-9a-f]{64}$/
+
+const ALLOWED_EXTENSIONS = ['.package', '.ts4script'] as const
+const WINDOWS_BAD = /[<>:"|?*\\/]/
+// Windows device names with or without extension or spaces before the dot (matching relay/names.mjs and gate.ts).
+const WINDOWS_DEVICE = /^(?:con|prn|aux|nul|conin\$|conout\$|(?:com|lpt)[0-9\u00b9\u00b2\u00b3]) *(?:\..*)?$/i
+const CONTROL_EXCEPT_NEWLINE = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/
+const CONTROL_ANY = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/
+const EMAIL_PATTERN = /[^\s@'"<>]+@[^\s@'"<>]+\.[^\s@'"<>]+/g
+const ID_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789'
+
+export function hasControl(text: string, opts?: { allowNewline?: boolean }): boolean {
+  return (opts?.allowNewline ? CONTROL_EXCEPT_NEWLINE : CONTROL_ANY).test(text)
+}
+
+/** Length in Unicode code points, matching relay/lib.mjs. */
+export function charCount(text: string): number {
+  let n = 0
+  for (const _ of text) n += 1
+  return n
+}
+
+export function truncateCodePoints(text: string, maxChars: number): string {
+  if (charCount(text) <= maxChars) return text
+  const out: string[] = []
+  for (const ch of text) {
+    if (out.length >= maxChars) break
+    out.push(ch)
+  }
+  return out.join('')
+}
+
+/** Why a delivery file name is refused, or null when it is safe on Windows and matches relay/names.mjs. */
+export function badDeliveryFileName(name: string): string | null {
+  if (name.length === 0 || name.length > MAX_NAME_CHARS) return 'empty or too long'
+  if (name.includes('/') || name.includes('\\')) return 'contains a slash'
+  if (name.includes('..')) return 'contains ".."'
+  if (hasControl(name)) return 'contains control characters'
+  if (WINDOWS_BAD.test(name) || /[ .]$/.test(name) || name.startsWith('.')) return 'not a safe Windows file name'
+  if (WINDOWS_DEVICE.test(name)) return 'Windows reserved device name'
+  const lower = name.toLowerCase()
+  if (!ALLOWED_EXTENSIONS.some((ext) => lower.endsWith(ext))) return 'unsupported file extension'
+  return null
+}
+
+/** True when any two file names collide ignoring ASCII/Unicode letter case (Windows collision). */
+export function hasCaseDuplicates(names: readonly string[]): boolean {
+  const seen = new Set<string>()
+  for (const name of names) {
+    const key = name.toLowerCase()
+    if (seen.has(key)) return true
+    seen.add(key)
+  }
+  return false
+}
+
+/** Turns a delivery title into a safe Windows folder name for Mods/From Tyler/<folder>/. */
+export function safeModFolderName(title: string, requestId: string): string {
+  let cleaned = title
+    .replace(new RegExp(CONTROL_ANY.source, 'g'), ' ')
+    .replace(/[<>:"/\\|?*]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/\.{2,}/g, '.')
+    .replace(/^[. ]+|[. ]+$/g, '')
+
+  cleaned = truncateCodePoints(cleaned, MAX_TITLE_CHARS).replace(/[. ]+$/g, '')
+
+  if (
+    cleaned === '' ||
+    cleaned === '.' ||
+    cleaned === '..' ||
+    cleaned.includes('..') ||
+    WINDOWS_BAD.test(cleaned) ||
+    WINDOWS_DEVICE.test(cleaned)
+  ) {
+    return requestId
+  }
+  return cleaned
+}
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0')
+}
+
+function randomBase36(length: number): string {
+  let out = ''
+  while (out.length < length) {
+    const buf = randomBytes(length * 2)
+    for (const byte of buf) {
+      // 252 = 36 * 7: unbiased rejection sampling across 36 characters.
+      if (byte < 252) {
+        out += ID_ALPHABET[byte % 36]!
+        if (out.length === length) break
+      }
+    }
+  }
+  return out
+}
+
+/** Generates r-<yyyymmdd>-<hhmmss>-<4 random a-z0-9>, matching gate.ts and relay/lib.mjs. */
+export function newRequestId(now: Date): string {
+  const y = now.getUTCFullYear()
+  const mo = pad2(now.getUTCMonth() + 1)
+  const d = pad2(now.getUTCDate())
+  const h = pad2(now.getUTCHours())
+  const mi = pad2(now.getUTCMinutes())
+  const s = pad2(now.getUTCSeconds())
+  return `r-${y}${mo}${d}-${h}${mi}${s}-${randomBase36(4)}`
+}
+
+/** Cleans line endings and strips control characters disallowed by relay/request.mjs. */
+export function sanitizeRequestText(raw: string): string {
+  return raw
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/\t/g, ' ')
+    .replace(new RegExp(CONTROL_EXCEPT_NEWLINE.source, 'g'), '')
+    .trim()
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+export function collectUserNames(env: Record<string, string | undefined>): string[] {
+  const names = new Set<string>()
+  for (const [k, v] of Object.entries(env)) {
+    const key = k.toLowerCase()
+    if (typeof v !== 'string' || v.trim() === '') continue
+    if (key === 'username' || key === 'user') {
+      names.add(v.trim())
+    } else if (key === 'userprofile' || key === 'home') {
+      const last = v.trim().replace(/[\\/]+$/, '').split(/[\\/]/).pop()?.trim()
+      if (last) names.add(last)
+    }
+  }
+  return [...names].sort((a, b) => b.length - a.length)
+}
+
+/**
+ * Strips paths, email addresses, Windows usernames, and control characters from metadata strings
+ * (such as mod group labels) before writing a request file.
+ */
+export function sanitizeMetadataLabel(
+  value: string,
+  maxChars: number,
+  redact: (text: string) => string,
+  userNames: readonly string[]
+): string | null {
+  let clean = value.replace(new RegExp(CONTROL_ANY.source, 'g'), ' ').trim()
+  if (clean === '') return null
+
+  clean = redact(clean)
+  clean = clean.replace(EMAIL_PATTERN, '').trim()
+
+  // If a label looks like a path, keep only the final non-empty segment if it isn't empty/redacted.
+  if (/[\\/]/.test(clean) || /^[A-Za-z]:/.test(clean)) {
+    const segments = clean.split(/[\\/]+/).filter((s) => s !== '' && s !== '<user>' && !/^[A-Za-z]:$/.test(s))
+    clean = segments[segments.length - 1] ?? ''
+  }
+
+  for (const user of userNames) {
+    if (user.length === 0) continue
+    const pat = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_])${escapeRegExp(user)}(?![\\p{L}\\p{M}\\p{N}_])`, 'giu')
+    clean = clean.replace(pat, '').trim()
+  }
+
+  clean = clean.replace(/<user>/gi, '').replace(/\s+/g, ' ').trim()
+  if (clean === '') return null
+  return truncateCodePoints(clean, maxChars)
+}
