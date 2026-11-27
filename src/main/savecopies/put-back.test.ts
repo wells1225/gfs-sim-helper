@@ -95,7 +95,6 @@ describe('nextSlotName', () => {
     expect(nextSlotName(['Slot_0000000a.save.ver4', 'Options.ini', 'scratch'])).toBe('Slot_0000000b.save')
     expect(nextSlotName(['Slot_0000000A.save'])).toBe('Slot_0000000b.save')
     expect(nextSlotName(['Slot_0ffffffe.save'])).toBe('Slot_0fffffff.save')
-    expect(nextSlotName(['Slot_0ffffffe.save'])).toBe('Slot_0fffffff.save')
   })
 
   it('matches Slot_ and .save in any letter case, as Windows does', () => {

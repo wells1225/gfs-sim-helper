@@ -48,7 +48,7 @@ test('branch shot: key-setup-saved', async () => {
 
     const field = running.page.getByLabel('Anthropic API key')
     await field.fill(FAKE_KEY)
-    await running.page.getByRole('button', { name: 'Save' }).click()
+    await running.page.getByRole('button', { name: 'Save', exact: true }).click()
 
     await expect(running.page.getByText('A key is stored on this PC.')).toBeVisible()
     await expect(field).toHaveValue('')
