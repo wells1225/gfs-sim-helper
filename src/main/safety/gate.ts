@@ -80,12 +80,12 @@ const REQUESTS_FOLDER = 'requests'
 const REQUEST_NAME = /^r-\d{8}-\d{6}-[a-z0-9]{4}\.json$/
 const DELIVERIES_FOLDER = 'from-tyler'
 // Folders the mod folder may never be inside: Windows itself, programs, and the hidden app folders.
+// AppData is not one of them: Windows keeps its temp folder there, and dataDir is kept apart on its own.
 const SYSTEM_FOLDER_NAMES = new Set([
   'windows',
   'program files',
   'program files (x86)',
   'programdata',
-  'appdata',
   '$recycle.bin',
   'system volume information'
 ])
@@ -546,8 +546,9 @@ async function checkModFolder(asked: Asked, glance: Glance, keepApart: (string |
   if (!clearOfOthers(root)) return null
   try {
     const real = await glance.real(root)
-    // It resolves to itself: no link, junction or short name anywhere on the way.
-    if (fold(real) !== fold(root) || !clearOfOthers(real)) return null
+    // It resolves to itself: no link, junction or short name anywhere on the way. The disk's own spelling of the
+    // last name must be exactly Sims Helper Mods too: a disk that ignores letter case answers to it for any spelling.
+    if (fold(real) !== fold(root) || nativePath.basename(real) !== MOD_FOLDER_NAME || !clearOfOthers(real)) return null
     if (!(await statOrNull(root))?.isDirectory()) return null
     // A Sims folder under any name holds Options.ini. Neither the folder nor anything above it may be one.
     for (let place = root; ; place = nativePath.dirname(place)) {
@@ -991,8 +992,10 @@ async function carryOut(
     await mustBeMissing(op.to)
     await makeParent(op.to, roots)
     if (op.op === 'copy') {
-      // A save put back is read back once more before it gets its name.
-      await placeCopy(op.from, op.to, source, approved.asked.purpose === PUT_BACK)
+      // A save put back is read back once more before it gets its name, and only a hard link may give it that
+      // name: it fails when the name is taken. A rename can replace a file, so saves never gets one.
+      const putBack = approved.asked.purpose === PUT_BACK
+      await placeCopy(op.from, op.to, source, putBack, putBack)
       return
     }
     try {
@@ -1067,13 +1070,15 @@ async function mustBeMissing(target: string): Promise<void> {
 /**
  * Gives a file its new name, never in place of a file that is already there. A hard link does that in one
  * step: it fails when the name is taken, and the old name is removed after. A disk with no hard links (exFAT,
- * some network drives) gets the next best thing: look, then rename at once. `targetStillHolds` is asked only
- * before a new name is taken back.
+ * some network drives) gets the next best thing: look, then rename at once. With `linkOnly` there is no next
+ * best thing: a rename can still replace a file that appears after the look, so a failed hard link fails the op.
+ * `targetStillHolds` is asked only before a new name is taken back.
  */
 async function nameWithoutOverwrite(
   from: string,
   to: string,
-  targetStillHolds: () => Promise<boolean>
+  targetStillHolds: () => Promise<boolean>,
+  linkOnly = false
 ): Promise<void> {
   try {
     await link(from, to)
@@ -1081,6 +1086,7 @@ async function nameWithoutOverwrite(
     const code = errorCode(err)
     if (code === 'EEXIST') throw new OpFailure('the target already exists')
     if (code === 'EXDEV' || code === 'ENOENT') throw err
+    if (linkOnly) throw new OpFailure(`the disk could not give the file its name without a rename (${code ?? 'no code'})`)
     await mustBeMissing(to)
     await rename(from, to)
     return
@@ -1133,13 +1139,18 @@ const tempIsBesideTarget = async (): Promise<boolean> => true
  * a file that is there. The temp file never outlives a failure. `fill` returns once the disk has the file, and
  * the folder is flushed after the name is given, so a file reported done is still there after a power loss.
  */
-async function viaTemp(target: string, replace: boolean, fill: (temp: string) => Promise<void>): Promise<void> {
+async function viaTemp(
+  target: string,
+  replace: boolean,
+  fill: (temp: string) => Promise<void>,
+  linkOnly = false
+): Promise<void> {
   // Not .package or .ts4script: the game must never load a half-written file.
   const temp = `${target}.${randomBytes(6).toString('hex')}.sims-helper-tmp`
   try {
     await fill(temp)
     if (replace) await rename(temp, target)
-    else await nameWithoutOverwrite(temp, target, tempIsBesideTarget)
+    else await nameWithoutOverwrite(temp, target, tempIsBesideTarget, linkOnly)
   } catch (err) {
     await unlink(temp).catch(() => undefined)
     throw err
@@ -1162,7 +1173,7 @@ async function flushFolder(folder: string): Promise<void> {
 }
 
 /** Places a copy under its final name, and returns the hash of the bytes it read from the source. */
-async function placeCopy(from: string, to: string, source: Stats, verify: boolean): Promise<string> {
+async function placeCopy(from: string, to: string, source: Stats, verify: boolean, linkOnly = false): Promise<string> {
   let sha256: string | null = null
   await viaTemp(to, false, async (temp) => {
     const copied = await copyBytes(from, temp, source)
@@ -1172,7 +1183,7 @@ async function placeCopy(from: string, to: string, source: Stats, verify: boolea
       if (!matches) throw new OpFailure('the copy does not match the source')
     }
     sha256 = copied.sha256
-  })
+  }, linkOnly)
   if (sha256 === null) throw new OpFailure('the copy was not made')
   return sha256
 }
