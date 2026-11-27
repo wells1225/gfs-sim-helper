@@ -197,15 +197,15 @@ function Shell() {
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="border-b border-border bg-card/80 backdrop-blur-xs">
-        <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-4 px-5 py-3">
+        <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-3">
           <div className="flex items-center gap-2.5">
             <Emblem className="size-8" />
             <span className="text-base font-semibold tracking-tight">{APP_TITLE}</span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             {!recoveryPending && <PlayButton />}
-            <nav aria-label="Primary" className="flex items-center gap-1">
+            <nav aria-label="Primary" className="flex flex-wrap items-center gap-1">
               {navItems.map((item) => {
                 const active = route.screen === item.screen
                 return (

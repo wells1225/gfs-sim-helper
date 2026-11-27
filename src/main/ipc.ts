@@ -116,6 +116,7 @@ export const CHANGING_CHANNELS = {
   'patchguard:seen': true,
   'patchguard:play': true,
   'patchguard:waiting': false,
+  'patchguard:clear-holding': true,
   'requests:folder': false,
   'requests:pick-folder': true,
   'requests:send': true,

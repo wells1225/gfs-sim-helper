@@ -5,6 +5,7 @@ import type {
   BackupPruneResult,
   BackupStatus,
   BackupSummary,
+  ClearHoldingResult,
   DisabledGroup,
   FiftyAnswer,
   FiftyGet,
@@ -107,6 +108,7 @@ export interface IpcInvoke {
   'patchguard:seen': { req: void; res: GameVersionWatch } // she said "I've dealt with it": lastSeen := current
   'patchguard:play': { req: { ignoreUpdate: boolean }; res: PlayAnswer }
   'patchguard:waiting': { req: void; res: WaitingOnMod[] }
+  'patchguard:clear-holding': { req: { entryId: string }; res: ClearHoldingResult } // "Clear the old copy", back-in-mods only
   // PR 17 owns this block
   'requests:folder': { req: void; res: ModFolderState }
   'requests:pick-folder': { req: void; res: ModFolderState } // opens main's own folder picker
@@ -173,6 +175,7 @@ export const INVOKE_CHANNELS = [
   'patchguard:seen',
   'patchguard:play',
   'patchguard:waiting',
+  'patchguard:clear-holding',
   'requests:folder',
   'requests:pick-folder',
   'requests:send',

@@ -600,6 +600,9 @@ export interface WaitingOnMod {
   updatedAt: IsoTime | null
 }
 
+/** "Clear the old copy" on a back-in-mods entry: removes that entry's holding folder in app data. */
+export type ClearHoldingResult = { kind: 'done' } | { kind: 'refused'; why: 'not-found' | 'not-back-in-mods' | 'error' }
+
 export type PlayAnswer =
   | { kind: 'started' }
   | { kind: 'stopped'; why: 'game-updated'; watch: GameVersionWatch }

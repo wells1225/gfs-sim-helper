@@ -354,6 +354,7 @@ const PUT_BACK_NAMED_IN: Readonly<Record<string, number>> = {
   'main/safety/gate.test.ts': Infinity,
   'main/safety/gate-lint.test.ts': Infinity,
   'main/savecopies/put-back.ts': Infinity,
+  'main/savecopies/put-back.test.ts': Infinity,
   'main/ports.ts': 1
 }
 
@@ -472,12 +473,13 @@ describe('read and write gate lint', () => {
     }
   })
 
-  it('names the put-back reason only in the gate, its tests, put-back.ts, and once in ports.ts', async () => {
+  it('names the put-back reason only in the gate, put-back.ts, their tests, and once in ports.ts', async () => {
     expect(putBackReasonProblems(await readTree(SRC_ROOT))).toEqual([])
     const reason = PUT_BACK_REASON
     const planted = new Map<string, string>([
       ['main/safety/gate.ts', `'${reason}' '${reason}'`],
       ['main/savecopies/put-back.ts', `reason: '${reason}'`],
+      ['main/savecopies/put-back.test.ts', `reason: '${reason}'`],
       ['main/ports.ts', `| '${reason}'`],
       ['main/savecopies/index.ts', `reason: '${reason}'`],
       ['main/savecopies/index.test.ts', `'${reason}'`],

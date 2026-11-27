@@ -168,19 +168,38 @@ export function makeOpenWeb(
 }
 
 /**
- * openGame for the context (PR 16): only an absolute path ending in Game\Bin\TS4_x64.exe reaches the opener, never
- * TS4_DX9_x64.exe or anything else. Any other path, no opener, or an opener that fails rejects with one plain message.
+ * True for a plain absolute path to <install>\Game\Bin\TS4_x64.exe, written out in full. On Windows only a drive
+ * letter may start it (no share, no \\?\ or \\.\ device prefix, no path without a drive), and no name in it may
+ * hold a stream (':'), a character Windows cannot hold in a name, or end in a dot or space. Elsewhere it may hold no
+ * backslash and no NUL.
+ */
+function isGameExe(exePath: unknown, pathApi: typeof nativePath): exePath is string {
+  if (typeof exePath !== 'string' || !pathApi.isAbsolute(exePath) || pathApi.resolve(exePath) !== exePath) return false
+  const root = pathApi.parse(exePath).root
+  const names = exePath.slice(root.length).split(pathApi.sep)
+  if (pathApi.sep === '\\') {
+    if (!/^[A-Za-z]:\\$/.test(root)) return false
+    const badName = (name: string): boolean =>
+      name === '' || name.includes(':') || /[<>"|?*\u0000-\u001f]/.test(name) || /[. ]$/.test(name)
+    if (names.some(badName)) return false
+  } else if (exePath.includes('\\') || exePath.includes('\u0000') || names.some((name) => name === '')) {
+    return false
+  }
+  const [game, bin, exe] = names.slice(-3).map((name) => name.toLowerCase())
+  return names.length >= 4 && game === 'game' && bin === 'bin' && exe === 'ts4_x64.exe'
+}
+
+/**
+ * openGame for the context (PR 16): only a plain path ending in Game\Bin\TS4_x64.exe reaches the opener (isGameExe),
+ * never TS4_DX9_x64.exe or anything else. Any other path, no opener, or an opener that fails rejects with one plain
+ * message.
  */
 export function makeOpenGame(
   open: ((exePath: string) => Promise<void>) | undefined,
   pathApi: typeof nativePath = nativePath
 ): (exePath: string) => Promise<void> {
   return async (exePath) => {
-    const parts = typeof exePath === 'string' && pathApi.isAbsolute(exePath) ? exePath.split(pathApi.sep) : []
-    const [game, bin, exe] = parts.slice(-3).map((part) => part.toLowerCase())
-    const isTheGame =
-      parts.length >= 4 && exe === 'ts4_x64.exe' && bin === 'bin' && game === 'game' && pathApi.normalize(exePath) === exePath
-    if (!isTheGame || !open) throw new Error('The game could not be opened')
+    if (!isGameExe(exePath, pathApi) || !open) throw new Error('The game could not be opened')
     try {
       await open(exePath)
     } catch {
