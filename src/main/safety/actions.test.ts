@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import { generateFixture, loadSpec } from '../../../scripts/fixtures/make-fixture.ts'
@@ -90,12 +90,18 @@ async function journalFiles(ws: Workspace): Promise<string[]> {
 }
 
 /** Writes a journal entry by hand, as a crash or an odd disk could have left it. */
-async function writeEntry(ws: Workspace, id: string, backupId: string, steps: JournalEntry['steps']): Promise<void> {
+async function writeEntry(
+  ws: Workspace,
+  id: string,
+  backupId: string,
+  steps: JournalEntry['steps'],
+  action: JournalEntry['action'] = 'disable-group'
+): Promise<void> {
   await mkdir(ws.paths.journalDir, { recursive: true })
   const entry: JournalEntry = {
     id,
     at: '2026-11-24T12:00:00.000Z',
-    action: 'disable-group',
+    action,
     summary: 'Set aside BuildBuy',
     origin: { by: 'fix' },
     folderPath: ws.simsFolder,
@@ -2097,5 +2103,245 @@ describe('listJournal', () => {
     expect(msg).not.toBeNull()
     expect(msg!).not.toContain(ws.deps.paths.journalDir)
     expect(msg!).not.toMatch(/[A-Z]:\\|\/|ENOTDIR/i)
+  })
+})
+
+describe('an install from Tyler cut off after its copy to another drive', () => {
+  const NAME = 'gift.package'
+
+  /** Stages each file in this entry's own holding folder, as requests:install does, and plans the moves into Mods. */
+  async function installPlan(ws: Workspace, id: string, names: string[] = [NAME]): Promise<ActionPlan> {
+    for (const name of names) {
+      const file = held(ws, id, 'From Tyler', name)
+      await mkdir(dirname(file), { recursive: true })
+      await writeFile(file, `bytes of ${name} from Tyler`)
+    }
+    return {
+      entryId: id,
+      action: 'install-mod',
+      summary: 'Installed From Tyler',
+      origin: { by: 'fix' },
+      folderPath: ws.simsFolder,
+      groupId: 'req:from-tyler',
+      groupLabel: 'From Tyler',
+      hasScript: false,
+      steps: names.map((name) => ({
+        kind: 'move' as const,
+        from: held(ws, id, 'From Tyler', name),
+        to: join(ws.mods, 'From Tyler', name)
+      }))
+    }
+  }
+
+  /** Runs the install with its move cut off after the copy: the same bytes at both ends. */
+  async function cutOffInstall(ws: Workspace, id: string): Promise<JournalEntry> {
+    ws.gate.hooks.beforeOp = async (op, _i, request) => {
+      if (request.reason !== 'fix' || op.op !== 'move') return undefined
+      await mkdir(dirname(op.to), { recursive: true })
+      await copyFile(op.from, op.to)
+      return 'the move stopped'
+    }
+    const stopped = await runAction(ws.deps, await installPlan(ws, id))
+    ws.gate.hooks.beforeOp = undefined
+    if (stopped.status !== 'stopped-part-way') throw new Error(stopped.status)
+    return stopped.entry
+  }
+
+  function removes(ws: Workspace): string[] {
+    return ws.gate.requests.flatMap((r) => r.ops.flatMap((op) => (op.op === 'remove' ? [op.path] : [])))
+  }
+
+  function expectNoRemoveInSimsFolder(ws: Workspace): void {
+    for (const path of removes(ws)) {
+      expect(path === ws.simsFolder || path.startsWith(ws.simsFolder + sep)).toBe(false)
+    }
+  }
+
+  /** A hand-written entry whose one move step is applied, with the same bytes at `from` and `to`. */
+  async function bothEnds(
+    ws: Workspace,
+    id: string,
+    from: string,
+    to: string,
+    action: JournalEntry['action'] = 'install-mod'
+  ): Promise<string> {
+    const status = await backupStatus(ws.deps, ws.simsFolder)
+    if (status.state !== 'verified') throw new Error('expected verified backup')
+    await mkdir(dirname(from), { recursive: true })
+    await mkdir(dirname(to), { recursive: true })
+    await writeFile(from, `bytes of ${basename(from)} from Tyler`)
+    await copyFile(from, to)
+    const sha = await sha256File(from)
+    await writeEntry(
+      ws,
+      id,
+      status.backupId,
+      [{ kind: 'move', from, to, bytes: (await readFile(from)).length, sha256: sha, state: 'applied' }],
+      action
+    )
+    return sha
+  }
+
+  it('undo removes only the identical copy in holding, then moves the file in Mods back', async () => {
+    const ws = await backedUp()
+    const entry = await cutOffInstall(ws, 'inst-1')
+    const step = entry.steps[0]!
+    if (step.kind !== 'move') throw new Error('expected a move')
+
+    const undone = await undo(ws.deps, entry.id)
+
+    expect(undone.status).toBe('done')
+    if (undone.status === 'done') expect(undone.entry.status).toBe('undone')
+    expect(await pathExists(step.to)).toBe(false)
+    expect(await sha256File(step.from)).toBe(step.sha256)
+    expect(await readdir(dirname(step.from))).toEqual([NAME])
+    expect(removes(ws)).toEqual([step.from])
+    expectNoRemoveInSimsFolder(ws)
+  })
+
+  it('the next start puts back a two-file install left in progress with one file moved and one at both ends', async () => {
+    const ws = await backedUp()
+    const plan = await installPlan(ws, 'inst-2', ['one.package', 'two.package'])
+    let entry: JournalEntry | null = null
+    ws.gate.hooks.beforeRequest = async (request) => {
+      if (request.reason !== 'fix') return undefined
+      const files = await journalFiles(ws)
+      entry = JSON.parse(await readFile(join(ws.paths.journalDir, files[0]!), 'utf8')) as JournalEntry
+      return { status: 'refused', refusal: { reason: 'game-running' } }
+    }
+    await runAction(ws.deps, plan)
+    ws.gate.hooks.beforeRequest = undefined
+    if (!entry) throw new Error('no entry was written')
+    const saved: JournalEntry = entry
+    await writeFile(join(ws.paths.journalDir, `${saved.id}.json`), JSON.stringify(saved))
+    const [first, second] = plan.steps
+    if (first?.kind !== 'move' || second?.kind !== 'move') throw new Error('expected moves')
+    await mkdir(dirname(first.to), { recursive: true })
+    await rename(first.from, first.to)
+    await copyFile(second.from, second.to)
+
+    const touched = await recover(ws.deps)
+
+    expect(touched.map((e) => e.status)).toEqual(['undone'])
+    for (const step of [first, second]) {
+      expect(await pathExists(step.from)).toBe(true)
+      expect(await pathExists(step.to)).toBe(false)
+    }
+    expectNoRemoveInSimsFolder(ws)
+  })
+
+  it('undo settles a needs-attention install whose file sits at both ends', async () => {
+    const ws = await backedUp()
+    const from = held(ws, 'inst-3', 'From Tyler', NAME)
+    const to = join(ws.mods, 'From Tyler', NAME)
+    const sha = await bothEnds(ws, 'inst-3', from, to)
+
+    const undone = await undo(ws.deps, 'inst-3')
+
+    expect(undone.status).toBe('done')
+    if (undone.status === 'done') expect(undone.entry.status).toBe('undone')
+    expect(await pathExists(to)).toBe(false)
+    expect(await sha256File(from)).toBe(sha)
+    expectNoRemoveInSimsFolder(ws)
+  })
+
+  it('keeps both files when the copy in Mods differs', async () => {
+    const ws = await backedUp()
+    const entry = await cutOffInstall(ws, 'inst-4')
+    const step = entry.steps[0]!
+    if (step.kind !== 'move') throw new Error('expected a move')
+    await writeFile(step.to, 'changed in Mods since')
+
+    const undone = await undo(ws.deps, entry.id)
+
+    expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    expect(await sha256File(step.from)).toBe(step.sha256)
+    expect(await readFile(step.to, 'utf8')).toBe('changed in Mods since')
+    expect(removes(ws)).toEqual([])
+    expectNoRemoveInSimsFolder(ws)
+  })
+
+  it("never removes a source in another entry's holding folder", async () => {
+    const ws = await backedUp()
+    const from = held(ws, 'other-id', 'From Tyler', NAME)
+    const to = join(ws.mods, 'From Tyler', NAME)
+    await bothEnds(ws, 'inst-5', from, to)
+
+    const undone = await undo(ws.deps, 'inst-5')
+
+    expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    expect(await pathExists(from)).toBe(true)
+    expect(await pathExists(to)).toBe(true)
+    expect(removes(ws)).toEqual([])
+    expectNoRemoveInSimsFolder(ws)
+  })
+
+  it('never removes the source for an action that is not an install', async () => {
+    const ws = await backedUp()
+    const from = held(ws, 'inst-6', 'From Tyler', NAME)
+    const to = join(ws.mods, 'From Tyler', NAME)
+    await bothEnds(ws, 'inst-6', from, to, 'disable-group')
+
+    await undo(ws.deps, 'inst-6')
+
+    expect(await pathExists(from)).toBe(true)
+    expect(await pathExists(to)).toBe(true)
+    expect(removes(ws)).toEqual([])
+    expectNoRemoveInSimsFolder(ws)
+  })
+
+  it('never removes a source reached through a link inside its holding folder', async () => {
+    const ws = await backedUp()
+    const realDir = join(ws.paths.holdingDir, 'real')
+    const alias = join(ws.paths.holdingDir, 'inst-7', 'alias')
+    await mkdir(realDir, { recursive: true })
+    await mkdir(dirname(alias), { recursive: true })
+    await symlink(realDir, alias, 'junction')
+    const from = join(alias, NAME)
+    const to = join(ws.mods, 'From Tyler', NAME)
+    await bothEnds(ws, 'inst-7', from, to)
+
+    const undone = await undo(ws.deps, 'inst-7')
+
+    expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    expect(await pathExists(join(realDir, NAME))).toBe(true)
+    expect(await pathExists(to)).toBe(true)
+    expect(removes(ws)).toEqual([])
+    expectNoRemoveInSimsFolder(ws)
+  })
+
+  it('never removes the source when the folder in Mods is a link to somewhere outside Mods', async () => {
+    const ws = await backedUp()
+    const outside = join(ws.root, 'outside-mods')
+    await mkdir(outside, { recursive: true })
+    await symlink(outside, join(ws.mods, 'From Tyler'), 'junction')
+    const from = held(ws, 'inst-8', 'From Tyler', NAME)
+    const to = join(ws.mods, 'From Tyler', NAME)
+    await bothEnds(ws, 'inst-8', from, to)
+
+    const undone = await undo(ws.deps, 'inst-8')
+
+    expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    expect(await pathExists(from)).toBe(true)
+    expect(await pathExists(join(outside, NAME))).toBe(true)
+    expect(removes(ws)).toEqual([])
+    expectNoRemoveInSimsFolder(ws)
+  })
+
+  it('keeps both files and moves nothing when the gate refuses the remove', async () => {
+    const ws = await backedUp()
+    const from = held(ws, 'inst-9', 'From Tyler', NAME)
+    const to = join(ws.mods, 'From Tyler', NAME)
+    await bothEnds(ws, 'inst-9', from, to)
+    ws.gate.hooks.beforeRequest = (request) =>
+      request.ops.some((op) => op.op === 'remove') ? { status: 'refused', refusal: { reason: 'game-running' } } : undefined
+
+    const undone = await undo(ws.deps, 'inst-9')
+
+    expect(undone).toMatchObject({ status: 'stopped-part-way', entry: { status: 'needs-attention' } })
+    expect(await pathExists(from)).toBe(true)
+    expect(await pathExists(to)).toBe(true)
+    expect(ws.gate.requests.some((r) => r.ops.some((op) => op.op === 'move'))).toBe(false)
+    expectNoRemoveInSimsFolder(ws)
   })
 })

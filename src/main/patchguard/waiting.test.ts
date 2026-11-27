@@ -508,4 +508,115 @@ describe('patchguard waiting and clear-holding', () => {
       `remove:${join(paths.holdingDir, backInMods.entry.id)}`
     ])
   })
+
+  describe('a held file that is not a mod file', () => {
+    async function journalOf(paths: { journalDir: string }, id: string): Promise<JournalEntry> {
+      return JSON.parse(await readFile(join(paths.journalDir, `${id}.json`), 'utf8')) as JournalEntry
+    }
+
+    it('a held settings.cfg with nothing back in Mods keeps the entry out of back-in-mods, and Clear keeps it', async () => {
+      const { ctx, paths, addSetAsideEntry } = await makeWaitingHarness()
+      const entry = await addSetAsideEntry({
+        id: '20261122-120003-nm01',
+        at: '2026-11-22T12:00:03.000Z',
+        groupId: 'cf:160103',
+        label: 'Back In Mods Script',
+        relPath: 'BackInMods/back_in_mods.ts4script',
+        moreRelPaths: ['BackInMods/settings.cfg']
+      })
+      const heldCfg = entry.heldFiles[1]!
+
+      const list = await listWaitingOnMods(ctx)
+      expect(list).toHaveLength(1)
+      expect(list[0]!.state).not.toBe('back-in-mods')
+      expect(await clearHoldingEntry(ctx, entry.entry.id)).toEqual({ kind: 'refused', why: 'not-back-in-mods' })
+      expect(await readFile(heldCfg, 'utf8')).toBe('old-mod-bytes')
+      const saved = await journalOf(paths, entry.entry.id)
+      expect(saved.status).toBe('done')
+      expect(saved.undo).toBe('can-undo')
+    })
+
+    it('a different settings.cfg at the exact path (a shipped default) never stands in for the held one', async () => {
+      const { ctx, paths, modsDir, addSetAsideEntry } = await makeWaitingHarness()
+      const entry = await addSetAsideEntry({
+        id: '20261122-120003-nm02',
+        at: '2026-11-22T12:00:03.000Z',
+        groupId: 'cf:160103',
+        label: 'Back In Mods Script',
+        relPath: 'BackInMods/back_in_mods.ts4script',
+        moreRelPaths: ['BackInMods/settings.cfg']
+      })
+      const heldCfg = entry.heldFiles[1]!
+      await writeFile(join(modsDir, 'BackInMods', 'settings.cfg'), 'shipped-default-settings')
+
+      const list = await listWaitingOnMods(ctx)
+      expect(list).toHaveLength(1)
+      expect(list[0]!.state).not.toBe('back-in-mods')
+      expect(await clearHoldingEntry(ctx, entry.entry.id)).toEqual({ kind: 'refused', why: 'not-back-in-mods' })
+      expect(await readFile(heldCfg, 'utf8')).toBe('old-mod-bytes')
+      const saved = await journalOf(paths, entry.entry.id)
+      expect(saved.status).toBe('done')
+      expect(saved.undo).toBe('can-undo')
+    })
+
+    it('a newer CurseForge file whose mod files came back by name never accounts for a held settings.cfg by name', async () => {
+      const { ctx, addSetAsideEntry, putInMods } = await makeWaitingHarness()
+      // Addon 160102 has a newer CurseForge file (2026-11-25) than the set-aside time.
+      const entry = await addSetAsideEntry({
+        id: '20261122-120002-nm03',
+        at: '2026-11-22T12:00:02.000Z',
+        groupId: 'cf:160102',
+        label: 'Updated Script Mod',
+        relPath: 'UpdatedMod/updated_mod.ts4script',
+        moreRelPaths: ['UpdatedMod/settings.cfg']
+      })
+      await putInMods('Reinstalled/updated_mod.ts4script', '2026-11-26T15:00:00.000Z')
+      await putInMods('Reinstalled/settings.cfg', '2026-11-26T15:00:00.000Z')
+
+      const list = await listWaitingOnMods(ctx)
+      expect(list).toHaveLength(1)
+      expect(list[0]!.state).not.toBe('back-in-mods')
+      expect(await clearHoldingEntry(ctx, entry.entry.id)).toEqual({ kind: 'refused', why: 'not-back-in-mods' })
+      expect(await readFile(entry.heldFiles[1]!, 'utf8')).toBe('old-mod-bytes')
+    })
+
+    it('a byte-for-byte copy of the held settings.cfg back at its path counts, and Clear removes only holding', async () => {
+      const { ctx, paths, modsDir, addSetAsideEntry } = await makeWaitingHarness()
+      const entry = await addSetAsideEntry({
+        id: '20261122-120003-nm04',
+        at: '2026-11-22T12:00:03.000Z',
+        groupId: 'cf:160103',
+        label: 'Back In Mods Script',
+        relPath: 'BackInMods/back_in_mods.ts4script',
+        moreRelPaths: ['BackInMods/settings.cfg']
+      })
+      const modsCfg = join(modsDir, 'BackInMods', 'settings.cfg')
+      await writeFile(modsCfg, 'old-mod-bytes')
+
+      const list = await listWaitingOnMods(ctx)
+      expect(list).toHaveLength(1)
+      expect(list[0]!.state).toBe('back-in-mods')
+      expect(await clearHoldingEntry(ctx, entry.entry.id)).toEqual({ kind: 'done' })
+      await expect(stat(join(paths.holdingDir, entry.entry.id))).rejects.toThrow()
+      expect(await readFile(modsCfg, 'utf8')).toBe('old-mod-bytes')
+    })
+
+    it('an entry whose only move is a settings.cfg is never back in Mods, even with an identical copy there', async () => {
+      const { ctx, modsDir, addSetAsideEntry } = await makeWaitingHarness()
+      const entry = await addSetAsideEntry({
+        id: '20261122-120003-nm05',
+        at: '2026-11-22T12:00:03.000Z',
+        groupId: 'cf:160103',
+        label: 'Back In Mods Script',
+        relPath: 'BackInMods/settings.cfg'
+      })
+      await writeFile(join(modsDir, 'BackInMods', 'settings.cfg'), 'old-mod-bytes')
+
+      const list = await listWaitingOnMods(ctx)
+      expect(list).toHaveLength(1)
+      expect(list[0]!.state).not.toBe('back-in-mods')
+      expect(await clearHoldingEntry(ctx, entry.entry.id)).toEqual({ kind: 'refused', why: 'not-back-in-mods' })
+      expect(await readFile(entry.heldFile, 'utf8')).toBe('old-mod-bytes')
+    })
+  })
 })
