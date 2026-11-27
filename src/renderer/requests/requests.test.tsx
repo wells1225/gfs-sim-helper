@@ -32,6 +32,7 @@ describe('AskTylerSetupScreen', () => {
     })
 
     expect(await screen.findByRole('button', { name: 'Pick the Sims Helper Mods folder' })).toBeInTheDocument()
+    expect(screen.getByText(/Add shortcut to Drive/i)).toBeInTheDocument()
     expect(screen.getByText(/Google Drive for desktop/i)).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Pick the Sims Helper Mods folder' }))
@@ -44,7 +45,8 @@ describe('AskTylerSetupScreen', () => {
     const { unmount } = renderScreen(<AskTylerSetupScreen />, {
       'requests:folder': { kind: 'wrong-name', path: 'G:\\My Drive\\Other' }
     })
-    expect(await screen.findByText(/isn't named Sims Helper Mods/i)).toBeInTheDocument()
+    expect(await screen.findByText(/That folder can't be used/i)).toBeInTheDocument()
+    expect(screen.getByText(/not a link or system folder/i)).toBeInTheDocument()
     unmount()
 
     const second = renderScreen(<AskTylerSetupScreen />, {
@@ -179,5 +181,72 @@ describe('AskTylerScreen', () => {
       expect(api.calls.some((c) => c.channel === 'requests:install')).toBe(true)
     })
     expect(await screen.findByText(/Installed Outfit Reactions/i)).toBeInTheDocument()
+  })
+
+  it('shows a Google Drive wait message on install file-changed refusal and guides to History when needs-attention', async () => {
+    const user = userEvent.setup()
+    const readyReq: ModRequest = {
+      id: 'r-20261126-143000-aa01',
+      at: '2026-11-26T14:30:00.000Z',
+      text: 'Make Sims react to new outfits',
+      status: 'ready',
+      delivery: {
+        title: 'Outfit Reactions',
+        note: 'Enjoy!',
+        files: [{ name: 'outfit.package', bytes: 12_000 }],
+        hasScript: false
+      }
+    }
+
+    const first = renderScreen(<AskTylerScreen />, {
+      'requests:folder': { kind: 'set', path: 'G:\\My Drive\\Sims Helper Mods' },
+      'requests:list': [readyReq],
+      'journal:list': [],
+      'requests:install': { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
+    })
+
+    await user.click(await screen.findByRole('button', { name: 'Install' }))
+    expect(
+      await screen.findByText("This mod hasn't finished downloading. Wait a minute for Google Drive, then try again.")
+    ).toBeInTheDocument()
+    first.unmount()
+
+    renderScreen(<AskTylerScreen />, {
+      'requests:folder': { kind: 'set', path: 'G:\\My Drive\\Sims Helper Mods' },
+      'requests:list': [readyReq],
+      'journal:list': [
+        sampleJournalEntry({
+          id: 'e-stuck-1',
+          action: 'install-mod',
+          summary: 'Installed Outfit Reactions',
+          groupId: `request:${readyReq.id}`,
+          groupLabel: 'Outfit Reactions',
+          status: 'needs-attention'
+        })
+      ]
+    })
+
+    expect(await screen.findByText(/previous install of this mod stopped partway/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Install' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Go to History' })).toBeInTheDocument()
+  })
+
+  it('connects the textarea to a polite live counter and uses "2,000 characters or fewer" over limit', async () => {
+    const user = userEvent.setup()
+    renderScreen(<AskTylerScreen />, {
+      'requests:folder': { kind: 'set', path: 'G:\\My Drive\\Sims Helper Mods' },
+      'requests:list': [],
+      'journal:list': []
+    })
+
+    const box = await screen.findByLabelText("Tell Tyler what you'd like the mod to do")
+    const counter = screen.getByText('0 / 2,000')
+    expect(counter).toHaveAttribute('aria-live', 'polite')
+    expect(box).toHaveAttribute('aria-describedby', counter.id)
+
+    await user.click(box)
+    await user.paste('a'.repeat(2001))
+    const warning = await screen.findByText(/2,000 characters or fewer/i)
+    expect(box).toHaveAttribute('aria-describedby', `${counter.id} ${warning.id}`)
   })
 })

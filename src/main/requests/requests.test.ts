@@ -391,6 +391,78 @@ describe('requests:send privacy and validation', () => {
     const ok = await w.handlers['requests:send']({ text: 'a'.repeat(2000) })
     expect(ok.kind).toBe('sent')
   })
+
+  it('truncates emoji-heavy mod and pack labels by UTF-16 length without splitting surrogate pairs', async () => {
+    const w = await createWorld()
+    await saveModFolderState(w, w.modFolder)
+    const emojiLabel = '😀'.repeat(150) // 150 code points, 300 UTF-16 code units (> 200)
+    const emojiPack = '🎉'.repeat(50) // 50 code points, 100 UTF-16 code units (> 80)
+
+    w.ctx.session.scan = {
+      id: 'scan-emoji',
+      at: '2026-11-26T14:00:00.000Z',
+      tookMs: 10,
+      symptom: 'not-sure',
+      folder: { path: w.simsFolder, inOneDrive: false, newestFileAt: new Date('2026-11-26T14:00:00.000Z') },
+      otherFolders: [],
+      game: { path: join(w.root, 'Game'), version: '1.129.39.1030', packs: [emojiPack as unknown as 'EP01'] },
+      gameRunning: 'not-running',
+      facts: { options: { status: 'ok', mods: 'on', scriptMods: 'on' }, gameUpdatedAt: null, thumbCacheAt: null },
+      inventory: {
+        modsDir: join(w.simsFolder, 'Mods'),
+        modsDirState: 'present',
+        files: [],
+        groups: [
+          {
+            id: 'dir:emoji',
+            label: emojiLabel,
+            source: 'folder',
+            files: ['a.package'],
+            bytes: 10,
+            hasScript: false,
+            curseForge: null
+          }
+        ],
+        resourceCfg: { status: 'ok', maxPackageDepth: 5 },
+        curseForge: { status: 'not-found' },
+        skipped: []
+      },
+      logs: [],
+      findings: []
+    }
+
+    const res = await w.handlers['requests:send']({ text: 'Please add cozy lights' })
+    expect(res.kind).toBe('sent')
+    if (res.kind !== 'sent') throw new Error('expected sent')
+
+    const raw = await readFile(join(w.modFolder, 'requests', `${res.request.id}.json`), 'utf8')
+    const parsed = JSON.parse(raw) as { game: { packs: string[] }; mods: string[] }
+    expect(parsed.mods).toHaveLength(1)
+    expect(parsed.mods[0]!.length).toBeLessThanOrEqual(200)
+    expect(Buffer.from(parsed.mods[0]!, 'utf8').toString('utf8')).toBe(parsed.mods[0]!)
+    expect(parsed.game.packs).toHaveLength(1)
+    expect(parsed.game.packs[0]!.length).toBeLessThanOrEqual(80)
+    expect(Buffer.from(parsed.game.packs[0]!, 'utf8').toString('utf8')).toBe(parsed.game.packs[0]!)
+  })
+
+  it('redacts pasted file paths, Windows usernames, and email addresses from her typed request text', async () => {
+    const w = await createWorld({ username: 'LilaSecretUser' })
+    await saveModFolderState(w, w.modFolder)
+
+    const res = await w.handlers['requests:send']({
+      text: 'Please check C:\\Users\\LilaSecretUser\\Documents\\Electronic Arts\\The Sims 4\\Mods\\hair.package and email lila@example.com for LilaSecretUser!'
+    })
+    expect(res.kind).toBe('sent')
+    if (res.kind !== 'sent') throw new Error('expected sent')
+
+    const raw = await readFile(join(w.modFolder, 'requests', `${res.request.id}.json`), 'utf8')
+    expect(raw).not.toContain('LilaSecretUser')
+    expect(raw).not.toContain('C:\\Users\\')
+    expect(raw).not.toContain('lila@example.com')
+    expect(res.request.text).not.toContain('LilaSecretUser')
+    expect(res.request.text).not.toContain('C:\\Users\\')
+    expect(res.request.text).not.toContain('lila@example.com')
+  })
 })
 
 describe('requests:list and broken ready.json cases', () => {
@@ -739,5 +811,62 @@ describe('requests:install and Undo', () => {
     const outcome = await w.handlers['requests:install']({ requestId: id })
     expect(outcome.status).toBe('done')
     expect(await exists(join(w.simsFolder, 'Mods', 'From Tyler', id, 'safe.package'))).toBe(true)
+  })
+
+  it('keeps status installed even if the delivery folder is later broken or removed', async () => {
+    const w = await createWorld()
+    await saveModFolderState(w, w.modFolder)
+    const id = 'r-20261126-143000-kp01'
+    await writeRequestFile(w.modFolder, id)
+    await writeGoodDelivery(w.modFolder, id, { title: 'Cozy Rugs' })
+
+    const outcome = await w.handlers['requests:install']({ requestId: id })
+    expect(outcome.status).toBe('done')
+
+    // Corrupt ready.json after install
+    await writeFile(join(w.modFolder, 'from-tyler', id, 'ready.json'), '{broken json')
+    const afterBreak = await w.handlers['requests:list']()
+    expect(afterBreak[0]?.status).toBe('installed')
+
+    // Remove delivery folder completely
+    await rm(join(w.modFolder, 'from-tyler', id), { recursive: true, force: true })
+    const afterRemove = await w.handlers['requests:list']()
+    expect(afterRemove[0]?.status).toBe('installed')
+  })
+
+  it('does not attempt a fresh install when an existing install-mod journal entry needs attention', async () => {
+    const w = await createWorld()
+    await saveModFolderState(w, w.modFolder)
+    const id = 'r-20261126-143000-na01'
+    await writeRequestFile(w.modFolder, id)
+    await writeGoodDelivery(w.modFolder, id, { title: 'Half Installed Mod' })
+
+    await mkdir(w.ctx.paths.journalDir, { recursive: true })
+    await writeFile(
+      join(w.ctx.paths.journalDir, '20261126-143100-0001.json'),
+      JSON.stringify({
+        id: '20261126-143100-0001',
+        at: '2026-11-26T14:31:00.000Z',
+        action: 'install-mod',
+        summary: 'Installed Half Installed Mod',
+        origin: { by: 'fix' },
+        folderPath: w.simsFolder,
+        groupId: `request:${id}`,
+        groupLabel: 'Half Installed Mod',
+        hasScript: false,
+        backupId: 'b1',
+        steps: [],
+        status: 'needs-attention',
+        undo: 'can-undo',
+        undoneAt: null
+      })
+    )
+
+    const outcome = await w.handlers['requests:install']({ requestId: id })
+    expect(outcome.status).toBe('stopped-part-way')
+    if (outcome.status === 'stopped-part-way') {
+      expect(outcome.detail).toMatch(/History/i)
+    }
+    expect(await exists(join(w.simsFolder, 'Mods', 'From Tyler'))).toBe(false)
   })
 })

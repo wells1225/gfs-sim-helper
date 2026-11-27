@@ -49,6 +49,20 @@ export function truncateCodePoints(text: string, maxChars: number): string {
   return out.join('')
 }
 
+/**
+ * Truncates by UTF-16 code units (`.length`, matching relay/request.mjs for version, packs, and mods)
+ * without ever splitting a UTF-16 surrogate pair.
+ */
+export function truncateUtf16(text: string, maxUnits: number): string {
+  if (text.length <= maxUnits) return text
+  let out = ''
+  for (const ch of text) {
+    if (out.length + ch.length > maxUnits) break
+    out += ch
+  }
+  return out
+}
+
 /** Why a delivery file name is refused, or null when it is safe on Windows and matches relay/names.mjs. */
 export function badDeliveryFileName(name: string): string | null {
   if (name.length === 0 || name.length > MAX_NAME_CHARS) return 'empty or too long'
@@ -127,13 +141,47 @@ export function newRequestId(now: Date): string {
   return `r-${y}${mo}${d}-${h}${mi}${s}-${randomBase36(4)}`
 }
 
-/** Cleans line endings and strips control characters disallowed by relay/request.mjs. */
-export function sanitizeRequestText(raw: string): string {
-  return raw
+const WIN_DRIVE_PATH = /[A-Za-z]:\\(?:[^\r\n'"<>|*?]+\\)*[^\s'"<>|*?]+/g
+const WIN_UNC_PATH = /\\\\[^\s\\'"<>|*?]+\\[^\s'"<>|*?]+/g
+const UNIX_ABS_PATH = /(?:^|(?<=[\s'"`(]))\/(?:Users|home|private|var|tmp|Volumes|etc|opt|usr)\/[^\s'"<>)]+/g
+
+/**
+ * Cleans line endings, strips control characters, and removes pasted file paths, Windows usernames,
+ * and email addresses from her typed request text so none reach the shared request file.
+ */
+export function sanitizeRequestText(
+  raw: string,
+  redact?: (text: string) => string,
+  userNames: readonly string[] = []
+): string {
+  let text = raw
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
     .replace(/\t/g, ' ')
     .replace(new RegExp(CONTROL_EXCEPT_NEWLINE.source, 'g'), '')
+
+  if (redact) {
+    text = redact(text)
+  }
+
+  text = text
+    .replace(WIN_DRIVE_PATH, '')
+    .replace(WIN_UNC_PATH, '')
+    .replace(UNIX_ABS_PATH, '')
+    .replace(EMAIL_PATTERN, '')
+
+  for (const user of userNames) {
+    if (user.length === 0) continue
+    const pat = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}_])${escapeRegExp(user)}(?![\\p{L}\\p{M}\\p{N}_])`, 'giu')
+    text = text.replace(pat, '')
+  }
+
+  text = text.replace(/<user>/gi, '')
+
+  return text
+    .split('\n')
+    .map((line) => line.replace(/ {2,}/g, ' ').trim())
+    .join('\n')
     .trim()
 }
 
@@ -158,11 +206,11 @@ export function collectUserNames(env: Record<string, string | undefined>): strin
 
 /**
  * Strips paths, email addresses, Windows usernames, and control characters from metadata strings
- * (such as mod group labels) before writing a request file.
+ * (such as mod group labels) before writing a request file. Truncates by UTF-16 `.length` to match relay/request.mjs.
  */
 export function sanitizeMetadataLabel(
   value: string,
-  maxChars: number,
+  maxUtf16Units: number,
   redact: (text: string) => string,
   userNames: readonly string[]
 ): string | null {
@@ -186,5 +234,5 @@ export function sanitizeMetadataLabel(
 
   clean = clean.replace(/<user>/gi, '').replace(/\s+/g, ' ').trim()
   if (clean === '') return null
-  return truncateCodePoints(clean, maxChars)
+  return truncateUtf16(clean, maxUtf16Units)
 }

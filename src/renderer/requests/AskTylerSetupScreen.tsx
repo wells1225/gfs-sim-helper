@@ -135,12 +135,21 @@ export function AskTylerSetupScreen({ initialFolder = null, onConnected }: AskTy
                 2
               </span>
               <span>
-                <strong>Google Drive for desktop</strong> shows that folder right on your PC.
+                In Google Drive on the web, right-click <strong>Sims Helper Mods</strong> in <em>Shared with me</em>{' '}
+                and choose <strong>Add shortcut to Drive</strong> (into <strong>My Drive</strong>).
               </span>
             </li>
             <li className="flex items-start gap-3">
               <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary">
                 3
+              </span>
+              <span>
+                Open <strong>Google Drive for desktop</strong> so the folder shows up right on your PC.
+              </span>
+            </li>
+            <li className="flex items-start gap-3">
+              <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/15 text-xs font-semibold text-primary">
+                4
               </span>
               <span>
                 Pick the <strong>Sims Helper Mods</strong> folder below. You only need to do this once.

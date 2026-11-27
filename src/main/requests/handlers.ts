@@ -27,7 +27,7 @@ import {
   safeModFolderName,
   sanitizeMetadataLabel,
   sanitizeRequestText,
-  truncateCodePoints
+  truncateUtf16
 } from './names.ts'
 
 export type RequestsChannel =
@@ -118,7 +118,7 @@ async function gatherRequestMetadata(ctx: AppContext): Promise<{
   if (typeof rawVersion === 'string') {
     const cleanVer = rawVersion.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim()
     if (cleanVer !== '' && !hasControl(cleanVer)) {
-      version = truncateCodePoints(cleanVer, MAX_VERSION_CHARS)
+      version = truncateUtf16(cleanVer, MAX_VERSION_CHARS)
     }
   }
 
@@ -210,6 +210,17 @@ function installedRequestIds(entries: readonly JournalEntry[]): Set<string> {
   return ids
 }
 
+function findUnsettledInstallEntry(entries: readonly JournalEntry[], requestId: string): JournalEntry | null {
+  const targetGroupId = requestGroupId(requestId)
+  for (const entry of entries) {
+    if (entry.action !== 'install-mod' || entry.groupId !== targetGroupId) continue
+    if (entry.status === 'needs-attention' || entry.status === 'in-progress') {
+      return entry
+    }
+  }
+  return null
+}
+
 async function cleanupHolding(ctx: AppContext, holdingEntryDir: string): Promise<void> {
   try {
     await ctx.gate.run({
@@ -242,7 +253,8 @@ export function requestsHandlers(ctx: AppContext): Handlers<RequestsChannel> {
         return { kind: 'refused', why: 'empty' }
       }
 
-      const text = sanitizeRequestText(req.text)
+      const userNames = collectUserNames(ctx.host.env)
+      const text = sanitizeRequestText(req.text, ctx.redact, userNames)
       if (text.length === 0) {
         return { kind: 'refused', why: 'empty' }
       }
@@ -297,7 +309,24 @@ export function requestsHandlers(ctx: AppContext): Handlers<RequestsChannel> {
         const check = await readDelivery(folder.path, req.id)
         const isInstalled = installed.has(req.id)
 
-        if (check.kind === 'ready') {
+        if (isInstalled) {
+          const delivery =
+            check.kind === 'ready'
+              ? {
+                  title: check.delivery.title,
+                  note: check.delivery.note,
+                  files: check.delivery.files.map(({ name, bytes }) => ({ name, bytes })),
+                  hasScript: check.delivery.hasScript
+                }
+              : null
+          items.push({
+            id: req.id,
+            at: req.at,
+            text: req.text,
+            status: 'installed',
+            delivery
+          })
+        } else if (check.kind === 'ready') {
           const delivery = {
             title: check.delivery.title,
             note: check.delivery.note,
@@ -308,7 +337,7 @@ export function requestsHandlers(ctx: AppContext): Handlers<RequestsChannel> {
             id: req.id,
             at: req.at,
             text: req.text,
-            status: isInstalled ? 'installed' : 'ready',
+            status: 'ready',
             delivery
           })
         } else if (check.kind === 'broken') {
@@ -324,7 +353,7 @@ export function requestsHandlers(ctx: AppContext): Handlers<RequestsChannel> {
             id: req.id,
             at: req.at,
             text: req.text,
-            status: isInstalled ? 'installed' : 'sent',
+            status: 'sent',
             delivery: null
           })
         }
@@ -360,6 +389,14 @@ export function requestsHandlers(ctx: AppContext): Handlers<RequestsChannel> {
         const journal = await ctx.safety.listJournal().catch((): JournalEntry[] => [])
         if (installedRequestIds(journal).has(requestId)) {
           return { status: 'refused', refusal: { why: 'out-of-date', detail: 'nothing-to-do' } }
+        }
+        const unsettled = findUnsettledInstallEntry(journal, requestId)
+        if (unsettled) {
+          return {
+            status: 'stopped-part-way',
+            entry: unsettled,
+            detail: 'A previous install of this mod stopped partway through. Open History to undo it before trying again.'
+          }
         }
 
         const check = await readDelivery(folder.path, requestId)

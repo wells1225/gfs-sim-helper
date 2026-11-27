@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { toast } from 'sonner'
-import type { FixOutcome, FixRefusal, ModFolderState, ModRequest, Progress } from '../../shared/model.ts'
+import type { FixOutcome, FixRefusal, JournalEntry, ModFolderState, ModRequest, Progress } from '../../shared/model.ts'
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert.tsx'
 import { Badge } from '../components/ui/badge.tsx'
 import { Button } from '../components/ui/button.tsx'
@@ -27,8 +27,7 @@ import {
   UNEXPECTED_COPY,
   formatBytes,
   formatEntryTimestamp,
-  progressCopy,
-  refusalMessage
+  progressCopy
 } from '../fixes/words.ts'
 import { useNav } from '../nav.tsx'
 import { AskTylerSetupScreen } from './AskTylerSetupScreen.tsx'
@@ -38,8 +37,23 @@ import {
   SCRIPT_MOD_COPY,
   SENT_CONFIRMATION_COPY,
   countChars,
+  installRefusalMessage,
   sendRefusalCopy
 } from './words.ts'
+
+const REQUEST_GROUP_PREFIX = 'request:'
+
+function unsettledRequestIds(entries: readonly JournalEntry[]): Set<string> {
+  const ids = new Set<string>()
+  for (const entry of entries) {
+    if (entry.action !== 'install-mod') continue
+    if (entry.status !== 'needs-attention' && entry.status !== 'in-progress') continue
+    if (entry.groupId && entry.groupId.startsWith(REQUEST_GROUP_PREFIX)) {
+      ids.add(entry.groupId.slice(REQUEST_GROUP_PREFIX.length))
+    }
+  }
+  return ids
+}
 
 function formatDeliveryFiles(files: readonly { name: string; bytes: number }[]): string {
   const totalBytes = files.reduce((sum, f) => sum + f.bytes, 0)
@@ -56,6 +70,7 @@ export function AskTylerScreen() {
   const [loading, setLoading] = useState(api !== null)
   const [loadFailed, setLoadFailed] = useState(false)
   const [requests, setRequests] = useState<ModRequest[]>([])
+  const [needsAttentionIds, setNeedsAttentionIds] = useState<Set<string>>(() => new Set())
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [sentNotice, setSentNotice] = useState(false)
@@ -91,11 +106,16 @@ export function AskTylerScreen() {
       if (!mountedRef.current) return
       setFolder(folderState)
       if (folderState.kind === 'set') {
-        const list = await api.invoke('requests:list')
+        const [list, journal] = await Promise.all([
+          api.invoke('requests:list'),
+          api.invoke('journal:list').catch((): JournalEntry[] => [])
+        ])
         if (!mountedRef.current) return
         setRequests(list)
+        setNeedsAttentionIds(unsettledRequestIds(journal))
       } else {
         setRequests([])
+        setNeedsAttentionIds(new Set())
       }
     } catch {
       if (mountedRef.current) {
@@ -216,6 +236,10 @@ export function AskTylerScreen() {
         }
 
         setPartWayMessage(outcome.detail || 'Installing stopped partway through. You can undo what moved in History.')
+        const journal = await api.invoke('journal:list').catch((): JournalEntry[] => [])
+        if (mountedRef.current) {
+          setNeedsAttentionIds(unsettledRequestIds(journal))
+        }
       } finally {
         if (mountedRef.current) {
           setInstallingId(null)
@@ -340,7 +364,7 @@ export function AskTylerScreen() {
 
       {installError && (() => {
         const copy =
-          installError.refusal === 'unexpected' ? UNEXPECTED_COPY : refusalMessage(installError.refusal)
+          installError.refusal === 'unexpected' ? UNEXPECTED_COPY : installRefusalMessage(installError.refusal)
         const variant =
           copy.tone === 'destructive' ? 'destructive' : copy.tone === 'info' ? 'info' : 'warn'
         const Icon =
@@ -375,9 +399,15 @@ export function AskTylerScreen() {
         <Alert variant="warn">
           <div className="flex items-start gap-2.5">
             <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-            <div className="flex flex-col gap-1">
+            <div className="flex flex-1 flex-col gap-2">
               <AlertTitle>Install stopped partway through</AlertTitle>
               <AlertDescription>{partWayMessage}</AlertDescription>
+              <div>
+                <Button variant="outline" size="sm" onClick={() => go({ screen: 'history' })}>
+                  <HistoryIcon className="size-4" strokeWidth={1.75} aria-hidden="true" />
+                  Go to History
+                </Button>
+              </div>
             </div>
           </div>
         </Alert>
@@ -387,13 +417,31 @@ export function AskTylerScreen() {
         <section aria-label="Mods ready to install" className="flex flex-col gap-3">
           {readyRequests.map((req) => {
             const delivery = req.delivery!
+            const needsHistoryAttention = needsAttentionIds.has(req.id)
             return (
-              <Card key={`ready-${req.id}`} className="gap-4 border-severity-ok-border bg-card p-5 shadow-xs">
+              <Card
+                key={`ready-${req.id}`}
+                className={
+                  needsHistoryAttention
+                    ? 'gap-4 border-severity-warn-border bg-card p-5 shadow-xs'
+                    : 'gap-4 border-severity-ok-border bg-card p-5 shadow-xs'
+                }
+              >
                 <CardHeader className="gap-2 p-0">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div className="flex items-center gap-3">
-                      <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-severity-ok-bg text-severity-ok">
-                        <Gift className="size-5" strokeWidth={1.75} aria-hidden="true" />
+                      <div
+                        className={
+                          needsHistoryAttention
+                            ? 'flex size-10 shrink-0 items-center justify-center rounded-xl bg-severity-warn-bg text-severity-warn'
+                            : 'flex size-10 shrink-0 items-center justify-center rounded-xl bg-severity-ok-bg text-severity-ok'
+                        }
+                      >
+                        {needsHistoryAttention ? (
+                          <AlertTriangle className="size-5" strokeWidth={1.75} aria-hidden="true" />
+                        ) : (
+                          <Gift className="size-5" strokeWidth={1.75} aria-hidden="true" />
+                        )}
                       </div>
                       <div>
                         <CardTitle className="text-lg">Tyler made you a mod: {delivery.title}</CardTitle>
@@ -402,11 +450,27 @@ export function AskTylerScreen() {
                         </CardDescription>
                       </div>
                     </div>
-                    <Badge variant="ok">Ready to install</Badge>
+                    {needsHistoryAttention ? (
+                      <Badge variant="warn">Needs attention</Badge>
+                    ) : (
+                      <Badge variant="ok">Ready to install</Badge>
+                    )}
                   </div>
                 </CardHeader>
 
                 <CardContent className="gap-3 p-0">
+                  {needsHistoryAttention && (
+                    <Alert variant="warn">
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+                        <AlertDescription>
+                          A previous install of this mod stopped partway through. Open History to finish putting things
+                          back before installing again.
+                        </AlertDescription>
+                      </div>
+                    </Alert>
+                  )}
+
                   {delivery.note && (
                     <div className="rounded-lg bg-muted/50 px-4 py-3 text-[0.9375rem] leading-relaxed text-foreground">
                       <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -431,17 +495,31 @@ export function AskTylerScreen() {
                 </CardContent>
 
                 <CardFooter className="flex-wrap items-center justify-between gap-3 p-0">
-                  <span className="text-xs text-muted-foreground">
-                    A backup is made first. You can undo this anytime in History.
-                  </span>
-                  <Button
-                    size="lg"
-                    disabled={installingId !== null}
-                    onClick={() => void handleInstall(req)}
-                  >
-                    <Download className="size-4" strokeWidth={1.75} aria-hidden="true" />
-                    {installingId === req.id ? 'Installing…' : 'Install'}
-                  </Button>
+                  {needsHistoryAttention ? (
+                    <>
+                      <span className="text-xs text-muted-foreground">
+                        Undo the earlier install in History first so your Mods folder stays clean.
+                      </span>
+                      <Button variant="outline" size="lg" onClick={() => go({ screen: 'history' })}>
+                        <HistoryIcon className="size-4" strokeWidth={1.75} aria-hidden="true" />
+                        Go to History
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-xs text-muted-foreground">
+                        A backup is made first. You can undo this anytime in History.
+                      </span>
+                      <Button
+                        size="lg"
+                        disabled={installingId !== null}
+                        onClick={() => void handleInstall(req)}
+                      >
+                        <Download className="size-4" strokeWidth={1.75} aria-hidden="true" />
+                        {installingId === req.id ? 'Installing…' : 'Install'}
+                      </Button>
+                    </>
+                  )}
                 </CardFooter>
               </Card>
             )
@@ -456,6 +534,8 @@ export function AskTylerScreen() {
               Tell Tyler what you&apos;d like the mod to do
             </label>
             <span
+              id="ask-tyler-count"
+              aria-live="polite"
               className={
                 overLimit
                   ? 'text-xs font-semibold tabular-nums text-severity-stop'
@@ -470,6 +550,8 @@ export function AskTylerScreen() {
             id="ask-tyler-text"
             rows={4}
             value={text}
+            aria-describedby={overLimit ? 'ask-tyler-count ask-tyler-over-limit' : 'ask-tyler-count'}
+            aria-invalid={overLimit || undefined}
             onChange={(e) => {
               setText(e.target.value)
               if (sentNotice) setSentNotice(false)
@@ -481,8 +563,8 @@ export function AskTylerScreen() {
           />
 
           {overLimit && (
-            <p className="text-sm font-medium text-severity-stop">
-              Please keep your note under {MAX_REQUEST_CHARS.toLocaleString()} characters.
+            <p id="ask-tyler-over-limit" className="text-sm font-medium text-severity-stop">
+              Please keep your note to {MAX_REQUEST_CHARS.toLocaleString()} characters or fewer.
             </p>
           )}
 
