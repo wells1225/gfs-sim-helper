@@ -637,6 +637,40 @@ describe('HistoryScreen', () => {
     })
     expect(screen.getAllByText('Undone').length).toBeGreaterThanOrEqual(1)
   })
+
+  it('says "Rebuilt automatically by the game" only for a cache clear, never for a cleared Patch Day mod', async () => {
+    const cacheEntry = sampleJournalEntry({
+      id: 'e-cache-2',
+      at: '2026-11-24T12:15:00.000Z',
+      action: 'clear-caches',
+      summary: 'Cleared 2 temporary cache items',
+      steps: [{ kind: 'remove-cache', path: '/sims/localthumbcache.package', state: 'applied' }],
+      status: 'done',
+      undo: 'cannot-undo'
+    })
+    const clearedEntry = sampleJournalEntry({
+      id: 'e-cleared',
+      at: '2026-11-24T12:20:00.000Z',
+      action: 'disable-group',
+      summary: 'Set aside MCCC',
+      groupId: 'cf:1',
+      status: 'undone',
+      undo: 'cannot-undo',
+      undoneAt: '2026-11-26T12:00:00.000Z'
+    })
+    const api = fakeApi({ 'journal:list': [clearedEntry, cacheEntry] })
+
+    render(
+      <Harness api={api} initialRoute={{ screen: 'history' }}>
+        <HistoryScreen />
+      </Harness>
+    )
+
+    expect(await screen.findByText('Set aside MCCC')).toBeInTheDocument()
+    expect(screen.getAllByText(/Rebuilt automatically by the game/)).toHaveLength(1)
+    const clearedCard = screen.getByText('Set aside MCCC').closest('[id^="history-entry-"]')!
+    expect(clearedCard.textContent).not.toMatch(/Rebuilt automatically/)
+  })
 })
 
 describe('ModsScreen', () => {
