@@ -6,7 +6,7 @@ import { sha256File } from '../fs-read.ts'
 import { locate } from '../locate/index.ts'
 import type { ActionPlan, AppContext, WriteOp } from '../ports.ts'
 import { oneAtATime } from '../safety/lock.ts'
-import { exists } from '../safety/where.ts'
+import { exists, isSafeId } from '../safety/where.ts'
 import { readDelivery } from './delivery.ts'
 import { pickAndSaveModFolder, syncModFolder } from './folder.ts'
 import {
@@ -399,6 +399,15 @@ export function requestsHandlers(ctx: AppContext): Handlers<RequestsChannel> {
           }
         }
 
+        // Ask about the game first, so an open game never makes Drive download up to 200 MB into holding.
+        const game = await ctx.gameState().catch((): 'unknown' => 'unknown')
+        if (game === 'running') {
+          return { status: 'refused', refusal: { why: 'backup', reason: 'game-running' } }
+        }
+        if (game !== 'not-running') {
+          return { status: 'refused', refusal: { why: 'backup', reason: 'game-state-unknown' } }
+        }
+
         const check = await readDelivery(folder.path, requestId)
         if (check.kind !== 'ready') {
           return { status: 'refused', refusal: { why: 'out-of-date', detail: 'file-changed' } }
@@ -417,7 +426,20 @@ export function requestsHandlers(ctx: AppContext): Handlers<RequestsChannel> {
         }
 
         const entryId = ctx.newId()
+        if (typeof entryId !== 'string' || !isSafeId(entryId)) {
+          return { status: 'refused', refusal: { why: 'not-started' } }
+        }
         const holdingEntryDir = join(ctx.paths.holdingDir, entryId)
+        // A holding folder that is already there belongs to another entry: never stage into it, and never let
+        // the clean-up below remove it.
+        try {
+          await lstat(holdingEntryDir)
+          return { status: 'refused', refusal: { why: 'not-started' } }
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException | null)?.code !== 'ENOENT') {
+            return { status: 'refused', refusal: { why: 'not-started' } }
+          }
+        }
         const holdingModDir = join(holdingEntryDir, 'Mods', safeTitle)
         const sourceFilesDir = join(folder.path, 'from-tyler', requestId, 'files')
 
