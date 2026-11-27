@@ -6,6 +6,8 @@ import { sampleJournalEntry } from '../shared/testing/sample.ts'
 import { ApiProvider } from './api.tsx'
 import { App } from './App.tsx'
 import { FIXES_READY } from './fixes/feature.ts'
+import { REQUESTS_READY } from './requests/feature.ts'
+import { SAVE_COPIES_READY } from './savecopies/feature.ts'
 import { SHARE_READY } from './share/feature.ts'
 import type { Route } from './nav.tsx'
 import { fakeApi } from './testing/fake-api.ts'
@@ -64,6 +66,8 @@ describe('App shell', () => {
     expect(screen.queryAllByRole('button', { name: 'Your mods' })).toHaveLength(FIXES_READY ? 1 : 0)
     expect(screen.queryAllByRole('button', { name: 'History' })).toHaveLength(FIXES_READY ? 1 : 0)
     expect(screen.queryAllByRole('button', { name: 'Share saves' })).toHaveLength(SHARE_READY ? 1 : 0)
+    expect(screen.queryAllByRole('button', { name: 'Save copies' })).toHaveLength(SAVE_COPIES_READY ? 1 : 0)
+    expect(screen.queryAllByRole('button', { name: 'Ask Tyler for a mod' })).toHaveLength(REQUESTS_READY ? 1 : 0)
   })
 
   it('opens key setup on Ctrl+Shift+K without throwing', async () => {
@@ -83,6 +87,14 @@ describe('App shell', () => {
 
   it('opens each Share saves route, whose stubs render nothing yet, inside the shell', async () => {
     for (const screenName of ['share', 'share-setup', 'share-old-saves', 'share-settings'] as const) {
+      renderApp({ screen: screenName })
+      expect(await screen.findByText(FOOTER)).toBeInTheDocument()
+      cleanup()
+    }
+  })
+
+  it('opens the save copies and Ask Tyler routes, whose stubs render nothing yet, inside the shell', async () => {
+    for (const screenName of ['save-copies', 'ask-tyler', 'ask-tyler-setup'] as const) {
       renderApp({ screen: screenName })
       expect(await screen.findByText(FOOTER)).toBeInTheDocument()
       cleanup()

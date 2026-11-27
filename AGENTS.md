@@ -27,7 +27,8 @@ herself, so every screen is for a non-technical player.
 
 - Shared files are frozen after the contract commit; edit only your PR's owned paths in `docs/plan/ownership.md`.
 
-- Her saves come first. Never write to `Saves/` or `Tray/`. Any change to `Mods/` or game settings makes a backup
+- Her saves come first. Nothing in `Saves/` or `Tray/` is ever changed, moved or deleted. The one write is putting a
+  save copy back as a new slot file, which never replaces one. Any change to `Mods/` or game settings makes a backup
   first and can be undone from the app.
 - The app only acts when she clicks. Scanning reads files and changes nothing. One exception (Tyler, 2026-11-24):
   when a change was cut off by a crash, the app puts things back as they were when it next opens, after checking
@@ -48,3 +49,5 @@ herself, so every screen is for a non-technical player.
   does the last check. Fable writes the write gate and the AI key store. Whoever finds an
   issue fixes it, with a failing test first. Sol does one quick, light review of a finished stage. Astra is not used
   here.
+- PRs 15 to 17 (Tyler, 2026-11-26): Opus through OpenCode and Neon build and review each other's PRs, gate zones
+  included. No Fable, no Claude-app Opus.

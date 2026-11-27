@@ -44,6 +44,7 @@ export interface AppPaths {
   keyFile: string // <dataDir>\assist\key.bin
   oldSavesDir: string // <dataDir>\old-saves
   shareDir: string // <dataDir>\share\{incoming,outgoing}
+  saveCopiesDir: string // <dataDir>\save-copies\<copyId>\{saves,Tray} (PR 15)
   desktopDir: string // where the report zip is saved
   oneDriveRoots: string[] // from the OneDrive environment variables. A path part starting 'OneDrive' also counts
   curseForgeInstanceFile: string | null // %APPDATA%\CurseForge\agent\GameInstances\AddonGameInstance.json
@@ -70,7 +71,20 @@ export type WriteOp =
   | { op: 'remove'; path: string } // a file, or a folder and everything in it
 
 export interface WriteRequest {
-  reason: 'backup' | 'journal' | 'state' | 'report' | 'key' | 'fix' | 'undo' | 'share' | 'share-save'
+  reason:
+    | 'backup'
+    | 'journal'
+    | 'state'
+    | 'report'
+    | 'key'
+    | 'fix'
+    | 'undo'
+    | 'share'
+    | 'share-save'
+    | 'save-copy' // PR 15: a copy of her saves and Tray into saveCopiesDir
+    | 'save-put-back' // PR 15: the one write into saves/, a new slot file (gate zone save-new-slot)
+    | 'mod-request' // PR 17: her request file in the Sims Helper Mods folder (gate zone mod-folder)
+    | 'mod-install' // PR 17: a delivered mod copied from the Sims Helper Mods folder into holding
   folderPath: string | null // the Sims folder the ops touch or read; null for app data and the report only
   ops: WriteOp[]
 }
@@ -91,6 +105,9 @@ export interface GateDeps {
   gameState(): Promise<GameRunState> // asked fresh on every call, never cached
   backupStatus(folderPath: string): Promise<BackupStatus>
   shareRoot(): Promise<string | null> // PR 14: asked fresh for each request; null or a throw refuses a share op
+  // PR 17: the Sims Helper Mods folder from state/mod-folder.json, asked once per check. Null, a throw, or a folder
+  // that fails the gate's checks means the mod-folder zone does not exist.
+  modFolderRoot(): string | null
 }
 
 export type PlannedStep =
@@ -279,6 +296,9 @@ export interface AppContext {
   share: Share
   pickFolder(): Promise<string | null> // Electron's folder dialog on the app window; null when she cancels
   openWeb(url: string): Promise<'opened' | 'refused'> // only what safeWebLink passes reaches the browser, as its url
+  // PR 16: starts the game from <install>\Game\Bin\TS4_x64.exe (Electron shell.openPath). Rejects when it could not,
+  // and for any other path: makeOpenGame in services.ts passes only that exe name in that place.
+  openGame(exePath: string): Promise<void>
   // The start-up recovery: index.ts calls it once before the window opens. Lazy, run once, never rejects; every later
   // call gives the same promise. The journal channels, every changing fix call, and every share:* handler except
   // share:open-link and the two share:find-* wait for it. A 'failed' recovery does not stop a share call: the checks

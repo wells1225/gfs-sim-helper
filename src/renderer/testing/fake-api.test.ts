@@ -29,4 +29,14 @@ describe('fakeApi', () => {
     expect(await api.invoke('share:local-saves')).toEqual([])
     expect(await api.invoke('share:old-saves')).toEqual([])
   })
+
+  it('answers save copies, patch day and Ask Tyler as nothing yet', async () => {
+    const api = fakeApi()
+    expect(await api.invoke('savecopies:list')).toEqual([])
+    expect(await api.invoke('patchguard:watch')).toEqual({ current: null, lastSeen: null, changed: false, seenAt: null })
+    expect(await api.invoke('patchguard:waiting')).toEqual([])
+    expect(await api.invoke('requests:folder')).toEqual({ kind: 'not-set' })
+    expect(await api.invoke('requests:list')).toEqual([])
+    await expect(api.invoke('patchguard:play', { ignoreUpdate: false })).rejects.toThrow('no answer configured')
+  })
 })

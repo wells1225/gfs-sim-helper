@@ -12,13 +12,24 @@ import { LOCALIZED_SIMS_FOLDER_NAMES, normalizeSimsFolderName } from '../locate/
 import { CACHE_NAMES } from '../ports.ts'
 import type { GateDeps, GateResult, WriteOp, WriteRequest } from '../ports.ts'
 
-export type Zone = 'forbidden' | 'mods' | 'caches' | 'options' | 'app-data' | 'report' | 'sims-other' | 'none'
+export type Zone =
+  | 'forbidden'
+  | 'mods'
+  | 'caches'
+  | 'options'
+  | 'app-data'
+  | 'report'
+  | 'mod-folder'
+  | 'sims-other'
+  | 'none'
 
 /** The folders the zones hang from. Compared without regard to letter case, on every machine. */
 export interface GateRoots {
   folderPath: string | null
   dataDir: string
   desktopDir: string | null
+  /** The Sims Helper Mods folder (PR 17), only once the gate has checked it. Absent or null: no mod-folder zone. */
+  modFolder?: string | null
 }
 
 export interface SortedPath {
@@ -32,17 +43,19 @@ export interface SortedPath {
 type WriteUse = 'mkdir' | 'copy-to' | 'move' | 'write-create' | 'write-replace' | 'remove'
 
 // The table in briefs/pr-08.md. An op in any other zone is refused. Nothing in Mods is ever
-// removed or overwritten, and nothing but a cache is ever removed from the Sims folder.
+// removed or overwritten, and nothing but a cache is ever removed from the Sims folder. The mod folder takes
+// only her request file and its folder, and only for a mod-request (modFolderWrite says which names).
 const WRITE_ZONES: Record<WriteUse, readonly Zone[]> = {
-  mkdir: ['mods', 'app-data'],
+  mkdir: ['mods', 'app-data', 'mod-folder'],
   'copy-to': ['app-data'],
   move: ['mods', 'app-data'],
-  'write-create': ['app-data', 'report'],
+  'write-create': ['app-data', 'report', 'mod-folder'],
   'write-replace': ['options', 'app-data'],
   remove: ['caches', 'app-data']
 }
-// The source of a copy is only read: anywhere in the Sims folder (saves too: that is the backup) or app data.
-const READ_ZONES: readonly Zone[] = ['forbidden', 'mods', 'caches', 'options', 'sims-other', 'app-data']
+// The source of a copy is only read: anywhere in the Sims folder (saves too: that is the backup) or app data,
+// and a delivered mod in the mod folder for a mod-install (modFolderRead says which).
+const READ_ZONES: readonly Zone[] = ['forbidden', 'mods', 'caches', 'options', 'sims-other', 'app-data', 'mod-folder']
 // A write to one of these needs the game closed and a verified backup.
 const GUARDED_ZONES: readonly Zone[] = ['mods', 'caches', 'options']
 
@@ -58,6 +71,24 @@ const CACHE_KINDS = new Map<string, 'file' | 'folder'>(
   CACHE_NAMES.map((name) => [fold(name.replace(/\/$/, '')), name.endsWith('/') ? 'folder' : 'file'])
 )
 const REPORT_NAME = /^Sims Helper report \d{8}-\d{6}\.zip$/
+// save-new-slot (briefs/pr-15.md, round 7): the one name in saves/ the gate ever writes. Eight lower-case hex
+// digits, the first one 0: EA's helpers report saves starting with another digit failing to load.
+const NEW_SLOT_NAME = /^Slot_0[0-9a-f]{7}\.save$/
+// mod-folder (briefs/pr-17.md, round 7): the shared folder's exact name, and her request file in it.
+const MOD_FOLDER_NAME = 'Sims Helper Mods'
+const REQUESTS_FOLDER = 'requests'
+const REQUEST_NAME = /^r-\d{8}-\d{6}-[a-z0-9]{4}\.json$/
+const DELIVERIES_FOLDER = 'from-tyler'
+// Folders the mod folder may never be inside: Windows itself, programs, and the hidden app folders.
+// AppData is not one of them: Windows keeps its temp folder there, and dataDir is kept apart on its own.
+const SYSTEM_FOLDER_NAMES = new Set([
+  'windows',
+  'program files',
+  'program files (x86)',
+  'programdata',
+  '$recycle.bin',
+  'system volume information'
+])
 // Names Windows hands to a device, with or without an extension. Spaces before the dot do not save a name:
 // 'NUL .package' is still the device.
 const DEVICE_NAME = /^(con|prn|aux|nul|conin\$|conout\$|(com|lpt)[0-9\u00b9\u00b2\u00b3]) *(\..*)?$/i
@@ -142,6 +173,11 @@ export function sortPath(pathApi: PlatformPath, roots: GateRoots, target: unknow
 
   const inData = partsBelow(parts, looseParts(pathApi, roots.dataDir), fold)
   if (inData !== null) return sorted('app-data', inData.length === 0)
+
+  if (roots.modFolder !== undefined && roots.modFolder !== null) {
+    const inMods = partsBelow(parts, looseParts(pathApi, roots.modFolder), fold)
+    if (inMods !== null) return sorted('mod-folder', inMods.length === 0)
+  }
 
   if (roots.desktopDir !== null && wellFormed) {
     const onDesktop = partsBelow(parts, looseParts(pathApi, roots.desktopDir), fold)
@@ -257,11 +293,19 @@ interface Lead {
 /** The gate's own copy of what was asked, so nothing a caller does later can change a request that was checked. */
 interface Asked {
   folderPath: string | null
+  /**
+   * The request's reason as given. Most zones ignore it; save-new-slot and mod-folder each need their own. Not
+   * named `reason`: a refusal is told apart from everything else by that key.
+   */
+  purpose: string
   secret: boolean
   ops: WriteOp[]
   dataDir: string
   desktopDir: string
   oneDriveRoots: string[]
+  saveCopiesDir: string | null
+  /** What deps.modFolderRoot() said, asked once for this request, and only for a mod-request or mod-install. */
+  modFolderRoot: string | null
 }
 
 /** The folders a request stands on, as one check found them. */
@@ -270,6 +314,8 @@ interface Ground {
   realRoots: GateRoots
   /** Where saves and Tray really are. */
   realForbidden: string[]
+  /** Where saves really is, or null with no Sims folder. */
+  realSaves: string | null
   leads: Lead[]
 }
 
@@ -279,6 +325,8 @@ interface Approved {
   /** For each op, its paths in order. */
   opLeads: Lead[][]
   guarded: boolean
+  /** A save put back: the game must be closed, and no backup is needed. */
+  gameOnly: boolean
 }
 
 /** What one check has learned from the disk. Never kept for a later check. */
@@ -292,6 +340,9 @@ const newGlance = (): Glance => ({ real: makeResolver(), forbiddenIds: null })
 const shown = (value: unknown): string => (typeof value === 'string' ? value : '')
 const outside = (path: unknown): GateRefusal => ({ reason: 'outside-allowed-area', path: shown(path) })
 const savesOrTray = (path: string): GateRefusal => ({ reason: 'saves-or-tray', path })
+const PUT_BACK = 'save-put-back'
+const MOD_REQUEST = 'mod-request'
+const MOD_INSTALL = 'mod-install'
 const linkEscape = (path: string): GateRefusal => ({ reason: 'link-escape', path })
 // The gate could not find out. It never guesses, and it never blames the path for it.
 const checkFailed = (path: unknown): GateRefusal => ({ reason: 'check-failed', path: shown(path) })
@@ -325,8 +376,29 @@ function readRequest(deps: GateDeps, request: WriteRequest): Asked | GateRefusal
     if (op === null) return outside((given as { path?: unknown } | null)?.path)
     ops.push(op)
   }
-  const { dataDir, desktopDir, oneDriveRoots } = deps.paths
-  return { folderPath, secret: request.reason === 'key', ops, dataDir, desktopDir, oneDriveRoots: [...oneDriveRoots] }
+  const { dataDir, desktopDir, oneDriveRoots, saveCopiesDir } = deps.paths
+  const reason = typeof request.reason === 'string' ? request.reason : ''
+  return {
+    folderPath,
+    purpose: reason,
+    secret: reason === 'key',
+    ops,
+    dataDir,
+    desktopDir,
+    oneDriveRoots: [...oneDriveRoots],
+    saveCopiesDir: typeof saveCopiesDir === 'string' ? saveCopiesDir : null,
+    modFolderRoot: reason === MOD_REQUEST || reason === MOD_INSTALL ? askModFolderRoot(deps) : null
+  }
+}
+
+/** The mod folder as deps tells it. Anything but a plain string, a throw included, is no folder. */
+function askModFolderRoot(deps: GateDeps): string | null {
+  try {
+    const root: unknown = deps.modFolderRoot()
+    return typeof root === 'string' ? root : null
+  } catch {
+    return null
+  }
 }
 
 /** Each path of an op, with what the op does there. */
@@ -396,6 +468,7 @@ async function checkGround(asked: Asked, glance: Glance): Promise<Ground | GateR
   // The given path is asked on its own, since Windows resolves a subst drive's root to the folder behind it.
   let realFolder: string | null = null
   const realForbidden: string[] = []
+  let realSaves: string | null = null
   if (folderPath !== null) {
     const notSims: GateRefusal = { reason: 'not-a-sims-folder', path: folderPath }
     if (!isWellFormed(nativePath, folderPath)) return notSims
@@ -416,6 +489,7 @@ async function checkGround(asked: Asked, glance: Glance): Promise<Ground | GateR
       try {
         const real = await glance.real(forbidden)
         realForbidden.push(real)
+        if (name === 'saves') realSaves = real
         leads.push({ path: forbidden, real })
       } catch {
         return checkFailed(forbidden)
@@ -438,12 +512,83 @@ async function checkGround(asked: Asked, glance: Glance): Promise<Ground | GateR
       // Only a report is refused, as a check that failed.
     }
   }
+  // The mod folder is a zone only when every check on it passes. Otherwise it is no zone, and its paths are in
+  // none: nothing here refuses the request itself.
+  const modLead = await checkModFolder(asked, glance, [dataDir, realData, folderPath, realFolder])
+  if (modLead !== null) leads.push(modLead)
   return {
-    roots: { folderPath, dataDir, desktopDir },
-    realRoots: { folderPath: realFolder, dataDir: realData, desktopDir: realDesktop },
+    roots: { folderPath, dataDir, desktopDir, modFolder: modLead?.path ?? null },
+    realRoots: { folderPath: realFolder, dataDir: realData, desktopDir: realDesktop, modFolder: modLead?.real ?? null },
     realForbidden,
+    realSaves,
     leads
   }
+}
+
+/**
+ * The Sims Helper Mods folder (briefs/pr-17.md), or null when it may not be a zone: a name other than exactly
+ * Sims Helper Mods; inside or around a Sims folder, saves or Tray, app data, or a system folder; not a folder;
+ * or reached through a link anywhere on its path. A check that fails also means no zone.
+ */
+async function checkModFolder(asked: Asked, glance: Glance, keepApart: (string | null)[]): Promise<Lead | null> {
+  const root = asked.modFolderRoot
+  if (root === null || !isWellFormed(nativePath, root) || isDriveRoot(root)) return null
+  if (nativePath.basename(root) !== MOD_FOLDER_NAME) return null
+  const clearOfOthers = (place: string): boolean => {
+    const names = (looseParts(nativePath, place) ?? []).slice(1)
+    if (names.some((name) => FORBIDDEN_NAMES.has(looseFold(name)))) return false
+    if (names.some((name) => SIMS_FOLDER_NAMES.has(normalizeSimsFolderName(name)))) return false
+    if (names.some((name) => SYSTEM_FOLDER_NAMES.has(looseFold(name)))) return false
+    return keepApart.every(
+      (other) => other === null || (!isInside(nativePath, place, other) && !isInside(nativePath, other, place))
+    )
+  }
+  if (!clearOfOthers(root)) return null
+  try {
+    const real = await glance.real(root)
+    // It resolves to itself: no link, junction or short name anywhere on the way. The disk's own spelling of the
+    // last name must be exactly Sims Helper Mods too: a disk that ignores letter case answers to it for any spelling.
+    if (fold(real) !== fold(root) || nativePath.basename(real) !== MOD_FOLDER_NAME || !clearOfOthers(real)) return null
+    if (!(await statOrNull(root))?.isDirectory()) return null
+    // A Sims folder under any name holds Options.ini. Neither the folder nor anything above it may be one.
+    for (let place = root; ; place = nativePath.dirname(place)) {
+      if ((await statOrNull(nativePath.join(place, 'Options.ini'))) !== null) return null
+      if (isDriveRoot(place) || nativePath.dirname(place) === place) break
+    }
+    return { path: root, real }
+  } catch {
+    return null
+  }
+}
+
+/** The names of a path below the mod folder, or null when it is not in it. */
+function namesInModFolder(ground: Ground, target: string): string[] | null {
+  const root = ground.roots.modFolder
+  const parts = looseParts(nativePath, target)
+  if (root === undefined || root === null || parts === null) return null
+  return partsBelow(parts, looseParts(nativePath, root), fold)
+}
+
+/** Her request, and the folder it goes in: the only writes the mod folder takes, and only for a mod-request. */
+function modFolderWrite(asked: Asked, ground: Ground, use: WriteUse, target: string): boolean {
+  const names = namesInModFolder(ground, target)
+  if (asked.purpose !== MOD_REQUEST || names === null || names[0] !== REQUESTS_FOLDER) return false
+  if (use === 'mkdir') return names.length === 1
+  return use === 'write-create' && names.length === 2 && REQUEST_NAME.test(names[1]!)
+}
+
+/** A delivered mod, below from-tyler/, read for a mod-install: the only reads the mod folder allows. */
+function modFolderRead(asked: Asked, ground: Ground, source: string): boolean {
+  const names = namesInModFolder(ground, source)
+  return asked.purpose === MOD_INSTALL && names !== null && names.length >= 2 && names[0] === DELIVERIES_FOLDER
+}
+
+/** True when a path in the mod folder leads to its own name below where the folder really is. */
+function leadsToItsOwnModName(ground: Ground, target: string, real: string): boolean {
+  const { modFolder } = ground.roots
+  const realMods = ground.realRoots.modFolder
+  if (modFolder === undefined || modFolder === null || realMods === undefined || realMods === null) return false
+  return fold(real) === fold(realMods + target.slice(modFolder.length))
 }
 
 /** Sorts where a path really leads. Null when it leads into saves or Tray. */
@@ -512,10 +657,19 @@ async function isOneEntry(asked: string, spelled: string): Promise<boolean> {
   return first.ino !== 0n && fileId(first) === fileId(second)
 }
 
-async function checkWrite(ground: Ground, glance: Glance, use: WriteUse, target: string): Promise<Lead | GateRefusal> {
+async function checkWrite(
+  asked: Asked,
+  ground: Ground,
+  glance: Glance,
+  use: WriteUse,
+  target: string
+): Promise<Lead | GateRefusal> {
   const named = sortPath(nativePath, ground.roots, target)
   if (named.zone === 'forbidden') return savesOrTray(target)
   if (!named.wellFormed || !mayWrite(use, named)) return outside(target)
+  if (named.zone === 'mod-folder' && !modFolderWrite(asked, ground, use, target)) return outside(target)
+  // A mod-request writes her request into the mod folder, and nothing anywhere else.
+  if (asked.purpose === MOD_REQUEST && named.zone !== 'mod-folder') return outside(target)
   if (named.zone === 'report' && ground.realRoots.desktopDir === null) return checkFailed(target)
   try {
     const real = await glance.real(target)
@@ -524,19 +678,27 @@ async function checkWrite(ground: Ground, glance: Glance, use: WriteUse, target:
     if (sorted.zone !== named.zone || !mayWrite(use, sorted)) return linkEscape(target)
     if (await isAlsoInForbidden(ground, glance, target)) return savesOrTray(target)
     if (named.zone === 'app-data' && !(await leadsToItsOwnName(ground, target, real))) return linkEscape(target)
+    if (named.zone === 'mod-folder' && !leadsToItsOwnModName(ground, target, real)) return linkEscape(target)
     return { path: target, real }
   } catch (err) {
     return err instanceof LinkToNowhere ? linkEscape(target) : checkFailed(target)
   }
 }
 
-async function checkRead(ground: Ground, glance: Glance, target: string): Promise<Lead | GateRefusal> {
+async function checkRead(asked: Asked, ground: Ground, glance: Glance, target: string): Promise<Lead | GateRefusal> {
   const named = sortPath(nativePath, ground.roots, target)
   if (!named.wellFormed || !READ_ZONES.includes(named.zone)) return outside(target)
+  if (named.zone === 'mod-folder' && !modFolderRead(asked, ground, target)) return outside(target)
   try {
     const real = await glance.real(target)
     const sorted = sortReal(ground, real)
     if (sorted !== null && !READ_ZONES.includes(sorted.zone)) return linkEscape(target)
+    // A delivered mod is read from its own name in the mod folder, and nothing else is read through it.
+    if (named.zone === 'mod-folder') {
+      if (sorted?.zone !== 'mod-folder' || !leadsToItsOwnModName(ground, target, real)) return linkEscape(target)
+    } else if (sorted?.zone === 'mod-folder') {
+      return linkEscape(target)
+    }
     return { path: target, real }
   } catch (err) {
     return err instanceof LinkToNowhere ? linkEscape(target) : checkFailed(target)
@@ -544,14 +706,88 @@ async function checkRead(ground: Ground, glance: Glance, target: string): Promis
 }
 
 /** Checks every path of one op, and says where each really leads. */
-async function checkOp(ground: Ground, glance: Glance, op: WriteOp): Promise<Lead[] | GateRefusal> {
+async function checkOp(asked: Asked, ground: Ground, glance: Glance, op: WriteOp): Promise<Lead[] | GateRefusal> {
+  if (asked.purpose === PUT_BACK) return await checkPutBack(asked, ground, glance, op)
   const leads: Lead[] = []
   for (const [path, use] of pathUses(op)) {
-    const answer = use === 'read' ? await checkRead(ground, glance, path) : await checkWrite(ground, glance, use, path)
+    const answer =
+      use === 'read' ? await checkRead(asked, ground, glance, path) : await checkWrite(asked, ground, glance, use, path)
     if ('reason' in answer) return answer
     leads.push(answer)
   }
   return leads
+}
+
+/**
+ * save-new-slot (briefs/pr-15.md, round 7): a save copy put back is one `copy`, from the copy's own name in
+ * saveCopiesDir to a slot name in saves/ that nobody has. Every other op of a put-back is refused, and so is a
+ * put-back's op anywhere else. Nothing of hers is changed or removed, so it needs no backup; the game must be
+ * closed (takeTurn asks).
+ */
+async function checkPutBack(asked: Asked, ground: Ground, glance: Glance, op: WriteOp): Promise<Lead[] | GateRefusal> {
+  if (op.op !== 'copy') {
+    const paths = pathUses(op).map(([path]) => path)
+    const inSaves = paths.find((path) => sortPath(nativePath, ground.roots, path).zone === 'forbidden')
+    return inSaves === undefined ? outside(paths[0]) : savesOrTray(inSaves)
+  }
+  const source = await checkSaveCopy(asked, ground, glance, op.from)
+  if ('reason' in source) return source
+  const target = await checkNewSlot(ground, glance, op.to)
+  if ('reason' in target) return target
+  return [source, target]
+}
+
+/** The source of a put-back: a file in saveCopiesDir that leads to its own name. */
+async function checkSaveCopy(asked: Asked, ground: Ground, glance: Glance, source: string): Promise<Lead | GateRefusal> {
+  const copies = asked.saveCopiesDir
+  const named = sortPath(nativePath, ground.roots, source)
+  if (!named.wellFormed || named.zone !== 'app-data' || copies === null) return outside(source)
+  const copiesSorted = sortPath(nativePath, ground.roots, copies)
+  if (!copiesSorted.wellFormed || copiesSorted.zone !== 'app-data' || copiesSorted.atRoot) return outside(source)
+  const sourceParts = looseParts(nativePath, source)
+  const below = sourceParts === null ? null : partsBelow(sourceParts, looseParts(nativePath, copies), fold)
+  if (below === null || below.length === 0) return outside(source)
+  try {
+    const real = await glance.real(source)
+    if (sortReal(ground, real)?.zone !== 'app-data') return linkEscape(source)
+    if (!(await leadsToItsOwnName(ground, source, real))) return linkEscape(source)
+    return { path: source, real }
+  } catch (err) {
+    return err instanceof LinkToNowhere ? linkEscape(source) : checkFailed(source)
+  }
+}
+
+/**
+ * The target of a put-back: <folderPath>/saves/Slot_0<7 lower-case hex>.save, directly in a saves folder that is
+ * itself no link, and missing. Any other name in saves or Tray, and a slot that is taken, is saves-or-tray.
+ */
+async function checkNewSlot(ground: Ground, glance: Glance, target: string): Promise<Lead | GateRefusal> {
+  const named = sortPath(nativePath, ground.roots, target)
+  if (named.zone !== 'forbidden') return outside(target)
+  const { folderPath } = ground.roots
+  const realFolder = ground.realRoots.folderPath
+  const { realSaves } = ground
+  const targetParts = looseParts(nativePath, target)
+  if (!named.wellFormed || folderPath === null || realFolder === null || realSaves === null || targetParts === null) {
+    return savesOrTray(target)
+  }
+  const names = partsBelow(targetParts, looseParts(nativePath, folderPath), fold)
+  if (names?.length !== 2 || fold(names[0]!) !== 'saves' || !NEW_SLOT_NAME.test(names[1]!)) return savesOrTray(target)
+  const name = names[1]!
+  try {
+    // saves must be the folder of that name in the Sims folder, not a link to somewhere else.
+    if (fold(realSaves) !== fold(nativePath.join(realFolder, 'saves'))) return linkEscape(target)
+    if (!(await lstatOrNull(nativePath.dirname(target)))?.isDirectory()) return savesOrTray(target)
+    // Only a new slot. A name that is there, as a file, a folder or a link, is hers.
+    if ((await lstatOrNull(target)) !== null) return savesOrTray(target)
+    const real = await glance.real(target)
+    if (fold(real) !== fold(nativePath.join(realSaves, name)) || nativePath.basename(real) !== name) {
+      return linkEscape(target)
+    }
+    return { path: target, real }
+  } catch (err) {
+    return err instanceof LinkToNowhere ? linkEscape(target) : checkFailed(target)
+  }
 }
 
 /** Checks the whole request. Nothing here changes the disk, and anything it throws refuses. */
@@ -559,9 +795,11 @@ async function checkRequest(asked: Asked): Promise<Approved | GateRefusal> {
   const glance = newGlance()
   const ground = await checkGround(asked, glance)
   if ('reason' in ground) return ground
+  // A put-back is one copy, never more and never none.
+  if (asked.purpose === PUT_BACK && asked.ops.length !== 1) return outside('')
   const opLeads: Lead[][] = []
   for (const op of asked.ops) {
-    const leads = await checkOp(ground, glance, op)
+    const leads = await checkOp(asked, ground, glance, op)
     if (!Array.isArray(leads)) return leads
     opLeads.push(leads)
   }
@@ -569,7 +807,7 @@ async function checkRequest(asked: Asked): Promise<Approved | GateRefusal> {
   const guarded = asked.ops.some((op) =>
     pathUses(op).some(([path, use]) => use !== 'read' && GUARDED_ZONES.includes(zoneOf(path)))
   )
-  return { asked, ground, opLeads, guarded }
+  return { asked, ground, opLeads, guarded, gameOnly: asked.purpose === PUT_BACK }
 }
 
 /**
@@ -607,7 +845,7 @@ async function targetHolds(approved: Approved, index: number): Promise<boolean> 
   const was = approved.opLeads[index]![1]
   if (op.op !== 'move' || was === undefined) return false
   try {
-    const now = await checkWrite(approved.ground, newGlance(), 'move', op.to)
+    const now = await checkWrite(approved.asked, approved.ground, newGlance(), 'move', op.to)
     return !('reason' in now) && firstMoved([was], [now]) === null
   } catch {
     return false
@@ -618,7 +856,7 @@ async function targetHolds(approved: Approved, index: number): Promise<boolean> 
 async function refusalNow(approved: Approved, index: number): Promise<GateRefusal | null> {
   const op = approved.asked.ops[index]!
   try {
-    const now = await checkOp(approved.ground, newGlance(), op)
+    const now = await checkOp(approved.asked, approved.ground, newGlance(), op)
     if (!Array.isArray(now)) return now
     const moved = firstMoved(approved.opLeads[index]!, now)
     return moved === null ? null : linkEscape(moved)
@@ -675,6 +913,13 @@ async function takeTurn(deps: GateDeps, request: WriteRequest): Promise<GateResu
     if (game !== 'not-running') return refused({ reason: 'game-state-unknown' })
     if (backup !== 'verified') return refused({ reason: 'no-verified-backup', backup })
     // Those answers took time, and a folder can be swapped for a link in that time.
+    approved = await checkAgain(approved)
+    if ('reason' in approved) return refused(approved)
+  } else if (approved.gameOnly) {
+    // A save put back: the game must be closed, or it may write that slot too. No backup: nothing is replaced.
+    const game = await askGame(deps)
+    if (game === 'running') return refused({ reason: 'game-running' })
+    if (game !== 'not-running') return refused({ reason: 'game-state-unknown' })
     approved = await checkAgain(approved)
     if ('reason' in approved) return refused(approved)
   }
@@ -747,7 +992,10 @@ async function carryOut(
     await mustBeMissing(op.to)
     await makeParent(op.to, roots)
     if (op.op === 'copy') {
-      await placeCopy(op.from, op.to, source, false)
+      // A save put back is read back once more before it gets its name, and only a hard link may give it that
+      // name: it fails when the name is taken. A rename can replace a file, so saves never gets one.
+      const putBack = approved.asked.purpose === PUT_BACK
+      await placeCopy(op.from, op.to, source, putBack, putBack)
       return
     }
     try {
@@ -822,13 +1070,15 @@ async function mustBeMissing(target: string): Promise<void> {
 /**
  * Gives a file its new name, never in place of a file that is already there. A hard link does that in one
  * step: it fails when the name is taken, and the old name is removed after. A disk with no hard links (exFAT,
- * some network drives) gets the next best thing: look, then rename at once. `targetStillHolds` is asked only
- * before a new name is taken back.
+ * some network drives) gets the next best thing: look, then rename at once. With `linkOnly` there is no next
+ * best thing: a rename can still replace a file that appears after the look, so a failed hard link fails the op.
+ * `targetStillHolds` is asked only before a new name is taken back.
  */
 async function nameWithoutOverwrite(
   from: string,
   to: string,
-  targetStillHolds: () => Promise<boolean>
+  targetStillHolds: () => Promise<boolean>,
+  linkOnly = false
 ): Promise<void> {
   try {
     await link(from, to)
@@ -836,6 +1086,7 @@ async function nameWithoutOverwrite(
     const code = errorCode(err)
     if (code === 'EEXIST') throw new OpFailure('the target already exists')
     if (code === 'EXDEV' || code === 'ENOENT') throw err
+    if (linkOnly) throw new OpFailure(`the disk could not give the file its name without a rename (${code ?? 'no code'})`)
     await mustBeMissing(to)
     await rename(from, to)
     return
@@ -888,13 +1139,18 @@ const tempIsBesideTarget = async (): Promise<boolean> => true
  * a file that is there. The temp file never outlives a failure. `fill` returns once the disk has the file, and
  * the folder is flushed after the name is given, so a file reported done is still there after a power loss.
  */
-async function viaTemp(target: string, replace: boolean, fill: (temp: string) => Promise<void>): Promise<void> {
+async function viaTemp(
+  target: string,
+  replace: boolean,
+  fill: (temp: string) => Promise<void>,
+  linkOnly = false
+): Promise<void> {
   // Not .package or .ts4script: the game must never load a half-written file.
   const temp = `${target}.${randomBytes(6).toString('hex')}.sims-helper-tmp`
   try {
     await fill(temp)
     if (replace) await rename(temp, target)
-    else await nameWithoutOverwrite(temp, target, tempIsBesideTarget)
+    else await nameWithoutOverwrite(temp, target, tempIsBesideTarget, linkOnly)
   } catch (err) {
     await unlink(temp).catch(() => undefined)
     throw err
@@ -917,7 +1173,7 @@ async function flushFolder(folder: string): Promise<void> {
 }
 
 /** Places a copy under its final name, and returns the hash of the bytes it read from the source. */
-async function placeCopy(from: string, to: string, source: Stats, verify: boolean): Promise<string> {
+async function placeCopy(from: string, to: string, source: Stats, verify: boolean, linkOnly = false): Promise<string> {
   let sha256: string | null = null
   await viaTemp(to, false, async (temp) => {
     const copied = await copyBytes(from, temp, source)
@@ -927,7 +1183,7 @@ async function placeCopy(from: string, to: string, source: Stats, verify: boolea
       if (!matches) throw new OpFailure('the copy does not match the source')
     }
     sha256 = copied.sha256
-  })
+  }, linkOnly)
   if (sha256 === null) throw new OpFailure('the copy was not made')
   return sha256
 }

@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import nativePath from 'node:path'
 import type {
   FixRequest,
   JournalEntry,
@@ -36,6 +37,7 @@ import type {
   WriteRequest
 } from './ports.ts'
 import { makeRedactor } from './redact.ts'
+import { modFolderRoot } from './requests/mod-folder.ts'
 import { readFolderFacts, runRules } from './rules/index.ts'
 import { runGate } from './safety/gate.ts'
 import { createShare } from './share/index.ts'
@@ -66,6 +68,9 @@ export interface CreateContextInput {
   pickFolder?: () => Promise<string | null>
   // index.ts passes shell.openExternal. It only ever gets a url safeWebLink gave back. Without one, nothing opens.
   openExternal?: (url: string) => Promise<void>
+  // PR 16: index.ts passes shell.openPath, wrapped to reject on failure. It only ever gets the game's own exe path
+  // (makeOpenGame). Without one, nothing opens and every call rejects.
+  openGame?: (exePath: string) => Promise<void>
 }
 
 /**
@@ -162,6 +167,47 @@ export function makeOpenWeb(
   }
 }
 
+/**
+ * True for a plain absolute path to <install>\Game\Bin\TS4_x64.exe, written out in full. On Windows only a drive
+ * letter may start it (no share, no \\?\ or \\.\ device prefix, no path without a drive), and no name in it may
+ * hold a stream (':'), a character Windows cannot hold in a name, or end in a dot or space. Elsewhere it may hold no
+ * backslash and no NUL.
+ */
+function isGameExe(exePath: unknown, pathApi: typeof nativePath): exePath is string {
+  if (typeof exePath !== 'string' || !pathApi.isAbsolute(exePath) || pathApi.resolve(exePath) !== exePath) return false
+  const root = pathApi.parse(exePath).root
+  const names = exePath.slice(root.length).split(pathApi.sep)
+  if (pathApi.sep === '\\') {
+    if (!/^[A-Za-z]:\\$/.test(root)) return false
+    const badName = (name: string): boolean =>
+      name === '' || name.includes(':') || /[<>"|?*\u0000-\u001f]/.test(name) || /[. ]$/.test(name)
+    if (names.some(badName)) return false
+  } else if (exePath.includes('\\') || exePath.includes('\u0000') || names.some((name) => name === '')) {
+    return false
+  }
+  const [game, bin, exe] = names.slice(-3).map((name) => name.toLowerCase())
+  return names.length >= 4 && game === 'game' && bin === 'bin' && exe === 'ts4_x64.exe'
+}
+
+/**
+ * openGame for the context (PR 16): only a plain path ending in Game\Bin\TS4_x64.exe reaches the opener (isGameExe),
+ * never TS4_DX9_x64.exe or anything else. Any other path, no opener, or an opener that fails rejects with one plain
+ * message.
+ */
+export function makeOpenGame(
+  open: ((exePath: string) => Promise<void>) | undefined,
+  pathApi: typeof nativePath = nativePath
+): (exePath: string) => Promise<void> {
+  return async (exePath) => {
+    if (!isGameExe(exePath, pathApi) || !open) throw new Error('The game could not be opened')
+    try {
+      await open(exePath)
+    } catch {
+      throw new Error('The game could not be opened')
+    }
+  }
+}
+
 // Only tests reach this: index.ts always passes an updater, which knows the real version.
 const UPDATES_OFF: UpdateState = { state: 'off', why: 'switched-off', current: '0.0.0' }
 
@@ -235,7 +281,8 @@ export function createContext(input: CreateContextInput): AppContext {
     paths,
     gameState,
     backupStatus: (folderPath) => safety.backupStatus(folderPath),
-    shareRoot: () => share.shareRoot()
+    shareRoot: () => share.shareRoot(),
+    modFolderRoot
   }
 
   const gate: Gate = {
@@ -328,6 +375,7 @@ export function createContext(input: CreateContextInput): AppContext {
     share,
     pickFolder,
     openWeb: makeOpenWeb(safeWebLink, input.openExternal),
+    openGame: makeOpenGame(input.openGame),
     startupRecovery,
     updater: typeof input.updater === 'function' ? input.updater({ busy }) : (input.updater ?? NO_UPDATER),
     busy,

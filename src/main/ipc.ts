@@ -3,7 +3,10 @@ import { INVOKE_CHANNELS, type Handlers, type IpcInvoke } from '../shared/ipc.ts
 import { assistHandlers } from './assist/handlers.ts'
 import { fiftyHandlers } from './fiftyfifty/handlers.ts'
 import { fixHandlers } from './fixes/handlers.ts'
+import { patchGuardHandlers } from './patchguard/handlers.ts'
 import type { AppContext } from './ports.ts'
+import { requestsHandlers } from './requests/handlers.ts'
+import { saveCopiesHandlers } from './savecopies/handlers.ts'
 import { scanHandlers } from './scan/handlers.ts'
 import { shareHandlers } from './share/handlers.ts'
 import { updateHandlers } from './update/handlers.ts'
@@ -18,7 +21,10 @@ export function collectHandlers(ctx: AppContext): Handlers<keyof IpcInvoke> {
     fiftyHandlers(ctx),
     assistHandlers(ctx),
     updateHandlers(ctx),
-    shareHandlers(ctx)
+    shareHandlers(ctx),
+    saveCopiesHandlers(ctx),
+    patchGuardHandlers(ctx),
+    requestsHandlers(ctx)
   ]
   const merged: Record<string, (req: unknown) => Promise<unknown>> = {}
 
@@ -102,7 +108,20 @@ export const CHANGING_CHANNELS = {
   'share:mod-link': true,
   'share:open-link': false,
   'share:find-preview': false,
-  'share:find-send': false
+  'share:find-send': false,
+  'savecopies:list': false,
+  'savecopies:make': true,
+  'savecopies:put-back': true,
+  'patchguard:watch': false,
+  'patchguard:seen': true,
+  'patchguard:play': true,
+  'patchguard:waiting': false,
+  'patchguard:clear-holding': true,
+  'requests:folder': false,
+  'requests:pick-folder': true,
+  'requests:send': true,
+  'requests:list': false,
+  'requests:install': true
 } as const satisfies Record<keyof IpcInvoke, boolean>
 
 const ERRNO_PREFIX = /^([A-Z][A-Z0-9_]{1,30}):(?:\s|$)/

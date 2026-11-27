@@ -14,20 +14,30 @@ import type {
   BackupPruneResult,
   BackupRefusal,
   BackupSummary,
+  ClearHoldingResult,
   DisabledGroup,
   FiftyDamaged,
   FiftyStopPartWay,
   FixRefusal,
   GameRunState as ModelGameRunState,
+  GameVersionWatch,
   GateRefusal,
   JournalOrigin,
   KeySetResult,
+  ModFolderState,
+  ModRequest,
+  ModRequestSent,
+  PlayAnswer,
   Progress,
+  SaveCopy,
+  SaveCopyMade,
+  SavePutBack,
   ShareRefusal,
   ShareView,
   StartupRecovery,
   UpdateInstall,
-  UpdateState
+  UpdateState,
+  WaitingOnMod
 } from '../shared/model.ts'
 import { sampleFiftyFifty, sampleJournalEntry, sampleScan, sampleShareView } from '../shared/testing/sample.ts'
 import { appPaths } from './app-paths.ts'
@@ -37,13 +47,18 @@ import { fixHandlers } from './fixes/handlers.ts'
 import type { IpcMainInvokeEvent } from 'electron'
 import { CHANGING_CHANNELS, collectHandlers, registerIpc, sanitizeIpcError } from './ipc.ts'
 import type { Host } from './locate/host.ts'
-import type { ActionPlan, AssistReply, KeyStore, PlanFixAt, PlannedStep, Updater } from './ports.ts'
+import type { ActionPlan, AssistReply, KeyStore, PlanFixAt, PlannedStep, Updater, WriteRequest } from './ports.ts'
+import { patchGuardHandlers } from './patchguard/handlers.ts'
+import { requestsHandlers } from './requests/handlers.ts'
+import { modFolderRoot } from './requests/mod-folder.ts'
+import { saveCopiesHandlers } from './savecopies/handlers.ts'
 import type { GameRunState as LocateGameRunState } from './locate/process.ts'
 import { scanHandlers } from './scan/handlers.ts'
 import { sha256File } from './fs-read.ts'
 import {
   createContext,
   createRecoveryQuitGuard,
+  makeOpenGame,
   makeOpenWeb,
   onceRecovery,
   updaterKeepOutOf,
@@ -114,7 +129,10 @@ describe('contract', () => {
       fiftyHandlers(ctx),
       assistHandlers(ctx),
       updateHandlers(ctx),
-      shareHandlers(ctx)
+      shareHandlers(ctx),
+      saveCopiesHandlers(ctx),
+      patchGuardHandlers(ctx),
+      requestsHandlers(ctx)
     ]
     const seen = new Map<string, number>()
     for (const group of groups) {
@@ -514,7 +532,15 @@ describe('auto-update contract (PR 13)', () => {
         'share:keep',
         'share:restore',
         'share:stop',
-        'share:mod-link'
+        'share:mod-link',
+        'savecopies:make',
+        'savecopies:put-back',
+        'patchguard:seen',
+        'patchguard:play',
+        'patchguard:clear-holding',
+        'requests:pick-folder',
+        'requests:send',
+        'requests:install'
       ])
     })
 
@@ -851,6 +877,181 @@ describe('share saves contract (PR 14)', () => {
     )
     expect(env['ProgramFiles']).toBe('C:\\Temp\\big\\Program Files')
     expect(env['ProgramW6432']).toBe('C:\\Temp\\big\\Program Files')
+  })
+})
+
+describe('round 7 contract: save copies, patch day guard and mod requests (PRs 15 to 17)', () => {
+  function makeContext(extra: Partial<CreateContextInput> = {}) {
+    return createContext({
+      host: makeFakeHost(),
+      paths: appPaths({ localAppData: '/fake/LocalAppData', appData: '/fake/Roaming', desktopDir: '/fake/Desktop', env: {} }),
+      safeStorage: {
+        isEncryptionAvailable: () => false,
+        encryptString: (text) => Buffer.from(text, 'utf8'),
+        decryptString: (data) => Buffer.from(data).toString('utf8')
+      },
+      emit: () => {},
+      reveal: () => {},
+      ...extra
+    })
+  }
+
+  const groups: [string, (ctx: ReturnType<typeof makeContext>) => object, (keyof IpcInvoke)[]][] = [
+    ['savecopies', saveCopiesHandlers, ['savecopies:list', 'savecopies:make', 'savecopies:put-back']],
+    [
+      'patchguard',
+      patchGuardHandlers,
+      ['patchguard:watch', 'patchguard:seen', 'patchguard:play', 'patchguard:waiting', 'patchguard:clear-holding']
+    ],
+    [
+      'requests',
+      requestsHandlers,
+      ['requests:folder', 'requests:pick-folder', 'requests:send', 'requests:list', 'requests:install']
+    ]
+  ]
+
+  it.each(groups)('registers every %s channel from its own handlers group, in INVOKE_CHANNELS order', (prefix, make, channels) => {
+    expect(Object.keys(make(makeContext())).sort()).toEqual([...channels].sort())
+    expect(INVOKE_CHANNELS.filter((c) => c.startsWith(`${prefix}:`))).toEqual(channels)
+  })
+
+  it.each(groups)('each %s stub throws not implemented, naming its channel', async (_prefix, make, channels) => {
+    const handlers = make(makeContext()) as Record<string, (req?: unknown) => Promise<unknown>>
+    for (const channel of channels) {
+      await expect(handlers[channel]!(undefined)).rejects.toThrow(`not implemented: ${channel}`)
+    }
+  })
+
+  it('types every round 7 shape the briefs give', () => {
+    const copy: SaveCopy = {
+      id: 'c1',
+      at: '2026-11-26T12:00:00.000Z',
+      reason: 'game-updated',
+      gameVersion: '1.130.1',
+      saves: [{ name: 'Slot_00000002.save', bytes: 10, sha256: 'a'.repeat(64), savedAt: '2026-11-26T11:00:00.000Z' }],
+      trayFiles: 3,
+      bytes: 30,
+      status: 'checked'
+    }
+    const made: SaveCopyMade[] = [{ kind: 'done', copy }, { kind: 'refused', why: 'disk-full' }]
+    const putBack: SavePutBack[] = [{ kind: 'done', newSlot: 'Slot_0000000b.save' }, { kind: 'refused', why: 'no-free-slot' }]
+    const watch: GameVersionWatch = { current: '1.130', lastSeen: '1.129', changed: true, seenAt: null }
+    const play: PlayAnswer[] = [{ kind: 'started' }, { kind: 'stopped', why: 'game-updated', watch }, { kind: 'refused', why: 'no-install' }]
+    const waiting: WaitingOnMod = {
+      groupId: 'cf:1',
+      label: 'MCCC',
+      entryId: 'e1',
+      setAsideAt: '2026-11-26T12:00:00.000Z',
+      state: 'back-in-mods',
+      updatedAt: null
+    }
+    const request: ModRequest = { id: 'r-20261126-101500-a1b2', at: '2026-11-26T10:15:00.000Z', text: 'x', status: 'sent', delivery: null }
+    const sent: ModRequestSent[] = [{ kind: 'sent', request }, { kind: 'refused', why: 'too-long' }]
+    const folders: ModFolderState[] = [{ kind: 'not-set' }, { kind: 'set', path: 'G:\\Sims Helper Mods' }, { kind: 'in-sims-folder', path: 'x' }]
+    const cleared: ClearHoldingResult[] = [{ kind: 'done' }, { kind: 'refused', why: 'not-back-in-mods' }]
+    expect(cleared).toHaveLength(2)
+    const kinds: ActionKind[] = ['install-mod']
+    const reasons: WriteRequest['reason'][] = ['save-copy', 'mod-request', 'mod-install']
+    expect([made.length, putBack.length, play.length, waiting.state, sent.length, folders.length, kinds, reasons.length]).toEqual([
+      2,
+      2,
+      3,
+      'back-in-mods',
+      2,
+      3,
+      ['install-mod'],
+      3
+    ])
+  })
+
+  it('puts save copies in <dataDir>/save-copies, and has no mod folder until PR 17 sets one', () => {
+    const ctx = makeContext()
+    expect(ctx.paths.saveCopiesDir).toBe(join(ctx.paths.dataDir, 'save-copies'))
+    expect(modFolderRoot()).toBeNull()
+  })
+
+  it('has no way to open the game unless index.ts passes one', async () => {
+    // A native path that passes the check, so the missing opener is what refuses it.
+    const exe =
+      process.platform === 'win32'
+        ? 'C:\\Games\\The Sims 4\\Game\\Bin\\TS4_x64.exe'
+        : join('/fake/Sims', 'Game', 'Bin', 'TS4_x64.exe')
+    const opened: string[] = []
+    await makeOpenGame(async (path) => void opened.push(path))(exe)
+    expect(opened).toEqual([exe])
+    await expect(makeContext().openGame(exe)).rejects.toThrow('The game could not be opened')
+  })
+
+  it('openGame refuses Windows paths that are not a plain drive path: share, device, no drive, stream, odd names', async () => {
+    const { win32, posix } = await import('node:path')
+    const opened: string[] = []
+    const open = makeOpenGame(async (exe) => void opened.push(exe), win32)
+    for (const refused of [
+      '\\\\evil\\share\\Game\\Bin\\TS4_x64.exe',
+      '\\\\?\\C:\\x\\Game\\Bin\\TS4_x64.exe',
+      '\\\\.\\C:\\x\\Game\\Bin\\TS4_x64.exe',
+      '\\Game\\Bin\\TS4_x64.exe',
+      '\\x\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x:stream\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x\\Game\\Bin\\TS4_x64.exe:stream',
+      'C:\\x\u0000\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x\u001f\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x?\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x<y\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x"\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x|\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x*\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x.\\Game\\Bin\\TS4_x64.exe',
+      'C:\\x \\Game\\Bin\\TS4_x64.exe',
+      'C:\\x\\Game\\Bin\\TS4_x64.exe.',
+      'C:\\x\\Game\\Bin\\TS4_x64.exe ',
+      'C:/x/Game/Bin/TS4_x64.exe',
+      'C:\\x\\\\Game\\Bin\\TS4_x64.exe'
+    ]) {
+      await expect(open(refused), JSON.stringify(refused)).rejects.toThrow('The game could not be opened')
+    }
+    expect(opened).toEqual([])
+    const onPosix = makeOpenGame(async (exe) => void opened.push(exe), posix)
+    for (const refused of ['/x\\y/Game/Bin/TS4_x64.exe', '/x\u0000/Game/Bin/TS4_x64.exe', 'x/Game/Bin/TS4_x64.exe']) {
+      await expect(onPosix(refused), JSON.stringify(refused)).rejects.toThrow('The game could not be opened')
+    }
+    await onPosix('/home/l/Games/Game/Bin/TS4_x64.exe')
+    expect(opened).toEqual(['/home/l/Games/Game/Bin/TS4_x64.exe'])
+  })
+
+  it('openGame hands only <install>/Game/Bin/TS4_x64.exe to the opener, and one plain message for any failure', async () => {
+    const { win32 } = await import('node:path')
+    const opened: string[] = []
+    const open = makeOpenGame(async (exe) => {
+      opened.push(exe)
+    }, win32)
+    const exe = 'C:\\Program Files\\EA Games\\The Sims 4\\Game\\Bin\\TS4_x64.exe'
+    await open(exe)
+    await open('D:\\Sims\\game\\bin\\ts4_x64.exe')
+    expect(opened).toEqual([exe, 'D:\\Sims\\game\\bin\\ts4_x64.exe'])
+    for (const refused of [
+      'C:\\Program Files\\EA Games\\The Sims 4\\Game\\Bin\\TS4_DX9_x64.exe',
+      'C:\\Windows\\System32\\cmd.exe',
+      'Game\\Bin\\TS4_x64.exe',
+      'C:\\Game\\Bin\\TS4_x64.exe\\..\\..\\..\\evil.exe',
+      'C:\\x\\Game\\Bin\\..\\Bin\\TS4_x64.exe',
+      'C:\\x\\Bin\\TS4_x64.exe',
+      'C:\\x\\Game\\Bin\\TS4_x64.exe.lnk',
+      '',
+      42 as unknown as string
+    ]) {
+      await expect(open(refused), String(refused)).rejects.toThrow('The game could not be opened')
+    }
+    expect(opened).toHaveLength(2)
+    const failing = makeOpenGame(async () => {
+      throw new Error('C:\\Users\\Lila\\secret path')
+    }, win32)
+    await expect(failing(exe)).rejects.toThrow(/^The game could not be opened$/)
+  })
+
+  it('main/index.ts opens the game with shell.openPath and rejects when it answers with an error', async () => {
+    const src = await readFile(join(REPO_ROOT, 'src/main/index.ts'), 'utf8')
+    expect(src).toMatch(/openGame: async \(exePath\) => \{\s*const failed = await shell\.openPath\(exePath\)\s*if \(failed !== ''\) throw/)
   })
 })
 

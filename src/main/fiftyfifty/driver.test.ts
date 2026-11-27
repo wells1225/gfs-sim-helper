@@ -234,6 +234,7 @@ beforeEach(async () => {
     keyFile: join(dataDir, 'assist', 'key.bin'),
     oldSavesDir: join(dataDir, 'old-saves'),
     shareDir: join(dataDir, 'share'),
+    saveCopiesDir: join(dataDir, 'save-copies'),
     desktopDir: join(tmp, 'Desktop'),
     oneDriveRoots: [],
     curseForgeInstanceFile: null

@@ -45,6 +45,7 @@ export async function makeWorkspace(tools: WorkspaceTools, spec = 'duplicates'):
     keyFile: join(dataDir, 'assist', 'key.bin'),
     oldSavesDir: join(dataDir, 'old-saves'),
     shareDir: join(dataDir, 'share'),
+    saveCopiesDir: join(dataDir, 'save-copies'),
     desktopDir: join(root, 'Desktop'),
     oneDriveRoots: [],
     curseForgeInstanceFile: null

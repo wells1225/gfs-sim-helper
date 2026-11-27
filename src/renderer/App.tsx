@@ -16,7 +16,14 @@ import { ModsScreen } from './fixes/ModsScreen.tsx'
 import { useOptionalApi } from './fixes/optional-api.ts'
 import { RecoveryNotice } from './fixes/RecoveryNotice.tsx'
 import { NavProvider, useNav, type Route } from './nav.tsx'
+import { PatchGuardBanner } from './patchguard/PatchGuardBanner.tsx'
+import { PlayButton } from './patchguard/PlayButton.tsx'
 import { PatchDayScreen } from './patchday/PatchDayScreen.tsx'
+import { AskTylerScreen } from './requests/AskTylerScreen.tsx'
+import { AskTylerSetupScreen } from './requests/AskTylerSetupScreen.tsx'
+import { REQUESTS_READY } from './requests/feature.ts'
+import { SAVE_COPIES_READY } from './savecopies/feature.ts'
+import { SaveCopiesScreen } from './savecopies/SaveCopiesScreen.tsx'
 import { CheckUp } from './screens/CheckUp.tsx'
 import { PickFolder } from './screens/PickFolder.tsx'
 import { SendToTyler } from './screens/SendToTyler.tsx'
@@ -76,6 +83,12 @@ function renderScreen(route: Route, hasApi: boolean) {
       return <SharingSettingsScreen />
     case 'patch-day':
       return <PatchDayScreen />
+    case 'save-copies':
+      return <SaveCopiesScreen />
+    case 'ask-tyler':
+      return <AskTylerScreen />
+    case 'ask-tyler-setup':
+      return <AskTylerSetupScreen />
   }
 }
 
@@ -173,7 +186,9 @@ function Shell() {
           { label: 'History', screen: 'history' as const }
         ]
       : []),
+    ...(SAVE_COPIES_READY ? [{ label: 'Save copies', screen: 'save-copies' as const }] : []),
     ...(SHARE_READY ? [{ label: 'Share saves', screen: 'share' as const }] : []),
+    ...(REQUESTS_READY ? [{ label: 'Ask Tyler for a mod', screen: 'ask-tyler' as const }] : []),
     { label: 'About', screen: 'about' }
   ]
 
@@ -182,29 +197,32 @@ function Shell() {
   return (
     <div className="flex min-h-screen flex-col bg-background text-foreground">
       <header className="border-b border-border bg-card/80 backdrop-blur-xs">
-        <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-4 px-5 py-3">
+        <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-3">
           <div className="flex items-center gap-2.5">
             <Emblem className="size-8" />
             <span className="text-base font-semibold tracking-tight">{APP_TITLE}</span>
           </div>
 
-          <nav aria-label="Primary" className="flex items-center gap-1">
-            {navItems.map((item) => {
-              const active = route.screen === item.screen
-              return (
-                <Button
-                  key={item.screen}
-                  variant={active ? 'secondary' : 'ghost'}
-                  size="sm"
-                  disabled={recoveryPending}
-                  aria-current={active ? 'page' : undefined}
-                  onClick={() => go({ screen: item.screen })}
-                >
-                  {item.label}
-                </Button>
-              )
-            })}
-          </nav>
+          <div className="flex flex-wrap items-center gap-2">
+            {!recoveryPending && <PlayButton />}
+            <nav aria-label="Primary" className="flex flex-wrap items-center gap-1">
+              {navItems.map((item) => {
+                const active = route.screen === item.screen
+                return (
+                  <Button
+                    key={item.screen}
+                    variant={active ? 'secondary' : 'ghost'}
+                    size="sm"
+                    disabled={recoveryPending}
+                    aria-current={active ? 'page' : undefined}
+                    onClick={() => go({ screen: item.screen })}
+                  >
+                    {item.label}
+                  </Button>
+                )
+              })}
+            </nav>
+          </div>
         </div>
       </header>
 
@@ -235,6 +253,7 @@ function Shell() {
         ) : (
           <>
             {api !== null && <UpdateBanner />}
+            <PatchGuardBanner />
             <ShareBanner />
             <RecoveryNotice recovery={recovery} />
             <ResumeBanner />

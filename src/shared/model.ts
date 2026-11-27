@@ -305,8 +305,11 @@ export type JournalStep =
   | { kind: 'edit'; path: string; savedCopy: string; beforeSha256: Sha256; afterSha256: Sha256; state: StepState }
   | { kind: 'remove-cache'; path: string; state: StepState } // never undone: the game rebuilds caches
 
-/** Enabling a group is the undo of its disable entry. The two share kinds are a save swap (PR 14). */
-export type ActionKind = Exclude<FixId, 'enable-group'> | 'share-receive' | 'share-restore'
+/**
+ * Enabling a group is the undo of its disable entry. The two share kinds are a save swap (PR 14). install-mod puts
+ * a mod Tyler made into Mods (PR 17).
+ */
+export type ActionKind = Exclude<FixId, 'enable-group'> | 'share-receive' | 'share-restore' | 'install-mod'
 
 export type JournalOrigin =
   | { by: 'fix' }
@@ -547,3 +550,85 @@ export type FindAnswer =
   | { status: 'found'; linkId: string; shownLink: string; host: string; place: 'usual' | 'creator-site' | 'not-usual'; why: string }
   | { status: 'not-found' }
   | { status: 'no-answer'; why: Extract<AssistAnswer, { status: 'no-answer' }>['why'] }
+
+// ── Save copies (PR 15, briefs/pr-15.md)
+export type SaveCopyReason = 'by-hand' | 'game-updated' | 'before-change'
+
+export interface SaveCopyFile {
+  name: string // Slot_<8 hex>.save
+  bytes: number
+  sha256: string
+  savedAt: IsoTime
+}
+
+export interface SaveCopy {
+  id: string
+  at: IsoTime
+  reason: SaveCopyReason
+  gameVersion: string | null
+  saves: SaveCopyFile[]
+  trayFiles: number
+  bytes: number
+  status: 'checked' | 'broken'
+}
+
+export type SaveCopyMade =
+  | { kind: 'done'; copy: SaveCopy }
+  | { kind: 'refused'; why: 'game-running' | 'game-state-unknown' | 'no-folder' | 'disk-full' | 'error' }
+
+export type SavePutBack =
+  | { kind: 'done'; newSlot: string } // e.g. "Slot_0000000b.save"
+  | {
+      kind: 'refused'
+      why: 'game-running' | 'game-state-unknown' | 'copy-broken' | 'not-found' | 'no-free-slot' | 'error'
+    }
+
+// ── Patch day guard and the Play button (PR 16, briefs/pr-16.md)
+export interface GameVersionWatch {
+  current: string | null
+  lastSeen: string | null
+  changed: boolean // both known and different
+  seenAt: IsoTime | null
+}
+
+export interface WaitingOnMod {
+  groupId: string
+  label: string
+  entryId: string
+  setAsideAt: IsoTime
+  state: 'waiting' | 'updated' | 'back-in-mods' | 'not-curseforge'
+  updatedAt: IsoTime | null
+}
+
+/** "Clear the old copy" on a back-in-mods entry: removes that entry's holding folder in app data. */
+export type ClearHoldingResult = { kind: 'done' } | { kind: 'refused'; why: 'not-found' | 'not-back-in-mods' | 'error' }
+
+export type PlayAnswer =
+  | { kind: 'started' }
+  | { kind: 'stopped'; why: 'game-updated'; watch: GameVersionWatch }
+  | { kind: 'refused'; why: 'already-running' | 'no-install' | 'error' }
+
+// ── Asking Tyler for a mod (PR 17, briefs/pr-17.md)
+export interface ModDelivery {
+  title: string
+  note: string
+  files: { name: string; bytes: number }[]
+  hasScript: boolean
+}
+
+export interface ModRequest {
+  id: string
+  at: IsoTime
+  text: string
+  status: 'sent' | 'ready' | 'installed' | 'broken'
+  delivery: ModDelivery | null
+}
+
+export type ModFolderState =
+  | { kind: 'set'; path: string }
+  | { kind: 'not-set' }
+  | { kind: 'missing' | 'wrong-name' | 'in-sims-folder'; path: string }
+
+export type ModRequestSent =
+  | { kind: 'sent'; request: ModRequest }
+  | { kind: 'refused'; why: 'no-folder' | 'too-long' | 'empty' | 'error' }

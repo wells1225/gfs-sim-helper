@@ -5,6 +5,7 @@ import type {
   BackupPruneResult,
   BackupStatus,
   BackupSummary,
+  ClearHoldingResult,
   DisabledGroup,
   FiftyAnswer,
   FiftyGet,
@@ -20,10 +21,19 @@ import type {
   KeyStatus,
   LocalSave,
   LocateView,
+  GameVersionWatch,
+  ModFolderState,
+  ModRequest,
+  ModRequestSent,
   OldSave,
+  PlayAnswer,
   PcRole,
   Progress,
   ReportResult,
+  SaveCopy,
+  SaveCopyMade,
+  SaveCopyReason,
+  SavePutBack,
   ScanResult,
   Settings,
   ShareReceiveResult,
@@ -32,7 +42,8 @@ import type {
   StartupRecovery,
   Symptom,
   UpdateInstall,
-  UpdateState
+  UpdateState,
+  WaitingOnMod
 } from './model.ts'
 
 export interface IpcInvoke {
@@ -88,6 +99,22 @@ export interface IpcInvoke {
   'share:open-link': { req: { linkId: string }; res: 'opened' | 'refused' } // only addresses main validated itself
   'share:find-preview': { req: { shareId: string; seq: number; key: string }; res: FindPreview | null }
   'share:find-send': { req: { previewId: string }; res: FindAnswer }
+  // PR 15 owns this block
+  'savecopies:list': { req: void; res: SaveCopy[] } // newest first
+  'savecopies:make': { req: { reason: SaveCopyReason }; res: SaveCopyMade }
+  'savecopies:put-back': { req: { copyId: string; save: string }; res: SavePutBack } // save: a SaveCopyFile name
+  // PR 16 owns this block
+  'patchguard:watch': { req: void; res: GameVersionWatch }
+  'patchguard:seen': { req: void; res: GameVersionWatch } // she said "I've dealt with it": lastSeen := current
+  'patchguard:play': { req: { ignoreUpdate: boolean }; res: PlayAnswer }
+  'patchguard:waiting': { req: void; res: WaitingOnMod[] }
+  'patchguard:clear-holding': { req: { entryId: string }; res: ClearHoldingResult } // "Clear the old copy", back-in-mods only
+  // PR 17 owns this block
+  'requests:folder': { req: void; res: ModFolderState }
+  'requests:pick-folder': { req: void; res: ModFolderState } // opens main's own folder picker
+  'requests:send': { req: { text: string }; res: ModRequestSent }
+  'requests:list': { req: void; res: ModRequest[] }
+  'requests:install': { req: { requestId: string }; res: FixOutcome }
 }
 
 export interface IpcEvents {
@@ -140,7 +167,20 @@ export const INVOKE_CHANNELS = [
   'share:mod-link',
   'share:open-link',
   'share:find-preview',
-  'share:find-send'
+  'share:find-send',
+  'savecopies:list',
+  'savecopies:make',
+  'savecopies:put-back',
+  'patchguard:watch',
+  'patchguard:seen',
+  'patchguard:play',
+  'patchguard:waiting',
+  'patchguard:clear-holding',
+  'requests:folder',
+  'requests:pick-folder',
+  'requests:send',
+  'requests:list',
+  'requests:install'
 ] as const satisfies readonly (keyof IpcInvoke)[]
 
 export type Handlers<K extends keyof IpcInvoke> = {

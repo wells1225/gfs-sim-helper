@@ -111,6 +111,9 @@ async function makeFixtureEnv(): Promise<{
     share: {} as AppContext['share'],
     pickFolder: async () => null,
     openWeb: async () => 'refused',
+    openGame: async () => {
+      throw new Error('not in this test')
+    },
     startupRecovery: async () => ({ status: 'finished', touched: [] }),
     busy: () => false,
     session: { scan: null },

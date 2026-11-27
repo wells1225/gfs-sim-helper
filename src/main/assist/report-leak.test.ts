@@ -61,7 +61,8 @@ describe('the report zip after a key is stored', () => {
       paths,
       gameState: async () => 'not-running',
       backupStatus: async (): Promise<BackupStatus> => ({ state: 'none' }),
-      shareRoot: async () => null
+      shareRoot: async () => null,
+      modFolderRoot: () => null
     }
     const gate: Gate = { run: (request) => runGate(gateDeps, request) }
 
