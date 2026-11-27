@@ -1,0 +1,12 @@
+[Unit]
+Description=Sims Helper relay: email Tyler about new mod requests
+Documentation=file:%h/gfs-sim-helper/relay/README.md
+
+[Service]
+Type=oneshot
+# Change the node path if `command -v node` says otherwise (for example under nvm).
+ExecStart=/usr/bin/node %h/gfs-sim-helper/relay/m8-relay.mjs
+Environment=PATH=%h/.local/bin:%h/bin:/usr/local/bin:/usr/bin:/bin
+UMask=0077
+TimeoutStartSec=15min
+NoNewPrivileges=yes
