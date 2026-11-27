@@ -390,8 +390,11 @@ export function PatchDayScreen() {
     [api, load]
   )
 
+  // Step 1's save copy must finish before the game can start.
+  const savingCopy = guardState.autoSaveCopy.status === 'running'
+
   const handleReadyAndPlay = useCallback(async () => {
-    if (!store || readyBusy) return
+    if (!store || readyBusy || savingCopy) return
     setReadyBusy(true)
     try {
       await store.markSeen()
@@ -399,7 +402,7 @@ export function PatchDayScreen() {
     } finally {
       if (mountedRef.current) setReadyBusy(false)
     }
-  }, [store, readyBusy])
+  }, [store, readyBusy, savingCopy])
 
   const showThreeStepFlow = watchChanged || guardState.autoSaveCopy.status !== 'idle'
 
@@ -536,14 +539,20 @@ export function PatchDayScreen() {
         <CardDescription>When you&apos;re ready, press below to start the game.</CardDescription>
       </CardHeader>
       <CardContent>
-        <Button disabled={isBusy || guardState.starting || !store} onClick={() => void handleReadyAndPlay()}>
-          {readyBusy || guardState.starting ? (
-            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-          ) : (
-            <Play className="size-4" aria-hidden="true" />
-          )}
-          I&apos;m ready, let&apos;s play
-        </Button>
+        <div className="flex flex-col items-start gap-2">
+          <Button
+            disabled={isBusy || guardState.starting || savingCopy || !store}
+            onClick={() => void handleReadyAndPlay()}
+          >
+            {readyBusy || guardState.starting ? (
+              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Play className="size-4" aria-hidden="true" />
+            )}
+            I&apos;m ready, let&apos;s play
+          </Button>
+          {savingCopy && <p className="text-sm text-muted-foreground">Saving a copy of your saves first...</p>}
+        </div>
       </CardContent>
     </Card>
   )

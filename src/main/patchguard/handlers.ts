@@ -18,11 +18,12 @@ export function patchGuardHandlers(ctx: AppContext): Handlers<PatchGuardChannel>
     async 'patchguard:watch'() {
       return await watchGameVersion(ctx)
     },
-    async 'patchguard:seen'() {
-      return await markGameVersionSeen(ctx)
+    // Seen and Play wait their turn behind any save copy, fix or undo, so the game never starts mid-copy.
+    'patchguard:seen'() {
+      return oneAtATime(ctx, () => markGameVersionSeen(ctx))
     },
-    async 'patchguard:play'(req) {
-      return await playGame(ctx, req)
+    'patchguard:play'(req) {
+      return oneAtATime(ctx, () => playGame(ctx, req))
     },
     async 'patchguard:waiting'() {
       return await listWaitingOnMods(ctx)
